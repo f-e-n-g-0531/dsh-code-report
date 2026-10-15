@@ -19,8 +19,8 @@ CI 指 GitHub Actions 上运行的自动检查；tgz 是发布的安装包；SHA
 1. 校验标签等于 package.version，所有 job 固定触发 SHA。
 2. release job 下载已通过 Ubuntu / Node 24 验证的 tgz，不重新构建或打包。
 3. 复核 SHA-256，对该 tgz 再做一次隔离安装；保留 Actions 制品。
-4. npm run release:npm 先检查固定版本。已存在时核对与下载的 CI 制品字节一致并跳过发布；不存在才使用 NPM_AUTOMATION_TOKEN 发布同一 tgz，随后等待传播核验。网络或权限错误不当成不存在，任何字节不一致立即停止。
-5. 首次发布最多约 10 分钟等待 npm 传播，再独立下载 npm 包核对 SHA-256；发布成功但核验超时后可重跑失败 job，不重新打包。
+4. npm run release:npm 先检查固定版本。明确区分 absent（元数据 404）、pending（元数据已存在但 tgz 404）、ready（包可读）。pending 只等待不发布，确认存在后即使后续查询退回 404 也不再发布；ready 核对与 CI 制品字节一致并跳过发布；只有首次查询 absent 才使用 NPM_AUTOMATION_TOKEN 发布同一 tgz，随后等待传播核验。网络或权限错误不当成不存在，任何字节不一致立即停止。
+5. 发布、独立核验和 GitHub 前置核验统一使用有界传播等待（每阶段最多 60 次、间隔 10 秒，另加请求耗时）；发布 job 预算 45 分钟。等待时记录状态，超时保留制品并报错，不放行 GitHub；发布成功但核验超时后可重跑失败 job，不重新打包。
 6. npm run release:github 再核验 npm 和远端标签 SHA。新 Release 先建草稿；已有 Release 核对资产字节，只补缺失资产，不覆盖不一致资产。全部下载核验通过才公开草稿。
 
 缺少 token、npm 认证错误或包校验失败时，不创建 GitHub Release。不能把本地 npm publish 当作替代。若 npm 已发布但后续步骤失败，保留 Actions 制品，必须验证现有版本字节完全相同后再修复 Release；不得覆盖 npm 版本或移动已公开标签。

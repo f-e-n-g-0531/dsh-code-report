@@ -1,19 +1,19 @@
 import {readFile} from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {ensureNpm,ensureGithub,digest} from './release-core.mjs';
+import {ensureNpm,ensureGithub,digest,createNpmLookup,waitForNpm} from './release-core.mjs';
 const pkg=JSON.parse(await readFile('package.json','utf8'));const tag='v'+pkg.version;
 assert.equal(process.env.GITHUB_REF_NAME,tag);assert.ok((process.env.GITHUB_REPOSITORY||'').split('/').length===2&&(process.env.GITHUB_REPOSITORY||'').split('/').every(part=>/^[a-zA-Z0-9_.-]+$/.test(part)));
 const repo=process.env.GITHUB_REPOSITORY;const sha=process.env.GITHUB_SHA;assert.match(sha||'',/^[a-f0-9]{40}$/);
 const sum=await readFile('release/SHA256SUMS.txt');const [expected,name]=sum.toString().trim().split(/\s+/);assert.match(name||'',/^[a-zA-Z0-9._-]+[.]tgz$/);
 const archive=await readFile('release/'+name);assert.equal(digest(archive),expected);
 const request=async(url,options={})=>fetch(url,{...options,signal:AbortSignal.timeout(30000)});
-const lookupNpm=async()=>{const response=await request('https://registry.npmjs.org/'+encodeURIComponent(pkg.name)+'/'+pkg.version,{headers:{Accept:'application/json','Cache-Control':'no-cache'},redirect:'error'});if(response.status===404)return null;assert.equal(response.status,200,'npm metadata status');const meta=await response.json();assert.equal(meta.name,pkg.name);assert.equal(meta.version,pkg.version);const url=new URL(meta.dist.tarball);assert.equal(url.origin,'https://registry.npmjs.org');const result=await request(url,{redirect:'error'});if(result.status===404)return null;assert.equal(result.status,200,'npm tarball status');return Buffer.from(await result.arrayBuffer());};
+const lookupNpm=createNpmLookup(pkg,request);
 const mode=process.argv[2];
 if(mode==='npm'){
  await ensureNpm({archive,lookup:lookupNpm,publish:async()=>{assert.ok(process.env.NODE_AUTH_TOKEN,'Missing npm credential');const result=spawnSync('npm',['publish','./release/'+name,'--ignore-scripts','--access','public','--registry','https://registry.npmjs.org/'],{stdio:'inherit',timeout:180000});if(result.error)throw result.error;assert.equal(result.status,0,'npm publish failed; inspect before retry');}});console.log('npm artifact verified',expected);
 }else if(mode==='github'){
- const found=await lookupNpm();assert.ok(found,'npm artifact missing');assert.equal(digest(found),expected,'npm mismatch');
+ await waitForNpm({lookup:lookupNpm,archive});
  const token=process.env.GH_TOKEN;assert.ok(token,'Missing GitHub credential');const base='https://api.github.com/repos/'+repo;
  const api=async(url,options={})=>{assert.ok(['api.github.com','uploads.github.com'].includes(new URL(url).hostname),'untrusted GitHub URL');return request(url,{...options,headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'dsh-code-report-release',...options.headers}});};
  const json=async(url,options={})=>{const r=await api(url,options);assert.ok(r.ok,'GitHub HTTP '+r.status);return r.json();};
