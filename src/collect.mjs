@@ -24,10 +24,10 @@ export async function discover(cwd,signal,options={},onProgress=()=>{}){
    found.push(row);
   }
   const children=entries.filter(e=>e.isDirectory()&&!e.isSymbolicLink()&&!/^(\.|node_modules$|dist$|build$|Library$|Temp$|obj$|bin$)/i.test(e.name)).sort((a,b)=>a.name.localeCompare(b.name));
-  if(depth>=maxDepth){if(children.length)limited=true;return;}
+  if(depth>=maxDepth)return;
   for(const child of children){if(queue.length>=maxDirectories){limited=true;break;}queue.push({dir:path.join(dir,child.name),depth:depth+1});}
  }
- for(let i=0;i<queue.length;i++){signal?.throwIfAborted();if(visited>=maxDirectories||Date.now()>=deadline||found.length>=500){limited=true;break;}await walk(queue[i].dir,queue[i].depth);if(visited%50===0)onProgress({phase:'discovering',completed:visited,total:0,label:'已检查 '+visited+' 个目录，发现 '+found.length+' 个项目'});}if(limited)warnings.push('扫描范围未完整覆盖：上限 '+maxDepth+' 层 / '+maxDirectories+' 目录 / 500 项目 / 120 秒；可增大设置或手动补充。');
+ for(let i=0;i<queue.length;i++){signal?.throwIfAborted();if(visited>=maxDirectories||Date.now()>=deadline||found.length>=500){limited=true;break;}await walk(queue[i].dir,queue[i].depth);if(visited%50===0)onProgress({phase:'discovering',completed:visited,total:0,label:'已检查 '+visited+' 个目录，发现 '+found.length+' 个项目'});}if(limited)warnings.push('本次根目录及一级文件夹扫描因目录数量、500 项目或 120 秒安全预算未完成；未扫描部分请手动补充。');
  return {repositories:found.sort((a,b)=>a.path.localeCompare(b.path)),warnings,visited,limits:{maxDepth,maxDirectories},limited};
 }
 export async function collect(cwd,request,signal,onProgress=()=>{}){

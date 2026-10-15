@@ -1,5 +1,6 @@
-export const DEFAULT_SCAN=Object.freeze({maxDepth:12,maxDirectories:20000});
-export function scanOptions(value={}){if(!value||typeof value!=='object')throw new Error('扫描设置无效');const maxDepth=value.maxDepth??DEFAULT_SCAN.maxDepth,maxDirectories=value.maxDirectories??DEFAULT_SCAN.maxDirectories;if(!Number.isInteger(maxDepth)||maxDepth<1||maxDepth>32||!Number.isInteger(maxDirectories)||maxDirectories<100||maxDirectories>100000)throw new Error('扫描深度须为 1–32，目录数须为 100–100000');return {maxDepth,maxDirectories};}
+export const DEFAULT_SCAN=Object.freeze({maxDepth:1,maxDirectories:100000});
+// Ignore legacy recursive settings when restoring v0.4.0 configurations.
+export function scanOptions(){return {...DEFAULT_SCAN};}
 export function workspaceKey(cwd){return 'dsh-code-report:config:v1:'+encodeURIComponent(cwd||'');}
 export function cleanConfiguration(value){if(!value||typeof value!=='object'||value.schema!==1)throw new Error('不支持的配置格式');const text=(x,max=256)=>{if(typeof x!=='string'||x.length>max)throw new Error('配置字段无效或过长');return x;};if(!Array.isArray(value.rows)||value.rows.length>500)throw new Error('配置最多保存 500 个项目');return {schema:1,title:text(value.title,160),context:text(value.context,12000),provider:text(value.provider),model:text(value.model),scan:scanOptions(value.scan),rows:value.rows.map(r=>{if(!r||!['git','svn'].includes(r.type))throw new Error('配置项目类型无效');return {path:text(r.path,2048),type:r.type,a:text(r.a),b:text(r.b),branchA:text(r.branchA),branchB:text(r.branchB),enabled:r.enabled===true};})};}
 export function loadConfiguration(storage,cwd){const raw=storage.getItem(workspaceKey(cwd));if(raw===null)return null;if(raw.length>1024*1024)throw new Error('保存的配置过大');return cleanConfiguration(JSON.parse(raw));}
