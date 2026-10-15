@@ -2,12 +2,12 @@ import React,{useState,useRef,useEffect} from 'react';
 import css from './style.css';
 import UpdatePanel from './UpdatePanel.jsx';
 import {version} from '../package.json';
-import {RPC_CHANNEL} from './protocol.mjs';
+import {createClientRpc} from './client-rpc.mjs';
 export const inject=['slots','connection','remote','remote.pluginManager'];
 import {fresh,mergeRepositories,readyRows} from './repositories.mjs';
 import RepositoryCards from './RepositoryCards.jsx';
 export function apply(ctx){
- async function rpc(endpoint,payload,signal){const result=await ctx.connection.rpc.call(RPC_CHANNEL,endpoint,payload,signal);if(!result.ok)throw new Error(result.error?.message||'请求失败');return result.value;}
+ const rpc=createClientRpc(ctx.connection);
  function Page(props){const session=props.useSessions(s=>Object.values(s.byId).find(row=>(row.retainedBy.mainView??0)>0));return <Panel key={JSON.stringify([session?.id,session?.cwd])} session={session}/>;}
  function Panel({session}){
   const [rows,setRows]=useState([]),[title,setTitle]=useState('版本发布报告'),[context,setContext]=useState(''),[network,setNetwork]=useState(false),[provider,setProvider]=useState(''),[model,setModel]=useState(''),[consent,setConsent]=useState(false),[preview,setPreview]=useState(null),[report,setReport]=useState(''),[busy,setBusy]=useState(''),[error,setError]=useState(''),[progress,setProgress]=useState(null),[updating,setUpdating]=useState(false),[scanned,setScanned]=useState(false);

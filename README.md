@@ -6,7 +6,7 @@ DSH Code Report 是 **DeepSeek Harness（DSH）的插件**。你为每个 Git / 
 
 **可以同时比较多个项目，合并输出一份报告，不用逐个仓库手工整理。**
 
-> 当前已发布 v0.3.0。自动化测试和安装包检查已通过；在真实 DSH 界面中完整操作、调用真实模型的验证尚未完成。建议先在独立测试环境试用，不要直接替换日常工作的插件环境。
+> 当前已发布 v0.3.1。自动化测试和安装包检查已通过；在真实 DSH 界面中完整操作、调用真实模型的验证尚未完成。建议先在独立测试环境试用，不要直接替换日常工作的插件环境。
 
 ## 能得到什么
 
@@ -25,18 +25,18 @@ AI 的分析是建议，不是测试结果，也不是发布批准。报告仍�
 在终端执行下面的命令。**先将 <你的配置环境> 替换成当前 DSH 使用的 profile 名称**。profile 是保存 DSH 配置和插件的环境，不是左侧的工作区或会话名。安装命令需要机器上可以使用 pnpm。
 
 ~~~sh
-dsh plugin --profile <你的配置环境> add @feng0531/dsh-code-report@0.3.0
+dsh plugin --profile <你的配置环境> add @feng0531/dsh-code-report@0.3.1
 ~~~
 
 例如，你使用的 profile 确实叫 desktop，才执行：
 
 ~~~sh
-dsh plugin --profile desktop add @feng0531/dsh-code-report@0.3.0
+dsh plugin --profile desktop add @feng0531/dsh-code-report@0.3.1
 ~~~
 
 安装会修改所选环境，请先备份配置。安装后由你自行重启 DSH，并刷新原来的页面。本项目发布新版本时，**不会自动安装、升级或重启你的 DSH**。
 
-也可以从 [GitHub 发布页](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.3.0) 下载安装包。开发者不需要为了使用插件而下载源码、编译或运行测试。
+也可以从 [GitHub 发布页](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.3.1) 下载安装包。开发者不需要为了使用插件而下载源码、编译或运行测试。
 
 ## 更新插件
 
@@ -122,6 +122,11 @@ dsh plugin --profile desktop add @feng0531/dsh-code-report@0.3.0
 - **预览有效期为 10 分钟**：过期后重新采集。模型服务可接受的输入大小也有限，输入过大时需要减少项目或附带文件。重试分析可能再次计费。
 
 ## 常见问题
+
+**检查更新提示 HTTP 405，后台版本一直读取中？**
+
+0.2.0 至 0.3.0 的后台入口遗漏了路由所需依赖，可能导致界面已加载、后台不可用。请通过 DSH 自带“插件”页面或上面的安装命令升级到 0.3.1 或更新版本，再手动重启 DSH 并刷新页面。此时不能依赖故障插件自己的更新按钮完成修复。
+
 
 **看不到“发布报告”入口？**
 
