@@ -11,4 +11,6 @@ test('built client loads through DSH module loader and registers matching panel 
  assert.match(await readFile(new URL('../src/client.jsx',import.meta.url),'utf8'),/开始执行/);assert.match(source,/progress/);assert.equal(registrations[1].options.name,'sidebar.panellist');assert.equal(registrations[1].options.order,66);assert.equal(registrations.length,2);assert.equal(registrations[0].options.key,registrations[1].options.id);assert.equal(registrations[1].options.label(),'发布报告');
  let selected;const page=registrations[0].component({useSessions:selector=>{selected=selector({byId:{s:{id:'s',cwd:'/workspace',retainedBy:{mainView:1}}}});return selected;}});
  assert.equal(page.props.session.id,'s');
+ const client=await readFile(new URL('../src/client.jsx',import.meta.url),'utf8');assert.ok(client.includes("setScanState(signal.aborted?'cancelled':'failed')"));assert.ok(client.includes('scanState={scanState}'));assert.ok(client.indexOf('{scanError&&')<client.indexOf('<RepositoryCards'));
+ const css=await readFile(new URL('../src/style.css',import.meta.url),'utf8');assert.ok(css.includes('.cr-wide{width:100%;max-width:none;'));assert.ok(css.includes('.cr-root .cr-check{display:flex;'));
 });

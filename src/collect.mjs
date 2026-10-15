@@ -12,6 +12,7 @@ export function revision(value,type){if(typeof value!=='string'||!value||value.l
 export async function discover(cwd,signal){
  const {readdir}=await import('node:fs/promises');const found=[],warnings=[];let visited=0,limited=false;
  const base=await realpath(cwd),seen=new Set();
+ const queue=[{dir:base,depth:0}];
  async function walk(dir,depth){
   signal?.throwIfAborted();if(visited>=1500){limited=true;return;}visited++;
   let canonical,entries;try{canonical=await realpath(dir);const rel=path.relative(base,canonical);if(rel==='..'||rel.startsWith('..'+path.sep)||path.isAbsolute(rel)||seen.has(canonical))return;seen.add(canonical);entries=await readdir(dir,{withFileTypes:true});}catch(e){warnings.push('未能读取目录：'+(path.relative(base,dir)||'.'));return;}
@@ -22,9 +23,9 @@ export async function discover(cwd,signal){
   }
   const children=entries.filter(e=>e.isDirectory()&&!e.isSymbolicLink()&&!/^(\.|node_modules$|dist$|build$|Library$|Temp$|obj$|bin$)/i.test(e.name)).sort((a,b)=>a.name.localeCompare(b.name));
   if(depth>=6){if(children.length)limited=true;return;}
-  for(const child of children){if(visited>=1500){limited=true;break;}await walk(path.join(dir,child.name),depth+1);}
+  for(const child of children){if(queue.length>=1500){limited=true;break;}queue.push({dir:path.join(dir,child.name),depth:depth+1});}
  }
- await walk(base,0);if(limited)warnings.push('自动发现已达到 6 层或 1500 目录上限，更深项目请手动补充');
+ for(let i=0;i<queue.length;i++){if(visited>=1500){limited=true;break;}await walk(queue[i].dir,queue[i].depth);}if(limited)warnings.push('自动发现已达到 6 层或 1500 目录上限，更深项目请手动补充');
  return {repositories:found.sort((a,b)=>a.path.localeCompare(b.path)),warnings,visited};
 }
 export async function collect(cwd,request,signal,onProgress=()=>{}){
