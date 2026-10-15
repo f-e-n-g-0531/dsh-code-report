@@ -1,4 +1,5 @@
 import path from 'node:path';
+import {scanOptions} from './configuration.mjs';
 import {realpath,open} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {XMLParser,XMLValidator} from 'fast-xml-parser';
@@ -9,12 +10,13 @@ const xml=text=>{if(/<!DOCTYPE|<!ENTITY/i.test(text)||XMLValidator.validate(text
 const list=x=>x===undefined?[]:Array.isArray(x)?x:[x];
 export const hash=x=>createHash('sha256').update(x).digest('hex');
 export function revision(value,type){if(typeof value!=='string'||!value||value.length>256||/[\x00-\x20]/.test(value)||value.startsWith('-')||(type==='svn'&&!/^\d+$/.test(value)))throw new Error(type==='svn'?'SVN 版本必须是固定数字':'无效 Git 版本');return value;}
-export async function discover(cwd,signal){
+export async function discover(cwd,signal,options={},onProgress=()=>{}){
+ const {maxDepth,maxDirectories}=scanOptions(options);const deadline=Date.now()+120000;
  const {readdir}=await import('node:fs/promises');const found=[],warnings=[];let visited=0,limited=false;
  const base=await realpath(cwd),seen=new Set();
  const queue=[{dir:base,depth:0}];
  async function walk(dir,depth){
-  signal?.throwIfAborted();if(visited>=1500){limited=true;return;}visited++;
+  signal?.throwIfAborted();if(visited>=maxDirectories){limited=true;return;}visited++;
   let canonical,entries;try{canonical=await realpath(dir);const rel=path.relative(base,canonical);if(rel==='..'||rel.startsWith('..'+path.sep)||path.isAbsolute(rel)||seen.has(canonical))return;seen.add(canonical);entries=await readdir(dir,{withFileTypes:true});}catch(e){warnings.push('未能读取目录：'+(path.relative(base,dir)||'.'));return;}
   const type=entries.some(x=>x.name==='.git')?'git':entries.some(x=>x.name==='.svn')?'svn':null;
   if(type){const row={path:path.relative(base,dir).split(path.sep).join('/')||'.',type};
@@ -22,11 +24,11 @@ export async function discover(cwd,signal){
    found.push(row);
   }
   const children=entries.filter(e=>e.isDirectory()&&!e.isSymbolicLink()&&!/^(\.|node_modules$|dist$|build$|Library$|Temp$|obj$|bin$)/i.test(e.name)).sort((a,b)=>a.name.localeCompare(b.name));
-  if(depth>=6){if(children.length)limited=true;return;}
-  for(const child of children){if(queue.length>=1500){limited=true;break;}queue.push({dir:path.join(dir,child.name),depth:depth+1});}
+  if(depth>=maxDepth){if(children.length)limited=true;return;}
+  for(const child of children){if(queue.length>=maxDirectories){limited=true;break;}queue.push({dir:path.join(dir,child.name),depth:depth+1});}
  }
- for(let i=0;i<queue.length;i++){if(visited>=1500){limited=true;break;}await walk(queue[i].dir,queue[i].depth);}if(limited)warnings.push('自动发现已达到 6 层或 1500 目录上限，更深项目请手动补充');
- return {repositories:found.sort((a,b)=>a.path.localeCompare(b.path)),warnings,visited};
+ for(let i=0;i<queue.length;i++){signal?.throwIfAborted();if(visited>=maxDirectories||Date.now()>=deadline||found.length>=500){limited=true;break;}await walk(queue[i].dir,queue[i].depth);if(visited%50===0)onProgress({phase:'discovering',completed:visited,total:0,label:'已检查 '+visited+' 个目录，发现 '+found.length+' 个项目'});}if(limited)warnings.push('扫描范围未完整覆盖：上限 '+maxDepth+' 层 / '+maxDirectories+' 目录 / 500 项目 / 120 秒；可增大设置或手动补充。');
+ return {repositories:found.sort((a,b)=>a.path.localeCompare(b.path)),warnings,visited,limits:{maxDepth,maxDirectories},limited};
 }
 export async function collect(cwd,request,signal,onProgress=()=>{}){
  if(!request||!Array.isArray(request.repositories)||!request.repositories.length||request.repositories.length>12)throw new Error('请选择 1–12 个项目');

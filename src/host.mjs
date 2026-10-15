@@ -30,7 +30,7 @@ export function createHandler(ctx){
     if(progress.has(payload.operationId)||progress.size>=64)throw new Error('任务标识重复或进度缓存已满');
     operation={sessionId:payload.sessionId,cwd,updatedAt:Date.now(),value:{phase:'starting',label:'准备执行'}};progress.set(payload.operationId,operation);
    }
-   if(endpoint==='discover')value=await discover(cwd,signal);
+   if(endpoint==='discover')value=await discover(cwd,signal,payload.scan,update);
    if(endpoint==='preview'){
     if(previews.size>=16)throw new Error('预览数量达到上限，请等待过期');
     const snapshot=await collect(cwd,payload.request,signal,update);const previewId=randomUUID();
