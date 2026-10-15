@@ -24,9 +24,9 @@ npm ci --include=dev --ignore-scripts
 npm run check
 npm run verify:package
 npm run test:install
-git tag v0.1.0
+git tag v0.1.1
 git push origin main
-git push origin v0.1.0
+git push origin v0.1.1
 ~~~
 
 正式发布不自动安装、升级或重启当前 DSH。当前真实宿主 GUI / 真实模型端到端未验收，必须在发布说明中保留，不得将 stub host 测试描述为真实 GUI 验收。

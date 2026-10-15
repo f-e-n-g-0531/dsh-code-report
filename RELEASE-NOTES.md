@@ -1,6 +1,8 @@
-# DSH Code Report v0.1.0
+# DSH Code Report v0.1.1
 
-首次正式分发版本，面向 DSH 的多 Git / SVN 项目发布报告插件。
+修正 Windows CI 临时目录的 8.3 短路径与 realpath 长路径断言；保留未发布的 v0.1.0 标签作为失败 CI 记录，不移动历史标签。
+
+首次正式分发候选版本，面向 DSH 的多 Git / SVN 项目发布报告插件。
 
 - 左上侧功能区“发布报告”配置入口；逐项目选择版本 A / B。
 - 工作区只读差异采集，Git 固定 commit ID，SVN 固定数字 revision。

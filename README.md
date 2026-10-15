@@ -1,6 +1,6 @@
 # DSH Code Report
 
-DSH 多 Git / SVN 项目发布报告插件（0.1.0 首次分发版本）。
+DSH 多 Git / SVN 项目发布报告插件（0.1.1 首次分发版本）。
 
 ## 用途
 
