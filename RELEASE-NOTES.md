@@ -1,4 +1,6 @@
-# DSH Code Report v0.4.7
+# DSH Code Report v0.4.8
+
+v0.4.7 四项测试成功，但首次发布因 npm 将非显式相对 tgz 路径识别为 GitHub 简写而失败，未发布 npm；保留原标签。本版使用 ./release/ 显式本地路径并补充回归。
 
 ## 修复 Git 证据颜色污染
 

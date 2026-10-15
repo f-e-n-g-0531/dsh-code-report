@@ -6,7 +6,7 @@ DSH Code Report 是 **DeepSeek Harness（DSH）的插件**。你为每个 Git / 
 
 **可以同时比较多个项目，合并输出一份报告，不用逐个仓库手工整理。**
 
-> 当前已发布 v0.4.7。自动化测试和安装包检查已通过；在真实 DSH 界面中完整操作、调用真实模型的验证尚未完成。建议先在独立测试环境试用，不要直接替换日常工作的插件环境。
+> 当前已发布 v0.4.8。自动化测试和安装包检查已通过；在真实 DSH 界面中完整操作、调用真实模型的验证尚未完成。建议先在独立测试环境试用，不要直接替换日常工作的插件环境。
 
 ## 能得到什么
 
@@ -25,18 +25,18 @@ AI 的分析是建议，不是测试结果，也不是发布批准。报告仍�
 在终端执行下面的命令。**先将 <你的配置环境> 替换成当前 DSH 使用的 profile 名称**。profile 是保存 DSH 配置和插件的环境，不是左侧的工作区或会话名。安装命令需要机器上可以使用 pnpm。
 
 ~~~sh
-dsh plugin --profile <你的配置环境> add @feng0531/dsh-code-report@0.4.7
+dsh plugin --profile <你的配置环境> add @feng0531/dsh-code-report@0.4.8
 ~~~
 
 例如，你使用的 profile 确实叫 desktop，才执行：
 
 ~~~sh
-dsh plugin --profile desktop add @feng0531/dsh-code-report@0.4.7
+dsh plugin --profile desktop add @feng0531/dsh-code-report@0.4.8
 ~~~
 
 安装会修改所选环境，请先备份配置。安装后由你自行重启 DSH，并刷新原来的页面。本项目发布新版本时，**不会自动安装、升级或重启你的 DSH**。
 
-也可以从 [GitHub 发布页](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.4.7) 下载安装包。开发者不需要为了使用插件而下载源码、编译或运行测试。
+也可以从 [GitHub 发布页](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.4.8) 下载安装包。开发者不需要为了使用插件而下载源码、编译或运行测试。
 
 ## 更新插件
 
