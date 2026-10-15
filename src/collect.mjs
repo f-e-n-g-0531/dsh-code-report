@@ -45,10 +45,10 @@ export async function collect(cwd,request,signal,onProgress=()=>{}){
    const top=(await exec('git',['rev-parse','--show-toplevel'])).trim();if(await realpath(top)!==await realpath(root))throw new Error('请指定 Git 仓库根目录');
    const resolve=async ref=>{const id=(await exec('git',['rev-parse','--verify','--end-of-options',ref+'^{commit}'])).trim();if(!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(id))throw new Error('无法解析提交');return id;};
    repo.a=await resolve(a);repo.b=await resolve(b);
-   repo.files=(await exec('git',['diff','--no-ext-diff','--no-textconv','--no-renames','--name-only','-z',repo.a,repo.b,'--'])).split('\0').filter(Boolean);
+   repo.files=(await exec('git',['diff','--no-ext-diff','--no-textconv','--ignore-submodules=none','--no-renames','--name-only','-z',repo.a,repo.b,'--'])).split('\0').filter(Boolean);
    if(repo.files.some(secretPath))throw new Error('差异包含敏感路径，请拆分发布范围后重试');
-   repo.diff=await exec('git',['-c','core.quotePath=false','diff','--no-ext-diff','--no-textconv','--no-renames','--submodule=short','--unified=3',repo.a,repo.b,'--']);
-   repo.summary=await exec('git',['diff','--no-ext-diff','--no-textconv','--stat',repo.a,repo.b,'--']);
+   repo.diff=await exec('git',['-c','core.quotePath=false','diff','--no-ext-diff','--no-textconv','--ignore-submodules=none','--no-renames','--submodule=short','--unified=3',repo.a,repo.b,'--']);
+   repo.summary=await exec('git',['diff','--no-ext-diff','--no-textconv','--ignore-submodules=none','--stat',repo.a,repo.b,'--']);
   }else{
    if(request.allowSvnNetwork!==true)throw new Error('SVN 历史读取需要勾选仓库访问授权');
    const branchA=svnBranch(row.branchA),branchB=svnBranch(row.branchB);
