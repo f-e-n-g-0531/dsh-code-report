@@ -23,7 +23,7 @@ export function createHandler(ctx){
   try{
    signal=AbortSignal.any([...(signal?[signal]:[]),AbortSignal.timeout(240000)]);signal.throwIfAborted();prune();
    if(!['discover','preview','generate'].includes(endpoint)||!payload||typeof payload!=='object')throw new Error('无效请求');
-   const cwd=await sessionCwd(ctx,payload.sessionId,signal);let value;
+   const cwd=await sessionCwd(ctx,payload.sessionId,signal);signal.throwIfAborted();let value;
    const update=value=>{if(operation){operation.value=value;operation.updatedAt=Date.now();}};
    if(payload.operationId!==undefined){
     if(typeof payload.operationId!=='string'||!/^[a-zA-Z0-9-]{1,100}$/.test(payload.operationId))throw new Error('无效任务标识');
@@ -48,7 +48,7 @@ export function createHandler(ctx){
     const p=previews.get(payload.previewId);
     if(!p||p.used||p.cwd!==cwd||p.sessionId!==payload.sessionId)throw new Error('预览已过期、已使用或会话变更，请重新预览');
     if(payload.sendToModel!==true)throw new Error('需要明确确认向所选模型发送源码');
-    p.used=true;update({phase:'analyzing',label:'正在分析改动、影响范围与 QA 建议（模型进度不可量化）'});
+    signal.throwIfAborted();p.used=true;update({phase:'analyzing',label:'正在分析改动、影响范围与 QA 建议（模型进度不可量化）'});
     try{const analysis=await analyze(ctx.llm,payload.route,p.snapshot,signal);if(await sessionCwd(ctx,payload.sessionId,signal)!==cwd)throw new Error('会话目录已变更');value={markdown:markdown(p.snapshot,analysis,payload.route)};previews.delete(payload.previewId);}catch(e){p.used=false;throw e;}
    }
    signal.throwIfAborted();update({phase:'completed',completed:1,total:1,label:'执行完成'});return {ok:true,value};
