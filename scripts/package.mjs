@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {readFile,mkdir,writeFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {npm} from './npm.mjs';
+const pkg=JSON.parse(await readFile('package.json','utf8'));
+assert.equal(pkg.private,false);assert.equal(pkg.name,'@feng0531/dsh-code-report');assert.equal(pkg.license,'SEE LICENSE IN LICENSE');
+const required=['package.json','index.mjs','src/collect.mjs','src/paths.mjs','src/process.mjs','src/report.mjs','dist/client.js','cordis.patch.yml','README.md','LICENSE','THIRD_PARTY_NOTICES.md','RELEASE-NOTES.md'];
+const [report]=JSON.parse(npm(['pack','--dry-run','--ignore-scripts','--json']));assert.equal(report.version,pkg.version);assert.deepEqual(report.files.map(f=>f.path).sort(),required.sort());assert.equal(report.bundled.length,0);
+for(const field of Object.values(pkg.exports))assert.ok(required.includes(field.slice(2)));
+assert.ok((await readFile('dist/client.js','utf8')).includes('id:'+JSON.stringify(pkg.name)));
+assert.ok((await readFile('cordis.patch.yml','utf8')).includes("name: '@feng0531/dsh-code-report'"));
+await mkdir('release',{recursive:true});
+const [packed]=JSON.parse(npm(['pack','--ignore-scripts','--json','--pack-destination','release']));assert.match(packed.filename,/^[a-zA-Z0-9._-]+\.tgz$/);
+const digest=createHash('sha256').update(await readFile('release/'+packed.filename)).digest('hex');await writeFile('release/SHA256SUMS.txt',digest+'  '+packed.filename+'\n');console.log('Verified package:',packed.filename,digest);

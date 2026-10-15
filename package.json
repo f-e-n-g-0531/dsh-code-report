@@ -1,0 +1,61 @@
+{
+  "name": "@feng0531/dsh-code-report",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Multi-repository Git/SVN release reports for DeepSeek Harness",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./client": "./dist/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "src/*.mjs",
+    "dist/client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "RELEASE-NOTES.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node build.mjs && node --test test/*.test.mjs",
+    "check": "npm test",
+    "verify:package": "node scripts/package.mjs",
+    "test:install": "node scripts/install.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "dependencies": {
+    "fast-xml-parser": "5.11.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "react": "^19.2.0"
+  },
+  "license": "SEE LICENSE IN LICENSE",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/f-e-n-g-0531/dsh-code-report.git"
+  }
+}

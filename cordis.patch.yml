@@ -1,0 +1,5 @@
+- insert:
+    - id: local-dsh-code-report
+      name: '@feng0531/dsh-code-report'
+      disabled: false
+      config: {}
