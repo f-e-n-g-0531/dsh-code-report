@@ -1,5 +1,6 @@
 import {PACKAGE_NAME,stableVersion,newerVersion} from './protocol.mjs';
 export function updateGate(info,clientVersion){if(!info)return '';if(!stableVersion(clientVersion)||!stableVersion(info.runningVersion))return '无法确认运行版本，请到 DSH「插件」页面检查。';if(clientVersion!==info.runningVersion)return '界面与后台版本不一致，请先保存工作，再手动完全退出并重新启动 DSH。当前禁止重复安装。';if(!newerVersion(info.latestVersion,clientVersion))return '当前界面已是该版本或更新版本，无需重复安装。';return '';}
+export const requiresRuntimeReload=outcome=>['restart-required','applied','unknown'].includes(outcome?.state);
 export function updateOutcome(result){
  if(!result?.ok)return {state:'unknown',message:'未收到可靠的更新结果。安装可能仍在进行，请到 DSH「插件」页面检查，不要重复点击更新。'};
  const value=result.value;

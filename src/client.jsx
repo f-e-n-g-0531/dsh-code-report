@@ -3,16 +3,17 @@ import css from './style.css';
 import UpdatePanel from './UpdatePanel.jsx';
 import {version} from '../package.json';
 import {runtimeGate} from './protocol.mjs';
+import {requiresRuntimeReload} from './update-client.mjs';
 import {createClientRpc} from './client-rpc.mjs';
 export const inject=['slots','connection','remote','remote.pluginManager'];
 import {fresh,mergeRepositories,readyRows} from './repositories.mjs';
 import RepositoryCards from './RepositoryCards.jsx';
 import {DEFAULT_SCAN,loadConfiguration,saveConfiguration} from './configuration.mjs';
 export function apply(ctx){
- const rpc=createClientRpc(ctx.connection);
+ const rpc=createClientRpc(ctx.connection);let updateStop='';
  function Page(props){const session=props.useSessions(s=>Object.values(s.byId).find(row=>(row.retainedBy.mainView??0)>0));return <Panel key={JSON.stringify([session?.id,session?.cwd])} session={session}/>;}
  function Panel({session}){
-  const [runtime,setRuntime]=useState(null),[runtimeError,setRuntimeError]=useState(''),[runtimeAttempt,setRuntimeAttempt]=useState(0);const compatibility=runtimeError||runtimeGate(runtime,version);
+  const [updateBarrier,setUpdateBarrier]=useState(updateStop),[runtime,setRuntime]=useState(null),[runtimeError,setRuntimeError]=useState(''),[runtimeAttempt,setRuntimeAttempt]=useState(0);const compatibility=updateBarrier||runtimeError||runtimeGate(runtime,version);
   useEffect(()=>{const ac=new AbortController();setRuntime(null);setRuntimeError('');rpc('runtime-info',{},ac.signal).then(value=>{if(!ac.signal.aborted)setRuntime(value);}).catch(e=>{if(!ac.signal.aborted)setRuntimeError('后台验证失败：'+e.message);});return()=>ac.abort();},[runtimeAttempt]);
   const [initial]=useState(()=>{try{return {config:loadConfiguration(globalThis.localStorage,session?.cwd)};}catch(e){return {config:null,error:e.message};}});
   const saved=initial.config;const scanSettings=DEFAULT_SCAN;const [configNotice,setConfigNotice]=useState(initial.error?'配置未恢复：'+initial.error:saved?'已恢复此工作区的配置；网络和模型发送授权需重新确认。':''),[visited,setVisited]=useState(null);
@@ -20,6 +21,7 @@ export function apply(ctx){
   const store=()=>{try{saveConfiguration(globalThis.localStorage,session.cwd,{schema:1,rows,title,context,provider,model,scan:scanSettings});setConfigNotice('已保存到当前浏览器的此工作区；不含源码内容、报告、密钥或任何授权。');}catch(e){setConfigNotice('保存失败：'+e.message);}};
   const restore=()=>{try{const value=loadConfiguration(globalThis.localStorage,session.cwd);if(!value){setConfigNotice('此工作区尚无已保存配置。');return;}invalidate();setRows(value.rows);setTitle(value.title);setContext(value.context);setProvider(value.provider);setModel(value.model);setNetwork(false);setScanState('idle');setScanWarnings([]);setScanError('');setConfigNotice('已恢复保存的配置；请重新确认网络与发送授权。');}catch(e){setConfigNotice('恢复失败：'+e.message);}};
   const controller=useRef(null);useEffect(()=>()=>controller.current?.abort(),[]);
+  useEffect(()=>{const id=preview?.previewId;return()=>{if(id&&session?.id)void rpc('release-preview',{sessionId:session.id,previewId:id}).catch(()=>{});};},[preview?.previewId,session?.id]);
   const invalidate=()=>{setPreview(null);setReport('');setConsent(false);setProgress(null);};
   const change=(index,key,value)=>{invalidate();setRows(prev=>prev.map((row,i)=>i===index?{...row,[key]:value}:row));};
   const perform=async(label,fn)=>{if(compatibility){setError(compatibility);return;}controller.current?.abort();const ac=new AbortController();controller.current=ac;setBusy(label);setError('');setProgress({phase:'starting',label});try{await fn(ac.signal);if(!ac.signal.aborted)setProgress({phase:'completed',completed:1,total:1,label:label+'完成'});}catch(e){if(!ac.signal.aborted){setError(e.message);setProgress({phase:'failed',label:'执行失败：'+e.message});}}finally{if(controller.current===ac){if(ac.signal.aborted)setProgress({phase:'cancelled',label:'执行已取消'});setBusy('');controller.current=null;}}};
@@ -34,8 +36,8 @@ export function apply(ctx){
   const generate=()=>perform('模型分析中',async signal=>{const value=await tracked('generate',{sessionId:session.id,previewId:preview.previewId,sendToModel:consent,route:{provider:provider.trim(),model:model.trim()}},signal);if(!signal.aborted){setReport(value.markdown);setPreview(null);setConsent(false);}});
   const download=()=>{const url=URL.createObjectURL(new Blob([report],{type:'text/markdown;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='release-report-'+new Date().toISOString().slice(0,10)+'.md';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
   return <section className="cr-root"><style>{css}</style><header><div><small>DSH CODE REPORT · {version}</small><h1>发布报告配置</h1><p>版本差异 · 影响范围 · QA 测试建议</p></div><div className="cr-actions"><button disabled={!session||!!busy||updating} onClick={store}>保存配置</button><button disabled={!session||!!busy||updating} onClick={restore}>恢复已保存</button></div></header>
-   <details className="cr-update-details"><summary>插件版本与更新 · {version}</summary><UpdatePanel rpc={rpc} manager={ctx.remote?.pluginManager} reportBusy={!!busy} onLock={setUpdating}/></details>{configNotice&&<p className="cr-hint" role="status">{configNotice}</p>}
-   {compatibility&&<div className="cr-error" role="alert">{compatibility}<button disabled={!!busy||updating} onClick={()=>setRuntimeAttempt(x=>x+1)}>重新验证后台</button></div>}
+   <details className="cr-update-details"><summary>插件版本与更新 · {version}</summary><UpdatePanel rpc={rpc} manager={ctx.remote?.pluginManager} reportBusy={!!busy} onLock={setUpdating} onOutcome={value=>{if(requiresRuntimeReload(value)){updateStop=value.message;setRuntime(null);setUpdateBarrier(value.message);setConsent(false);}}}/></details>{configNotice&&<p className="cr-hint" role="status">{configNotice}</p>}
+   {compatibility&&<div className="cr-error" role="alert">{compatibility}<button disabled={!!busy||updating||!!updateBarrier} onClick={()=>setRuntimeAttempt(x=>x+1)}>重新验证后台</button></div>}
    <fieldset className="cr-report-form" disabled={updating}>
    {!session?<p role="status">请先打开一个带工作目录的会话。</p>:<><p className="cr-workspace">当前工作区：{session.cwd} · 仅读取，不修改版本库</p>
    <div className="cr-scan-settings"><button disabled={!!busy||!!compatibility} onClick={scan}>扫描 / 重新发现</button>{busy==='扫描项目'&&<button onClick={()=>controller.current?.abort()}>取消扫描</button>}<span className="cr-hint">只检查工作区根目录及一级子文件夹，不递归。{visited!==null?'上次检查 '+visited+' 个目录。':''}嵌套项目可手动添加；已保存的项目不会自动删除。</span></div>

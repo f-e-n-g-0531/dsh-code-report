@@ -9,10 +9,11 @@ export async function sessionCwd(ctx,id,signal){
 }
 export function createHandler(ctx){
  const previews=new Map(),progress=new Map();let active=0;
- const prune=()=>{for(const [id,p]of previews)if(Date.now()-p.time>10*60*1000)previews.delete(id);};
+ const prune=()=>{for(const [id,p]of previews)if(!p.used&&Date.now()-p.time>10*60*1000)previews.delete(id);};
  return async(endpoint,payload,signal)=>{
   if(endpoint==='runtime-info')return {ok:true,value:runtimeInfo()};
   if(endpoint==='check-update'){try{return {ok:true,value:await checkUpdate({signal})};}catch(e){return {ok:false,error:{message:e.message}};}}
+  if(endpoint==='release-preview'){try{const cwd=await sessionCwd(ctx,payload?.sessionId,signal);const p=previews.get(payload?.previewId);if(p&&(p.sessionId!==payload.sessionId||p.cwd!==cwd||p.used))throw new Error('预览不属于当前会话或正在分析');if(p)previews.delete(payload.previewId);return {ok:true,value:{released:!!p}};}catch(e){return {ok:false,error:{message:e.message}};}}
   if(endpoint==='progress'){
    try{const cwd=await sessionCwd(ctx,payload?.sessionId,signal);const item=progress.get(payload?.operationId);if(!item||item.sessionId!==payload.sessionId||item.cwd!==cwd||Date.now()-item.updatedAt>600000)throw new Error('进度不可用');return {ok:true,value:item.value};}catch(e){return {ok:false,error:{message:e.message}};}
   }
@@ -34,11 +35,14 @@ export function createHandler(ctx){
    }
    if(endpoint==='discover')value=await discover(cwd,signal,payload.scan,update);
    if(endpoint==='preview'){
-    if(previews.size>=16)throw new Error('预览数量达到上限，请等待过期');
+    // Capacity is checked after collection so concurrent captures cannot overflow it.
+
     const snapshot=await collect(cwd,payload.request,signal,update);const previewId=randomUUID();
     if(await sessionCwd(ctx,payload.sessionId,signal)!==cwd)throw new Error('会话目录已变更');
+    while(previews.size>=16){const oldest=[...previews].find(([,p])=>!p.used);if(!oldest)throw new Error('预览均在分析中，请稍后重试');previews.delete(oldest[0]);}
+    const evidence=markdown(snapshot);
     previews.set(previewId,{snapshot,cwd,sessionId:payload.sessionId,time:Date.now(),used:false});
-    value={previewId,bytes:Buffer.byteLength(JSON.stringify(snapshot)),repositories:snapshot.repositories.map(({diff,...r})=>r),context:snapshot.context.map(({text,...c})=>c),limitations:snapshot.limitations,markdown:markdown(snapshot)};
+    value={previewId,bytes:Buffer.byteLength(JSON.stringify(snapshot)),repositories:snapshot.repositories.map(({diff,...r})=>r),context:snapshot.context.map(({text,...c})=>c),limitations:snapshot.limitations,markdown:evidence};
    }
    if(endpoint==='generate'){
     const p=previews.get(payload.previewId);
