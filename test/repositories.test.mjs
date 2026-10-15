@@ -1,0 +1,21 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+import {run} from '../src/process.mjs';
+import {collect,discover} from '../src/collect.mjs';
+import {svnBranch,svnRevision,branchUrl} from '../src/svn-endpoint.mjs';
+import {mergeRepositories,readyRows,fresh} from '../src/repositories.mjs';
+import {markdown} from '../src/report.mjs';
+test('SVN endpoints accept r notation and reject URL traversal ambiguity',()=>{assert.equal(svnRevision('r0012'),'12');assert.equal(svnRevision('R12'),'12');for(const r of ['HEAD','r-1','1:2','r'])assert.throws(()=>svnRevision(r));for(const b of ['', '../x','a/../x','https://evil/x','/trunk','a%2Fb','a@1','a?x','a\\b'])assert.throws(()=>svnBranch(b));assert.equal(branchUrl('https://host/repo','https://host/repo/trunk','branches/发布'),'https://host/repo/branches/'+encodeURIComponent('发布'));});
+test('rescan preserves inputs and selection and adds unselected new repositories',()=>{const previous=[{...fresh(),path:'one',a:'main',b:'v2'}];const result=mergeRepositories(previous,[{path:'one',type:'git'},{path:'two',type:'svn',branch:'branches/release'}]);assert.equal(result[0].a,'main');assert.equal(result[0].enabled,true);assert.equal(result[1].enabled,false);assert.equal(result[1].branchA,'branches/release');assert.equal(readyRows(result),true);assert.equal(readyRows([{...result[1],enabled:true,a:'r1',b:'r2',branchA:''}]),false);});
+test('deep discovery finds Git projects and ignores outside junctions',async t=>{const cwd=await mkdtemp(path.join(tmpdir(),'report-discover-'));t.after(()=>rm(cwd,{recursive:true,force:true}));const root=path.join(cwd,'a/b/c/d/e');await mkdir(root,{recursive:true});await run('git',['init'],{cwd:root});const found=await discover(cwd);assert.ok(found.repositories.some(r=>r.path==='a/b/c/d/e'));});
+test('SVN compares two explicit branches at independently fixed revisions',async t=>{
+ const cwd=await mkdtemp(path.join(tmpdir(),'report-branches-'));t.after(()=>rm(cwd,{recursive:true,force:true}));await run('svnadmin',['create',path.join(cwd,'store')],{cwd});const url=pathToFileURL(path.join(cwd,'store')).href;
+ await run('svn',['mkdir',url+'/trunk',url+'/branches','-m','layout','--non-interactive'],{cwd});await run('svn',['checkout',url+'/trunk',path.join(cwd,'wc'),'--non-interactive'],{cwd});const wc=path.join(cwd,'wc');await writeFile(path.join(wc,'api.txt'),'before\n');await run('svn',['add','api.txt'],{cwd:wc});await run('svn',['commit','-m','baseline','--non-interactive'],{cwd:wc});
+ await run('svn',['copy',url+'/trunk@2',url+'/branches/release','-m','branch','--non-interactive'],{cwd});await run('svn',['checkout',url+'/branches/release',path.join(cwd,'release'),'--non-interactive'],{cwd});await writeFile(path.join(cwd,'release/api.txt'),'after\n');await run('svn',['commit','-m','change','--non-interactive'],{cwd:path.join(cwd,'release')});
+ const found=await discover(cwd);assert.equal(found.repositories.find(r=>r.path==='wc').branch,'trunk');assert.equal(found.repositories.find(r=>r.path==='release').branch,'branches/release');
+ const req={allowSvnNetwork:true,repositories:[{path:'wc',type:'svn',branchA:'trunk',branchB:'branches/release',a:'r2',b:'r4'}]};const snapshot=await collect(cwd,req);const repo=snapshot.repositories[0];assert.match(repo.diff,/-before/);assert.ok(repo.diff.includes('+after'));assert.equal(repo.a,'2');assert.equal(repo.b,'4');assert.ok(markdown(snapshot).includes('branches/release @ r4'));await assert.rejects(collect(cwd,{...req,repositories:[{...req.repositories[0],branchA:''}]}),/分支/);
+});

@@ -4,14 +4,28 @@ import {createHash} from 'node:crypto';
 import {XMLParser,XMLValidator} from 'fast-xml-parser';
 import {inside,regular,secretPath} from './paths.mjs';
 import {run} from './process.mjs';
+import {svnRevision,svnBranch,branchUrl} from './svn-endpoint.mjs';
 const xml=text=>{if(/<!DOCTYPE|<!ENTITY/i.test(text)||XMLValidator.validate(text)!==true)throw new Error('无效 SVN XML');return new XMLParser({ignoreAttributes:false,parseTagValue:false,parseAttributeValue:false}).parse(text);};
 const list=x=>x===undefined?[]:Array.isArray(x)?x:[x];
 export const hash=x=>createHash('sha256').update(x).digest('hex');
 export function revision(value,type){if(typeof value!=='string'||!value||value.length>256||/[\x00-\x20]/.test(value)||value.startsWith('-')||(type==='svn'&&!/^\d+$/.test(value)))throw new Error(type==='svn'?'SVN 版本必须是固定数字':'无效 Git 版本');return value;}
 export async function discover(cwd,signal){
- const {readdir}=await import('node:fs/promises');const found=[],warnings=[];let visited=0;
- async function walk(dir,depth){signal?.throwIfAborted();if(++visited>300){warnings.push('发现扫描达到 300 目录上限，可手动填写项目路径');return;}const entries=await readdir(dir,{withFileTypes:true});const type=entries.some(x=>x.name==='.git')?'git':entries.some(x=>x.name==='.svn')?'svn':null;if(type)found.push({path:path.relative(cwd,dir).split(path.sep).join('/')||'.',type});if(depth>=3)return;for(const e of entries)if(e.isDirectory()&&!e.isSymbolicLink()&&!/^(\.|node_modules$|dist$|build$)/.test(e.name)&&visited<300)await walk(path.join(dir,e.name),depth+1);}
- await walk(cwd,0);if(visited>=300)warnings.push('发现扫描达到 300 目录上限，可手动填写遗漏项目');return {repositories:found,warnings};
+ const {readdir}=await import('node:fs/promises');const found=[],warnings=[];let visited=0,limited=false;
+ const base=await realpath(cwd),seen=new Set();
+ async function walk(dir,depth){
+  signal?.throwIfAborted();if(visited>=1500){limited=true;return;}visited++;
+  let canonical,entries;try{canonical=await realpath(dir);const rel=path.relative(base,canonical);if(rel==='..'||rel.startsWith('..'+path.sep)||path.isAbsolute(rel)||seen.has(canonical))return;seen.add(canonical);entries=await readdir(dir,{withFileTypes:true});}catch(e){warnings.push('未能读取目录：'+(path.relative(base,dir)||'.'));return;}
+  const type=entries.some(x=>x.name==='.git')?'git':entries.some(x=>x.name==='.svn')?'svn':null;
+  if(type){const row={path:path.relative(base,dir).split(path.sep).join('/')||'.',type};
+   if(type==='svn'){try{const info=xml(await run('svn',['info','--xml','--non-interactive','--',dir+'@'],{cwd:dir,signal})).info.entry;const relative=info?.['relative-url'];if(typeof relative==='string'&&relative.startsWith('^/'))row.branch=decodeURIComponent(relative.slice(2))||'.';}catch(e){signal?.throwIfAborted();warnings.push('无法读取 SVN 分支：'+row.path+'，请手动填写');}}
+   found.push(row);
+  }
+  const children=entries.filter(e=>e.isDirectory()&&!e.isSymbolicLink()&&!/^(\.|node_modules$|dist$|build$|Library$|Temp$|obj$|bin$)/i.test(e.name)).sort((a,b)=>a.name.localeCompare(b.name));
+  if(depth>=6){if(children.length)limited=true;return;}
+  for(const child of children){if(visited>=1500){limited=true;break;}await walk(path.join(dir,child.name),depth+1);}
+ }
+ await walk(base,0);if(limited)warnings.push('自动发现已达到 6 层或 1500 目录上限，更深项目请手动补充');
+ return {repositories:found.sort((a,b)=>a.path.localeCompare(b.path)),warnings,visited};
 }
 export async function collect(cwd,request,signal,onProgress=()=>{}){
  if(!request||!Array.isArray(request.repositories)||!request.repositories.length||request.repositories.length>12)throw new Error('请选择 1–12 个项目');
@@ -22,7 +36,7 @@ export async function collect(cwd,request,signal,onProgress=()=>{}){
  for(const row of request.repositories){
   onProgress({phase:'collecting',completed,total,label:'读取项目：'+row.path});
   signal?.throwIfAborted();if(!row||!['git','svn'].includes(row.type))throw new Error('仅支持 Git / SVN');
-  const root=await inside(cwd,row.path,{root:true}),a=revision(row.a,row.type),b=revision(row.b,row.type);
+  const root=await inside(cwd,row.path,{root:true}),a=row.type==='svn'?svnRevision(row.a):revision(row.a,'git'),b=row.type==='svn'?svnRevision(row.b):revision(row.b,'git');
   const exec=(cmd,args)=>run(cmd,args,{cwd:root,signal});let repo={path:row.path||'.',type:row.type,a,b};
   if(row.type==='git'){
    const top=(await exec('git',['rev-parse','--show-toplevel'])).trim();if(await realpath(top)!==await realpath(root))throw new Error('请指定 Git 仓库根目录');
@@ -34,16 +48,19 @@ export async function collect(cwd,request,signal,onProgress=()=>{}){
    repo.summary=await exec('git',['diff','--no-ext-diff','--no-textconv','--stat',repo.a,repo.b,'--']);
   }else{
    if(request.allowSvnNetwork!==true)throw new Error('SVN 历史读取需要勾选仓库访问授权');
-   if(BigInt(a)>BigInt(b))throw new Error('SVN 版本 B 不得小于版本 A');
+   const branchA=svnBranch(row.branchA),branchB=svnBranch(row.branchB);
    const info=xml(await exec('svn',['info','--xml','--non-interactive','--',root+'@'])).info.entry;
-   if(!info?.url||!info.repository?.uuid||!info['wc-info'])throw new Error('需要 SVN 工作副本目录');
-   const url=info.url;repo.identity={uuid:info.repository.uuid,url};
-   const args=['--non-interactive','--no-auth-cache'];const target=url+'@'+b;
-   repo.a=String(BigInt(a));repo.b=String(BigInt(b));
-   const changes=xml(await exec('svn',['diff','--summarize','--xml','-r',repo.a+':'+repo.b,...args,'--',target]));
+   if(!info?.url||!info.repository?.uuid||!info.repository?.root||!info['wc-info'])throw new Error('需要 SVN 工作副本目录');
+   repo.a=a;repo.b=b;repo.branchA=branchA;repo.branchB=branchB;
+   const urlA=branchUrl(info.repository.root,info.url,branchA),urlB=branchUrl(info.repository.root,info.url,branchB);
+   const args=['--non-interactive','--no-auth-cache'];
+   for(const [url,rev]of [[urlA,a],[urlB,b]]){const endpoint=xml(await exec('svn',['info','--xml','-r',rev,...args,'--',url+'@'+rev])).info.entry;if(endpoint?.repository?.uuid!==info.repository.uuid||endpoint?.repository?.root!==info.repository.root)throw new Error('SVN 分支不属于同一仓库');}
+   repo.identity={uuid:info.repository.uuid,repositoryRoot:info.repository.root,urlA,urlB};
+   const targets=['--old='+urlA+'@'+a,'--new='+urlB+'@'+b];
+   const changes=xml(await exec('svn',['diff','--summarize','--xml',...targets,...args]));
    repo.files=list(changes.diff?.paths?.path).map(x=>typeof x==='string'?x:x['#text']);
    if(repo.files.some(secretPath))throw new Error('差异包含敏感路径');
-   repo.diff=await exec('svn',['diff','--internal-diff','-r',repo.a+':'+repo.b,...args,'--',target]);repo.summary=repo.files.join('\n');
+   repo.diff=await exec('svn',['diff','--internal-diff',...targets,...args]);repo.summary=repo.files.join('\n');
   }
   repo.requestedA=a;repo.requestedB=b;repo.diffHash=hash(repo.diff);result.repositories.push(repo);onProgress({phase:'collecting',completed:++completed,total,label:'项目差异已采集：'+row.path});
  }
