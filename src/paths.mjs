@@ -10,4 +10,4 @@ export async function inside(cwd,value,options) {
   return target;
 }
 export const secretPath=value=>/(^|[/\\])(?:\.env(?:\..*)?|\.git|\.svn|node_modules|id_rsa|id_ed25519|credentials?)([/\\]|$)|\.(pem|key|p12|pfx)$/i.test(value);
-export async function regular(cwd,value){if(secretPath(value))throw new Error('禁止采集凭据或仓库内部路径');const target=await inside(cwd,value);if(!(await lstat(target)).isFile())throw new Error('源码上下文必须是普通文件');return target;}
+export async function regular(cwd,value){if(secretPath(value))throw new Error('禁止采集凭据或仓库内部路径');const target=await inside(cwd,value);if(secretPath(path.relative(await realpath(cwd),target)))throw new Error('禁止采集凭据或仓库内部路径');if(!(await lstat(target)).isFile())throw new Error('源码上下文必须是普通文件');return target;}

@@ -27,7 +27,9 @@ export function createHandler(ctx){
    if(payload.operationId!==undefined){
     if(typeof payload.operationId!=='string'||!/^[a-zA-Z0-9-]{1,100}$/.test(payload.operationId))throw new Error('无效任务标识');
     for(const [id,item]of progress)if(Date.now()-item.updatedAt>600000)progress.delete(id);
-    if(progress.has(payload.operationId)||progress.size>=64)throw new Error('任务标识重复或进度缓存已满');
+    if(progress.has(payload.operationId))throw new Error('任务标识重复');
+    for(const [id,item]of progress){if(progress.size<64)break;if(['completed','failed','cancelled'].includes(item.value.phase))progress.delete(id);}
+    if(progress.size>=64)throw new Error('活动任务进度缓存已满');
     operation={sessionId:payload.sessionId,cwd,updatedAt:Date.now(),value:{phase:'starting',label:'准备执行'}};progress.set(payload.operationId,operation);
    }
    if(endpoint==='discover')value=await discover(cwd,signal,payload.scan,update);
