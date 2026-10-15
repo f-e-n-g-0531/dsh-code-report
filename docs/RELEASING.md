@@ -19,11 +19,15 @@ CI 指 GitHub Actions 上运行的自动检查；tgz 是发布的安装包；SHA
 1. 校验标签等于 package.version，所有 job 固定触发 SHA。
 2. release job 下载已通过 Ubuntu / Node 24 验证的 tgz，不重新构建或打包。
 3. 复核 SHA-256，对该 tgz 再做一次隔离安装；保留 Actions 制品。
-4. 仓库 Secret NPM_AUTOMATION_TOKEN 注入 NODE_AUTH_TOKEN，npm publish tgz。
-5. 最多约 5 分钟等待 npm 传播，下载 npm 包并核对 SHA-256。
-6. 只有 npm 包验证通过，才将同一 tgz 与校验文件加入 GitHub Release。
+4. npm run release:npm 先检查固定版本。已存在时核对与下载的 CI 制品字节一致并跳过发布；不存在才使用 NPM_AUTOMATION_TOKEN 发布同一 tgz，随后等待传播核验。网络或权限错误不当成不存在，任何字节不一致立即停止。
+5. 首次发布最多约 10 分钟等待 npm 传播，再独立下载 npm 包核对 SHA-256；发布成功但核验超时后可重跑失败 job，不重新打包。
+6. npm run release:github 再核验 npm 和远端标签 SHA。新 Release 先建草稿；已有 Release 核对资产字节，只补缺失资产，不覆盖不一致资产。全部下载核验通过才公开草稿。
 
 缺少 token、npm 认证错误或包校验失败时，不创建 GitHub Release。不能把本地 npm publish 当作替代。若 npm 已发布但后续步骤失败，保留 Actions 制品，必须验证现有版本字节完全相同后再修复 Release；不得覆盖 npm 版本或移动已公开标签。
+
+## 部分成功后的恢复
+
+优先在原始 Actions run 重跑失败的 release job，使其复用原 run 已通过的制品。新 workflow_dispatch 会重新测试打包，若已有 npm 字节不一致则必须停止；此时应取回原 run 保留制品恢复，不得移动标签或使用新包覆盖。npm 已存在时不重复 publish；GitHub 已有资产均先核验，缺失才上传。请求失败后先检查远端，再重跑，不在同一操作里盲目重放写请求。
 
 ## 操作
 

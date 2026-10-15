@@ -1,6 +1,6 @@
 {
   "name": "@feng0531/dsh-code-report",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "private": false,
   "type": "module",
   "description": "Multi-repository Git/SVN release reports for DeepSeek Harness",
@@ -28,7 +28,9 @@
     "test": "node build.mjs && node --test test/*.test.mjs",
     "check": "npm test",
     "verify:package": "node scripts/package.mjs",
-    "test:install": "node scripts/install.mjs"
+    "test:install": "node scripts/install.mjs",
+    "release:npm": "node scripts/release.mjs npm",
+    "release:github": "node scripts/release.mjs github"
   },
   "dsh": {
     "bundle": {
