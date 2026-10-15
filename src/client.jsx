@@ -1,12 +1,15 @@
 import React,{useState,useRef,useEffect} from 'react';
 import css from './style.css';
-export const inject=['slots','connection'];
+import UpdatePanel from './UpdatePanel.jsx';
+import {version} from '../package.json';
+import {RPC_CHANNEL} from './protocol.mjs';
+export const inject=['slots','connection','remote','remote.pluginManager'];
 const fresh=()=>({path:'.',type:'git',a:'',b:'',enabled:true});
 export function apply(ctx){
- async function rpc(endpoint,payload,signal){const result=await ctx.connection.rpc.call('/code-report-rpc',endpoint,payload,signal);if(!result.ok)throw new Error(result.error?.message||'请求失败');return result.value;}
+ async function rpc(endpoint,payload,signal){const result=await ctx.connection.rpc.call(RPC_CHANNEL,endpoint,payload,signal);if(!result.ok)throw new Error(result.error?.message||'请求失败');return result.value;}
  function Page(props){const session=props.useSessions(s=>Object.values(s.byId).find(row=>(row.retainedBy.mainView??0)>0));return <Panel key={JSON.stringify([session?.id,session?.cwd])} session={session}/>;}
  function Panel({session}){
-  const [rows,setRows]=useState([fresh()]),[title,setTitle]=useState('版本发布报告'),[context,setContext]=useState(''),[network,setNetwork]=useState(false),[provider,setProvider]=useState(''),[model,setModel]=useState(''),[consent,setConsent]=useState(false),[preview,setPreview]=useState(null),[report,setReport]=useState(''),[busy,setBusy]=useState(''),[error,setError]=useState(''),[progress,setProgress]=useState(null);
+  const [rows,setRows]=useState([fresh()]),[title,setTitle]=useState('版本发布报告'),[context,setContext]=useState(''),[network,setNetwork]=useState(false),[provider,setProvider]=useState(''),[model,setModel]=useState(''),[consent,setConsent]=useState(false),[preview,setPreview]=useState(null),[report,setReport]=useState(''),[busy,setBusy]=useState(''),[error,setError]=useState(''),[progress,setProgress]=useState(null),[updating,setUpdating]=useState(false);
   const controller=useRef(null);useEffect(()=>()=>controller.current?.abort(),[]);
   const invalidate=()=>{setPreview(null);setReport('');setConsent(false);setProgress(null);};
   const change=(index,key,value)=>{invalidate();setRows(prev=>prev.map((row,i)=>i===index?{...row,[key]:value}:row));};
@@ -20,7 +23,9 @@ export function apply(ctx){
   const capture=()=>perform('采集版本差异',async signal=>{setPreview(null);setReport('');setConsent(false);const value=await tracked('preview',{sessionId:session.id,request:{title,repositories:rows.filter(r=>r.enabled).map(({enabled,...r})=>r),contextPaths:context.split(/\r?\n/).map(x=>x.trim()).filter(Boolean),allowSvnNetwork:network}},signal);if(!signal.aborted){setPreview(value);setReport(value.markdown);}});
   const generate=()=>perform('模型分析中',async signal=>{const value=await tracked('generate',{sessionId:session.id,previewId:preview.previewId,sendToModel:consent,route:{provider:provider.trim(),model:model.trim()}},signal);if(!signal.aborted){setReport(value.markdown);setPreview(null);setConsent(false);}});
   const download=()=>{const url=URL.createObjectURL(new Blob([report],{type:'text/markdown;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='release-report-'+new Date().toISOString().slice(0,10)+'.md';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
-  return <section className="cr-root"><style>{css}</style><header><div><small>DSH CODE REPORT · 0.1.1</small><h1>发布报告配置</h1><p>版本差异 · 影响范围 · QA 测试建议</p></div><button disabled={!session||!!busy} onClick={scan}>发现工作区项目</button></header>
+  return <section className="cr-root"><style>{css}</style><header><div><small>DSH CODE REPORT · {version}</small><h1>发布报告配置</h1><p>版本差异 · 影响范围 · QA 测试建议</p></div><button disabled={!session||!!busy||updating} onClick={scan}>发现工作区项目</button></header>
+   <UpdatePanel rpc={rpc} manager={ctx.remote?.pluginManager} reportBusy={!!busy} onLock={setUpdating}/>
+   <fieldset className="cr-report-form" disabled={updating}>
    {!session?<p role="status">请先打开一个带工作目录的会话。</p>:<><p className="cr-workspace">当前工作区：{session.cwd} · 仅读取，不修改版本库</p>
    <fieldset disabled={!!busy}><legend>1. 发布范围</legend><label className="cr-wide">报告标题<input value={title} onChange={e=>{invalidate();setTitle(e.target.value);}} maxLength={160}/></label>
    <div className="cr-table"><table><thead><tr><th>纳入</th><th>项目相对路径</th><th>VCS</th><th>版本 A（基线）</th><th>版本 B（发布）</th><th/></tr></thead><tbody>{rows.map((row,index)=><tr key={index}><td><input type="checkbox" aria-label={'纳入项目 '+(index+1)} checked={row.enabled} onChange={e=>change(index,'enabled',e.target.checked)}/></td><td><input aria-label={'项目路径 '+(index+1)} value={row.path} onChange={e=>change(index,'path',e.target.value)}/></td><td><select aria-label={'VCS '+(index+1)} value={row.type} onChange={e=>change(index,'type',e.target.value)}><option value="git">Git</option><option value="svn">SVN</option></select></td><td><input aria-label={'版本 A '+(index+1)} placeholder={row.type==='git'?'tag / branch / commit':'固定数字 revision'} value={row.a} onChange={e=>change(index,'a',e.target.value)}/></td><td><input aria-label={'版本 B '+(index+1)} placeholder={row.type==='git'?'tag / branch / commit':'固定数字 revision'} value={row.b} onChange={e=>change(index,'b',e.target.value)}/></td><td><button aria-label={'移除项目 '+(index+1)} onClick={()=>{invalidate();setRows(rows.filter((_,i)=>i!==index));}}>移除</button></td></tr>)}</tbody></table></div>
@@ -34,7 +39,7 @@ export function apply(ctx){
    {progress&&<section className="cr-progress" aria-label="执行进度"><div role="status" aria-live="polite">{progress.label}{progress.total>0&&progress.phase==='collecting'?'（'+progress.completed+' / '+progress.total+'）':''}</div><progress aria-label="执行进度" max={progress.total||1} value={progress.phase==='collecting'||progress.phase==='completed'?progress.completed:progress.phase==='failed'||progress.phase==='cancelled'?0:undefined}/><p className="cr-hint">{progress.phase==='analyzing'?'模型分析中显示不定进度；不虚构百分比。':progress.phase==='collecting'?'按实际完成的项目及源码文件计数；不代表耗时比例。':progress.phase==='completed'?'本阶段已完成。':progress.phase==='failed'||progress.phase==='cancelled'?'任务未完成，可修改配置后重新开始。':'等待宿主返回执行进度…'}</p></section>}
    {error&&<p className="cr-error" role="alert">{error}</p>}
    {report&&<section><div className="cr-actions"><h2>Markdown 报告</h2><button disabled={!!busy} onClick={download}>下载 .md 文件</button></div><p className="cr-hint">以下以纯文本展示，不执行报告中的 HTML；模型建议需要人工复核，不代表测试已通过。</p><pre className="cr-report">{report}</pre></section>}</>}
-  </section>;
+  </fieldset></section>;
  }
  function Icon(){return <span aria-hidden="true">▤</span>;}
  ctx.slots.inject('main',()=>ctx.slots.register({name:'main',key:'local-code-report'},Page));
