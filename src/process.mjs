@@ -1,5 +1,5 @@
 import {spawn} from 'node:child_process';
-export function isolatedEnvironment(source=process.env){const env=Object.fromEntries(Object.entries(source).filter(([key])=>!/^GIT_/i.test(key)));return {...env,GIT_TERMINAL_PROMPT:'0',GIT_OPTIONAL_LOCKS:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:process.platform==='win32'?'NUL':'/dev/null'};}
+export function isolatedEnvironment(source=process.env){const env=Object.fromEntries(Object.entries(source).filter(([key])=>!/^GIT_/i.test(key)));return {...env,GIT_NO_REPLACE_OBJECTS:'1',GIT_TERMINAL_PROMPT:'0',GIT_OPTIONAL_LOCKS:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:process.platform==='win32'?'NUL':'/dev/null'};}
 export function run(command,args,{cwd,signal,maxBytes=4*1024*1024}={}) {
   return new Promise((resolve,reject)=>{
     signal?.throwIfAborted();
