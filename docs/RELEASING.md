@@ -1,6 +1,10 @@
 # CI 与正式发布
 
-## 触发与门禁
+本文面向发布维护者。使用插件不需要配置 CI 或 npm token，请看 [使用说明](<../README.md>)。
+
+CI 指 GitHub Actions 上运行的自动检查；tgz 是发布的安装包；SHA-256 用于确认包内容没有变化。
+
+## 什么时候运行检查
 
 普通分支 push 和 pull request 不触发 CI。推送匹配版本的 vX.Y.Z 标签触发 Ubuntu / Windows × Node 22 / 24 四项测试，全部成功才进入发布。workflow_dispatch 默认只测试；在版本标签上显式 publish=true 可重试发布。
 
@@ -24,9 +28,11 @@ npm ci --include=dev --ignore-scripts
 npm run check
 npm run verify:package
 npm run test:install
-git tag v0.1.1
+# 先更新 package.json、package-lock.json 和版本说明
+# 将下面的 X.Y.Z 换成本次新版本，不要复用已经公开的标签
+git tag vX.Y.Z
 git push origin main
-git push origin v0.1.1
+git push origin vX.Y.Z
 ~~~
 
 正式发布不自动安装、升级或重启当前 DSH。当前真实宿主 GUI / 真实模型端到端未验收，必须在发布说明中保留，不得将 stub host 测试描述为真实 GUI 验收。
