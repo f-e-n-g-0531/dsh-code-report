@@ -82,7 +82,17 @@
 .cr-root .cr-config-table button{min-height:30px;padding:4px 8px;font-size:12px}
 .cr-root .cr-config-table input[type=checkbox]{margin:10px 0 0}
 .cr-root .cr-execute{position:sticky;bottom:0;z-index:2;background:var(--dsw-alias-bg-layer-1,#202226);border:1px solid var(--cr-border);border-radius:10px;padding:10px 14px;box-shadow:0 -4px 20px #0002}
-@container(max-width:680px){.cr-root .cr-bulk-fields{grid-template-columns:1fr 1fr}}
+.cr-root #cr-capture-reason{flex:1 1 240px;min-width:0;max-height:8em;overflow:auto;overflow-wrap:anywhere}
+@container(max-width:680px){
+ .cr-root .cr-bulk-fields{grid-template-columns:1fr 1fr}
+ .cr-root .cr-config-table{min-width:0;display:block}
+ .cr-root .cr-config-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+ .cr-root .cr-config-table tbody{display:block}
+ .cr-root .cr-config-table tr{display:grid;grid-template-columns:40px minmax(0,1fr);border-bottom:1px solid var(--cr-border)}
+ .cr-root .cr-config-table td{display:block;min-width:0;border:0}
+ .cr-root .cr-config-table td:nth-child(n+3){grid-column:2}
+ .cr-root .cr-config-table td[data-label]::before{content:attr(data-label);display:block;margin-bottom:4px;font-weight:600}
+}
 .cr-root .cr-report{padding:24px;border:1px solid var(--cr-border);border-radius:12px;background:var(--cr-card);white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.8 ui-monospace,monospace;max-height:720px;overflow:auto}
 .cr-error{padding:14px 18px;border:1px solid #e6636370;border-radius:8px;color:#e97b7b;background:#e6636309}
 .cr-root code,.cr-root li{overflow-wrap:anywhere}

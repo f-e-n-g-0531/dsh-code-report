@@ -5,4 +5,22 @@ export function mergeRepositories(previous,discovered){
  for(const found of discovered){const old=rows.find(row=>row.path===found.path&&row.type===found.type);if(old){if(!old.branchA)old.branchA=found.branch||'';if(!old.branchB)old.branchB=found.branch||'';}else if(rows.length<500)rows.push({...fresh(),...found,branchA:found.branch||'',branchB:found.branch||'',enabled:false});}
  return rows;
 }
-export function readyRows(rows){const selected=rows.filter(r=>r.enabled);return selected.length>0&&selected.length<=12&&selected.every(r=>r.path&&r.a.trim()&&r.b.trim()&&(r.type!=='svn'||(r.branchA.trim()&&r.branchB.trim())));}
+export function repositoryIssues(rows){
+ const selected=rows.map((row,index)=>({row,index})).filter(({row})=>row.enabled);
+ if(!selected.length)return ['请至少勾选一个项目。'];
+ const issues=[];
+ if(selected.length>12)issues.push('已选择 '+selected.length+' 个项目，一次最多 12 个，请取消多余项目。');
+ for(const {row,index} of selected){
+  const missing=[];
+  if(!row.path.trim())missing.push('项目路径');
+  if(!row.a.trim())missing.push('A 基线版本');
+  if(!row.b.trim())missing.push('B 目标版本');
+  if(row.type==='svn'){
+   if(!row.branchA.trim())missing.push('SVN A 分支');
+   if(!row.branchB.trim())missing.push('SVN B 分支');
+  }
+  if(missing.length)issues.push('项目 '+(index+1)+'（'+(row.path.trim()||'未填写路径')+'）：请填写 '+missing.join('、')+'。');
+ }
+ return issues;
+}
+export function readyRows(rows){return repositoryIssues(rows).length===0;}
