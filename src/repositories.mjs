@@ -13,8 +13,10 @@ export function repositoryIssues(rows){
  for(const {row,index} of selected){
   const missing=[];
   if(!row.path.trim())missing.push('项目路径');
-  if(!row.a.trim())missing.push('A 基线版本');
-  if(!row.b.trim())missing.push('B 目标版本');
+  if(row.type==='git'){
+   if(!row.a.trim()&&!row.branchA.trim())missing.push('Git A 分支（版本留空时必填）');
+   if(!row.b.trim()&&!row.branchB.trim())missing.push('Git B 分支（版本留空时必填）');
+  }
   if(row.type==='svn'){
    if(!row.branchA.trim())missing.push('SVN A 分支');
    if(!row.branchB.trim())missing.push('SVN B 分支');

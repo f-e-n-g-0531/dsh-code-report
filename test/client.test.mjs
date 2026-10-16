@@ -13,8 +13,9 @@ test('capture blocker clears after required inputs and SVN permission are suppli
  const {repositoryIssues,fresh}=await import('../src/repositories.mjs');
  const reason=new Function('rows','network','busy','compatibility','repositoryIssues',line+';return captureReason;');
  const git={...fresh(),path:'c3animation',a:'main',b:'HEAD'};
- assert.match(reason([{...git,a:''}],false,'','',repositoryIssues),/c3animation.*A 基线版本/);
+ assert.match(reason([{...git,a:''}],false,'','',repositoryIssues),/c3animation.*Git A 分支/);
  assert.equal(reason([git],false,'','',repositoryIssues),'');
+ assert.equal(reason([{...git,a:'',b:'',branchA:'main',branchB:'release'}],false,'','',repositoryIssues),'');
  const svn={...git,type:'svn',branchA:'trunk',branchB:'trunk'};
  assert.match(reason([svn],false,'','',repositoryIssues),/勾选允许读取 SVN/);
  assert.equal(reason([svn],true,'','',repositoryIssues),'');

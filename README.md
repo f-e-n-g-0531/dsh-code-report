@@ -4,7 +4,7 @@
 
 **这是 DeepSeek Harness（DSH）的插件，不是独立应用。** 模型建议需要人工复核，不代表测试通过或发布批准。
 
-> 本文对应 v0.5.1。自动化测试和隔离安装不能替代真实宿主验收；完整 GUI、自更新和真实模型端到端仍未验收。建议先在独立测试配置环境试用。
+> 本文对应 v0.6.0。自动化测试和隔离安装不能替代真实宿主验收；完整 GUI、自更新和真实模型端到端仍未验收。建议先在独立测试配置环境试用。
 
 ## 安装与准备
 
@@ -15,18 +15,18 @@
 优先使用 DSH 自带的“插件”页面安装 npm 包：
 
 ~~~text
-@feng0531/dsh-code-report@0.5.1
+@feng0531/dsh-code-report@0.6.0
 ~~~
 
 也可使用已配置好的 DSH 命令行。确认当前 profile 名称后再执行；profile 是插件安装环境，不是会话名或工作区路径。例如，只有确认使用 desktop 环境时才运行：
 
 ~~~sh
-dsh plugin --profile desktop add @feng0531/dsh-code-report@0.5.1
+dsh plugin --profile desktop add @feng0531/dsh-code-report@0.6.0
 ~~~
 
 安装会修改对应环境，先备份配置。命令行安装还需满足 DSH 自身的包管理器要求。安装后保存工作，手动完全退出并重新启动 DSH，再刷新原页面。**只刷新页面不会重载旧后台。** 发布新版本不会自动升级或重启你的环境。
 
-[GitHub 正式发布页](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.5.1)提供安装包和校验文件；下载 tgz 本身不等于已安装。普通用户无需下载源码或自行构建。
+[GitHub 正式发布页](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.6.0)提供安装包和校验文件；下载 tgz 本身不等于已安装。普通用户无需下载源码或自行构建。
 
 ## 从配置到报告
 
@@ -38,20 +38,21 @@ dsh plugin --profile desktop add @feng0531/dsh-code-report@0.5.1
 
 自动发现不获取远端 Git 分支，也不扫描源码调用关系。失败后可点击“扫描 / 重新发现”重试；重新验证或更新失败解锁不会自动重扫。扫描保留已填写的项目与版本、现有预览和报告，新发现项目默认不选中。
 
-### 2. 勾选项目，填写 A/B 版本
+### 2. 勾选项目，填写 A/B 分支，版本可留空
 
 | 输入 | 填写方式 |
 | --- | --- |
 | 项目路径 | 相对于会话工作目录；根目录填 "."，例如 client 或 server |
-| Git 版本 A/B | 本地已有分支、标签或提交 SHA；A 为基线，B 为目标 |
+| Git 分支 A/B | 版本留空时必填，使用本地已有分支，如 main、release 或 origin/release；不自动 fetch |
+| Git 版本 A/B（可选） | 留空取对应分支最新提交；填写本地已有分支、标签或提交 SHA 时优先按该版本解析 |
 | SVN 分支 A/B | 相对于 SVN 仓库根目录，例如 trunk、branches/release；"." 表示当前工作副本的仓库路径 |
-| SVN r 版本 A/B | 固定数字，支持 r1200 或 1200；不接受 HEAD、日期或版本范围 |
+| SVN r 版本 A/B（可选） | 留空取对应分支最新一次提交；指定历史版本支持 r1200 或 1200，不接受手填 HEAD、日期或版本范围 |
 
-Git 示例：client 的 A 填 v1.0.0，B 填 v1.1.0。名称必须在本地存在，插件不会执行 fetch。
+Git 示例：A 分支填 main、B 分支填 release，两侧版本均留空，比较这两个分支各自的最新提交。也可在版本栏填写 v1.0.0、v1.1.0 比较固定历史端点。名称必须在本地存在，插件不会执行 fetch；远端跟踪分支可能滞后服务器。
 
 SVN 示例：A 分支 trunk、版本 r1200；B 分支 branches/release、版本 r1250。两侧必须属于同一仓库。即使使用本地 SVN 仓库，也要勾选历史读取授权；远程仓库可能产生网络访问。
 
-一次最多选择 **12 个项目**。路径、分支和版本逐行核对后再采集。
+一次最多选择 **12 个项目**。路径、分支和版本逐行核对后再采集。只留空一侧时，该侧使用对应分支最新提交；A/B 是同一分支且两侧版本均留空时没有差异，不会自动改成“上一版对最新版”。采集先解析并固定 Git SHA / SVN revision，报告展示固定端点；SVN 最新提交按分支历史解析，不是直接使用全仓最新 revision。
 
 ### 3. 减少重复填写
 
@@ -76,7 +77,7 @@ client/CI/Env/build-config.json
 
 ### 5. 采集并检查证据
 
-按钮不可用时，旁边会提示后台验证状态、正在进行的任务、超出 12 项、具体项目缺失的路径或 A/B 版本及 SVN 分支；包含 SVN 项目时还需勾选历史读取授权。窄窗口下 A/B 输入栏在项目下方纵向显示，无需横向寻找。
+按钮不可用时，旁边会提示后台验证状态、正在进行的任务、超出 12 项、具体项目缺失的路径或 A/B 分支；包含 SVN 项目时还需勾选历史读取授权。窄窗口下 A/B 输入栏在项目下方纵向显示，无需横向寻找。
 
 点击“开始执行 · 采集差异”。这一步**不调用模型**；SVN 历史读取可能访问仓库服务器。
 
@@ -154,6 +155,6 @@ AI 报告要求独立列出 HTTP/RPC、公开函数/类/SDK、消息与协议契
 
 - [开发指南](https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/docs/DEVELOPMENT.md)
 - [发布与恢复指南](https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/docs/RELEASING.md)
-- [本版说明](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.5.1)
+- [本版说明](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.6.0)
 
 本项目采用[非商业源码公开许可证](https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/LICENSE)，**不是 OSI 认可的开源许可**。商业用途（包括公司内部商业项目的开发、测试、维护）需另行书面授权。第三方材料适用各自许可证，见[第三方声明](https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/THIRD_PARTY_NOTICES.md)。

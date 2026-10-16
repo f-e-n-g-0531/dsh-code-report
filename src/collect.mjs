@@ -39,7 +39,9 @@ export async function collect(cwd,request,signal,onProgress=()=>{}){
  for(const row of request.repositories){
   onProgress({phase:'collecting',completed,total,label:'读取项目：'+row.path});
   signal?.throwIfAborted();if(!row||!['git','svn'].includes(row.type))throw new Error('仅支持 Git / SVN');
-  const root=await inside(cwd,row.path,{root:true}),a=row.type==='svn'?svnRevision(row.a):revision(row.a,'git'),b=row.type==='svn'?svnRevision(row.b):revision(row.b,'git');
+  const requested=side=>{const value=row[side];if(typeof value!=='string')throw new Error('版本必须是文本，留空表示分支最新提交');return value.trim();};
+  const versionA=requested('a'),versionB=requested('b');
+  const root=await inside(cwd,row.path,{root:true}),a=row.type==='svn'?(versionA?svnRevision(versionA):'HEAD'):revision(versionA||row.branchA,'git'),b=row.type==='svn'?(versionB?svnRevision(versionB):'HEAD'):revision(versionB||row.branchB,'git');
   const exec=(cmd,args)=>run(cmd,args,{cwd:root,signal});let repo={path:row.path||'.',type:row.type,a,b};
   if(row.type==='git'){
    const top=(await exec('git',['rev-parse','--show-toplevel'])).trim();if(await realpath(top)!==await realpath(root))throw new Error('请指定 Git 仓库根目录');
@@ -57,9 +59,18 @@ export async function collect(cwd,request,signal,onProgress=()=>{}){
    repo.a=a;repo.b=b;repo.branchA=branchA;repo.branchB=branchB;
    const urlA=branchUrl(info.repository.root,info.url,branchA),urlB=branchUrl(info.repository.root,info.url,branchB);
    const args=['--non-interactive','--no-auth-cache'];
-   for(const [url,rev]of [[urlA,a],[urlB,b]]){const endpoint=xml(await exec('svn',['info','--xml','-r',rev,...args,'--',url+'@'+rev])).info.entry;if(endpoint?.repository?.uuid!==info.repository.uuid||endpoint?.repository?.root!==info.repository.root)throw new Error('SVN 分支不属于同一仓库');}
+   const resolve=async(url,rev)=>{
+    const endpoint=xml(await exec('svn',['info','--xml','-r',rev,...args,'--',url+'@'+rev])).info.entry;
+    if(endpoint?.repository?.uuid!==info.repository.uuid||endpoint?.repository?.root!==info.repository.root)throw new Error('SVN 分支不属于同一仓库');
+    if(rev!=='HEAD')return rev;
+    const head=svnRevision(endpoint['@_revision']);
+    const entries=list(xml(await exec('svn',['log','--xml','--limit','1','-r',head+':0',...args,'--',url+'@'+head])).log?.logentry);
+    if(entries.length!==1)throw new Error('无法解析 SVN 分支最新提交');
+    return svnRevision(entries[0]['@_revision']);
+   };
+   repo.a=await resolve(urlA,a);repo.b=await resolve(urlB,b);
    repo.identity={uuid:info.repository.uuid,repositoryRoot:info.repository.root,urlA,urlB};
-   const targets=['--old='+urlA+'@'+a,'--new='+urlB+'@'+b];
+   const targets=['--old='+urlA+'@'+repo.a,'--new='+urlB+'@'+repo.b];
    const changes=xml(await exec('svn',['diff','--summarize','--xml',...targets,...args]));
    repo.files=list(changes.diff?.paths?.path).map(x=>typeof x==='string'?x:x['#text']);
    if(repo.files.some(secretPath))throw new Error('差异包含敏感路径');

@@ -14,8 +14,10 @@ test('capture explains missing fields and counts only selected repositories',()=
  const git={...fresh(),path:'c3animation',a:'main',b:'HEAD'};
  assert.deepEqual(repositoryIssues([git,{...fresh(),enabled:false}]),[]);
  assert.equal(readyRows([git]),true);
+ assert.equal(readyRows([{...git,a:'',b:'',branchA:'main',branchB:'release'}]),true);
+ assert.equal(readyRows([{...git,type:'svn',a:'',b:'',branchA:'trunk',branchB:'branches/release'}]),true);
  assert.match(repositoryIssues([{...git,path:'  '}]).join(' '),/项目路径/);
- assert.match(repositoryIssues([{...git,a:' ',b:''}]).join(' '),/c3animation.*A 基线版本、B 目标版本/);
+ assert.match(repositoryIssues([{...git,a:' ',b:''}]).join(' '),/c3animation.*Git A 分支.*Git B 分支/);
  assert.match(repositoryIssues([{...git,type:'svn',branchA:'',branchB:''}]).join(' '),/SVN A 分支、SVN B 分支/);
  assert.equal(readyRows(Array.from({length:12},()=>git)),true);
  assert.match(repositoryIssues(Array.from({length:13},()=>git)).join(' '),/13.*最多 12/);
@@ -26,10 +28,29 @@ test('root and first-level repositories only, legacy options cannot re-enable re
 test('SVN endpoints accept r notation and reject URL traversal ambiguity',()=>{assert.equal(svnRevision('r0012'),'12');assert.equal(svnRevision('R12'),'12');for(const r of ['HEAD','r-1','1:2','r'])assert.throws(()=>svnRevision(r));for(const b of ['', '../x','a/../x','https://evil/x','/trunk','a%2Fb','a@1','a?x','a\\b'])assert.throws(()=>svnBranch(b));assert.equal(branchUrl('https://host/repo','https://host/repo/trunk','branches/发布'),'https://host/repo/branches/'+encodeURIComponent('发布'));});
 test('rescan preserves inputs and selection and adds unselected new repositories',()=>{const previous=[{...fresh(),path:'one',a:'main',b:'v2'}];const result=mergeRepositories(previous,[{path:'one',type:'git'},{path:'two',type:'svn',branch:'branches/release'}]);assert.equal(result[0].a,'main');assert.equal(result[0].enabled,true);assert.equal(result[1].enabled,false);assert.equal(result[1].branchA,'branches/release');assert.equal(readyRows(result),true);assert.equal(readyRows([{...result[1],enabled:true,a:'r1',b:'r2',branchA:''}]),false);});
 test('second-level repositories require manual addition',async t=>{const cwd=await mkdtemp(path.join(tmpdir(),'report-deep-'));t.after(()=>rm(cwd,{recursive:true,force:true}));await mkdir(path.join(cwd,'a/b/.git'),{recursive:true});const found=await discover(cwd);assert.deepEqual(found.repositories,[]);assert.equal(found.visited,2);assert.deepEqual(found.warnings,[]);});
+test('blank Git versions pin each named branch tip rather than current HEAD',async t=>{
+ const cwd=await mkdtemp(path.join(tmpdir(),'report-git-tips-'));t.after(()=>rm(cwd,{recursive:true,force:true}));
+ const git=args=>run('git',args,{cwd});
+ await git(['init','-b','main']);await git(['config','user.email','test@example.com']);await git(['config','user.name','Test']);
+ await writeFile(path.join(cwd,'api.txt'),'before\n');await git(['add','.']);await git(['commit','-m','base']);
+ const base=(await git(['rev-parse','HEAD'])).trim();await git(['checkout','-b','release']);
+ await writeFile(path.join(cwd,'api.txt'),'after\n');await git(['commit','-am','release']);const tip=(await git(['rev-parse','HEAD'])).trim();await git(['checkout','main']);
+ const row={path:'.',type:'git',a:'',b:' ',branchA:'main',branchB:'release'};
+ const snapshot=await collect(cwd,{repositories:[row]});const repo=snapshot.repositories[0];assert.equal(repo.a,base);assert.equal(repo.b,tip);assert.equal(repo.requestedA,'main');assert.equal(repo.requestedB,'release');assert.match(repo.diff,/\+after/);assert.ok(markdown(snapshot).includes(tip));
+ const mixed=(await collect(cwd,{repositories:[{...row,a:base}]})).repositories[0];assert.equal(mixed.a,base);assert.equal(mixed.b,tip);
+ const same=(await collect(cwd,{repositories:[{...row,branchB:'main'}]})).repositories[0];assert.equal(same.diff,'');
+ await assert.rejects(collect(cwd,{repositories:[{...row,branchB:'missing'}]}));
+ await assert.rejects(collect(cwd,{repositories:[{...row,branchA:''}]}));
+});
 test('SVN compares two explicit branches at independently fixed revisions',async t=>{
  const cwd=await mkdtemp(path.join(tmpdir(),'report-branches-'));t.after(()=>rm(cwd,{recursive:true,force:true}));await run('svnadmin',['create',path.join(cwd,'store')],{cwd});const url=pathToFileURL(path.join(cwd,'store')).href;
  await run('svn',['mkdir',url+'/trunk',url+'/branches','-m','layout','--non-interactive'],{cwd});await run('svn',['checkout',url+'/trunk',path.join(cwd,'wc'),'--non-interactive'],{cwd});const wc=path.join(cwd,'wc');await writeFile(path.join(wc,'api.txt'),'before\n');await run('svn',['add','api.txt'],{cwd:wc});await run('svn',['commit','-m','baseline','--non-interactive'],{cwd:wc});
  await run('svn',['copy',url+'/trunk@2',url+'/branches/release','-m','branch','--non-interactive'],{cwd});await run('svn',['checkout',url+'/branches/release',path.join(cwd,'release'),'--non-interactive'],{cwd});await writeFile(path.join(cwd,'release/api.txt'),'after\n');await run('svn',['commit','-m','change','--non-interactive'],{cwd:path.join(cwd,'release')});
+ await run('svn',['mkdir',url+'/unrelated','-m','unrelated','--non-interactive'],{cwd});
+ const latestReq={allowSvnNetwork:true,repositories:[{path:'wc',type:'svn',branchA:'trunk',branchB:'branches/release',a:'',b:' '}]};
+ const latest=(await collect(cwd,latestReq)).repositories[0];assert.equal(latest.a,'2');assert.equal(latest.b,'4');assert.match(latest.diff,/\+after/);
+ const mixed=(await collect(cwd,{...latestReq,repositories:[{...latestReq.repositories[0],a:'r2'}]})).repositories[0];assert.equal(mixed.a,'2');assert.equal(mixed.b,'4');
+ await assert.rejects(collect(cwd,{...latestReq,allowSvnNetwork:false}),/授权/);
  const found=await discover(cwd);assert.equal(found.repositories.find(r=>r.path==='wc').branch,'trunk');assert.equal(found.repositories.find(r=>r.path==='release').branch,'branches/release');
  const req={allowSvnNetwork:true,repositories:[{path:'wc',type:'svn',branchA:'trunk',branchB:'branches/release',a:'r2',b:'r4'}]};const snapshot=await collect(cwd,req);const repo=snapshot.repositories[0];assert.match(repo.diff,/-before/);assert.ok(repo.diff.includes('+after'));assert.equal(repo.a,'2');assert.equal(repo.b,'4');assert.ok(markdown(snapshot).includes('branches/release @ r4'));await assert.rejects(collect(cwd,{...req,repositories:[{...req.repositories[0],branchA:''}]}),/分支/);
 });
