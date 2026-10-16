@@ -10,7 +10,7 @@ export async function sessionCwd(ctx,id,signal){
 export function createHandler(ctx){
  const previews=new Map(),progress=new Map();let active=0;
  const prune=()=>{for(const [id,p]of previews)if(!p.used&&Date.now()-p.time>10*60*1000)previews.delete(id);};
- return async(endpoint,payload,signal)=>{
+ const handle=async(endpoint,payload,signal)=>{
   if(endpoint==='runtime-info')return {ok:true,value:runtimeInfo()};
   if(endpoint==='check-update'){try{return {ok:true,value:await checkUpdate({signal})};}catch(e){return {ok:false,error:{message:e.message}};}}
   if(endpoint==='release-preview'){try{const cwd=await sessionCwd(ctx,payload?.sessionId,signal);const p=previews.get(payload?.previewId);if(p&&(p.sessionId!==payload.sessionId||p.cwd!==cwd||p.used))throw new Error('预览不属于当前会话或正在分析');if(p)previews.delete(payload.previewId);return {ok:true,value:{released:!!p}};}catch(e){return {ok:false,error:{message:e.message}};}}
@@ -54,5 +54,15 @@ export function createHandler(ctx){
    }
    signal.throwIfAborted();update({phase:'completed',completed:1,total:1,label:'执行完成'});return {ok:true,value};
   }catch(e){if(operation){operation.value={phase:signal?.aborted?'cancelled':'failed',label:signal?.aborted?'执行已取消或超时':e.message};operation.updatedAt=Date.now();}return {ok:false,error:{message:e.message||'报告生成失败'}};}finally{active--;}
+ };
+ // Every failure must satisfy the Host Connection wire contract, including early exits.
+ return async(...args)=>{
+  try{
+   const result=await handle(...args);
+   if(result.ok)return result;
+   return {ok:false,error:{code:'code-report/request-failed',message:result.error?.message||'报告请求失败',details:{}}};
+  }catch(error){
+   return {ok:false,error:{code:'code-report/internal',message:error?.message||'报告请求失败',details:{}}};
+  }
  };
 }
