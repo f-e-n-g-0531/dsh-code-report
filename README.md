@@ -4,7 +4,7 @@
 
 **这是 DeepSeek Harness（DSH）的插件，不是独立应用。** 模型建议需要人工复核，不代表测试通过或发布批准。
 
-> 本文对应 v0.4.12。自动化测试和隔离安装不能替代真实宿主验收；完整 GUI、自更新和真实模型端到端仍未验收。建议先在独立测试配置环境试用。
+> 本文对应 v0.4.13。自动化测试和隔离安装不能替代真实宿主验收；完整 GUI、自更新和真实模型端到端仍未验收。建议先在独立测试配置环境试用。
 
 ## 安装与准备
 
@@ -15,18 +15,18 @@
 优先使用 DSH 自带的“插件”页面安装 npm 包：
 
 ~~~text
-@feng0531/dsh-code-report@0.4.12
+@feng0531/dsh-code-report@0.4.13
 ~~~
 
 也可使用已配置好的 DSH 命令行。确认当前 profile 名称后再执行；profile 是插件安装环境，不是会话名或工作区路径。例如，只有确认使用 desktop 环境时才运行：
 
 ~~~sh
-dsh plugin --profile desktop add @feng0531/dsh-code-report@0.4.12
+dsh plugin --profile desktop add @feng0531/dsh-code-report@0.4.13
 ~~~
 
 安装会修改对应环境，先备份配置。命令行安装还需满足 DSH 自身的包管理器要求。安装后保存工作，手动完全退出并重新启动 DSH，再刷新原页面。**只刷新页面不会重载旧后台。** 发布新版本不会自动升级或重启你的环境。
 
-[GitHub 正式发布页](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.4.12)提供安装包和校验文件；下载 tgz 本身不等于已安装。普通用户无需下载源码或自行构建。
+[GitHub 正式发布页](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.4.13)提供安装包和校验文件；下载 tgz 本身不等于已安装。普通用户无需下载源码或自行构建。
 
 ## 从配置到报告
 
@@ -59,7 +59,7 @@ SVN 示例：A 分支 trunk、版本 r1200；B 分支 branches/release、版本 
 - 展开“批量填版本”，应用于**所有已勾选的同类型项目**，不受搜索筛选限制。默认只填空白；取消该选项才覆盖已有值。批量栏留空的字段保持原值。
 - 点击“保存配置”，保存项目、选择状态、A/B 版本、标题、源码路径、提供方 ID 和模型 ID。下次同一浏览器、同一工作区打开时恢复。修改后需再次保存；“恢复已保存”会替换当前输入，并清除当前预览和报告。
 
-配置保存在浏览器本地存储，不写入项目、不跨浏览器同步。清理浏览器数据可能丢失配置。不专门保存 API Key、源码正文、预览、报告或网络/发送授权；**不要在输入字段中粘贴凭据**。网络访问与模型发送需重新确认。
+配置保存在浏览器本地存储，不写入项目、不跨浏览器同步。清理浏览器数据可能丢失配置。保存时包含此工作区的 SVN 历史访问勾选状态，恢复后会明确提示，可能允许后续 SVN 采集联网。旧版配置未保存该字段时默认关闭。不保存密码、API Key、源码正文、预览、报告或模型发送确认；**不要在输入字段中粘贴凭据**。模型发送仍需每次确认。
 
 ### 4. 按需附带源码文件
 
@@ -146,6 +146,6 @@ client/CI/Env/build-config.json
 
 - [开发指南](https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/docs/DEVELOPMENT.md)
 - [发布与恢复指南](https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/docs/RELEASING.md)
-- [本版说明](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.4.12)
+- [本版说明](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.4.13)
 
 本项目采用[非商业源码公开许可证](https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/LICENSE)，**不是 OSI 认可的开源许可**。商业用途（包括公司内部商业项目的开发、测试、维护）需另行书面授权。第三方材料适用各自许可证，见[第三方声明](https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/THIRD_PARTY_NOTICES.md)。
