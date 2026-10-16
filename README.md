@@ -1,10 +1,10 @@
 # DSH Code Report · 多项目发布报告
 
-比较多个 Git / SVN 项目的两个版本，导出中文 Markdown 报告。可以只导出本地差异证据，也可以在确认发送后，让 DSH 中配置的模型整理改动、影响范围和 QA 测试建议。
+比较多个 Git / SVN 项目的两个版本，导出中文 Markdown 报告。可以只导出本地差异证据，也可以在确认发送后，让 DSH 中配置的模型整理改动、对外接口变更、影响范围和 QA 测试建议。
 
 **这是 DeepSeek Harness（DSH）的插件，不是独立应用。** 模型建议需要人工复核，不代表测试通过或发布批准。
 
-> 本文对应 v0.4.13。自动化测试和隔离安装不能替代真实宿主验收；完整 GUI、自更新和真实模型端到端仍未验收。建议先在独立测试配置环境试用。
+> 本文对应 v0.5.0。自动化测试和隔离安装不能替代真实宿主验收；完整 GUI、自更新和真实模型端到端仍未验收。建议先在独立测试配置环境试用。
 
 ## 安装与准备
 
@@ -15,18 +15,18 @@
 优先使用 DSH 自带的“插件”页面安装 npm 包：
 
 ~~~text
-@feng0531/dsh-code-report@0.4.13
+@feng0531/dsh-code-report@0.5.0
 ~~~
 
 也可使用已配置好的 DSH 命令行。确认当前 profile 名称后再执行；profile 是插件安装环境，不是会话名或工作区路径。例如，只有确认使用 desktop 环境时才运行：
 
 ~~~sh
-dsh plugin --profile desktop add @feng0531/dsh-code-report@0.4.13
+dsh plugin --profile desktop add @feng0531/dsh-code-report@0.5.0
 ~~~
 
 安装会修改对应环境，先备份配置。命令行安装还需满足 DSH 自身的包管理器要求。安装后保存工作，手动完全退出并重新启动 DSH，再刷新原页面。**只刷新页面不会重载旧后台。** 发布新版本不会自动升级或重启你的环境。
 
-[GitHub 正式发布页](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.4.13)提供安装包和校验文件；下载 tgz 本身不等于已安装。普通用户无需下载源码或自行构建。
+[GitHub 正式发布页](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.5.0)提供安装包和校验文件；下载 tgz 本身不等于已安装。普通用户无需下载源码或自行构建。
 
 ## 从配置到报告
 
@@ -90,6 +90,12 @@ client/CI/Env/build-config.json
 
 可以取消任务。模型派发前已取消时不会启动模型入口；**已发送的请求不能保证撤回，是否停止及是否计费由模型服务决定**。失败或取消后如预览仍有效，可再次确认重试，重试可能再次计费。
 
+### 报告中的对外接口变更
+
+AI 报告要求独立列出 HTTP/RPC、公开函数/类/SDK、消息与协议契约的新增、删除、签名、参数、返回值、错误码和行为变化，给出 A/B 对比、兼容性、调用方迁移及接口测试建议，并引用文件/差异证据。内部函数不自动视为对外接口；对外性或旧契约未知时标为待确认。
+
+这是基于已提供证据的模型分析，不是完整 API 扫描或兼容性证明。未发现变化不保证没有变化；可附带工作区内公开声明、协议定义等文件，但当前源码不能当作历史 A/B 版本。未调用模型时该章节明确标为尚未分析；模型遗漏章节时报告提示接口分析不完整，不伪造结论。
+
 ### 7. 下载并保留结果
 
 点击“下载 .md 文件”。页面以纯文本展示结果，不执行其中的 HTML；下载后如何渲染由你使用的阅读器决定。
@@ -146,6 +152,6 @@ client/CI/Env/build-config.json
 
 - [开发指南](https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/docs/DEVELOPMENT.md)
 - [发布与恢复指南](https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/docs/RELEASING.md)
-- [本版说明](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.4.13)
+- [本版说明](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.5.0)
 
 本项目采用[非商业源码公开许可证](https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/LICENSE)，**不是 OSI 认可的开源许可**。商业用途（包括公司内部商业项目的开发、测试、维护）需另行书面授权。第三方材料适用各自许可证，见[第三方声明](https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/THIRD_PARTY_NOTICES.md)。
