@@ -4,7 +4,7 @@
 
 **这是 DeepSeek Harness（DSH）的插件，不是独立应用。** 模型建议需要人工复核，不代表测试通过或发布批准。
 
-> 本文对应 v0.6.1。自动化测试和隔离安装不能替代真实宿主验收；完整 GUI、自更新和真实模型端到端仍未验收。建议先在独立测试配置环境试用。
+> 本文对应 v0.6.2。自动化测试和隔离安装不能替代真实宿主验收；完整 GUI、自更新和真实模型端到端仍未验收。建议先在独立测试配置环境试用。
 
 ## 安装与准备
 
@@ -15,18 +15,18 @@
 优先使用 DSH 自带的“插件”页面安装 npm 包：
 
 ~~~text
-@feng0531/dsh-code-report@0.6.1
+@feng0531/dsh-code-report@0.6.2
 ~~~
 
 也可使用已配置好的 DSH 命令行。确认当前 profile 名称后再执行；profile 是插件安装环境，不是会话名或工作区路径。例如，只有确认使用 desktop 环境时才运行：
 
 ~~~sh
-dsh plugin --profile desktop add @feng0531/dsh-code-report@0.6.1
+dsh plugin --profile desktop add @feng0531/dsh-code-report@0.6.2
 ~~~
 
 安装会修改对应环境，先备份配置。命令行安装还需满足 DSH 自身的包管理器要求。安装后保存工作，手动完全退出并重新启动 DSH，再刷新原页面。**只刷新页面不会重载旧后台。** 发布新版本不会自动升级或重启你的环境。
 
-[GitHub 正式发布页](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.6.1)提供安装包和校验文件；下载 tgz 本身不等于已安装。普通用户无需下载源码或自行构建。
+[GitHub 正式发布页](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.6.2)提供安装包和校验文件；下载 tgz 本身不等于已安装。普通用户无需下载源码或自行构建。
 
 ## 从配置到报告
 
@@ -78,6 +78,8 @@ client/CI/Env/build-config.json
 ### 5. 采集并检查证据
 
 按钮不可用时，旁边会提示后台验证状态、正在进行的任务、超出 12 项、具体项目缺失的路径或 A/B 分支；包含 SVN 项目时还需勾选历史读取授权。窄窗口下 A/B 输入栏在项目下方纵向显示，无需横向寻找。
+
+版本差异中的 `.git` / `.svn` 内部路径在读取正文前自动排除，并在报告列出路径及覆盖限制；不是先读取再删文本。其他敏感路径（如 `.env`、密钥文件）仍阻断整个采集并提示项目和路径。附带源码不允许指定内部路径。
 
 点击“开始执行 · 采集差异”。这一步**不调用模型**；SVN 历史读取可能访问仓库服务器。
 
@@ -155,6 +157,6 @@ AI 报告要求独立列出 HTTP/RPC、公开函数/类/SDK、消息与协议契
 
 - [开发指南](https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/docs/DEVELOPMENT.md)
 - [发布与恢复指南](https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/docs/RELEASING.md)
-- [本版说明](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.6.1)
+- [本版说明](https://github.com/f-e-n-g-0531/dsh-code-report/releases/tag/v0.6.2)
 
 本项目采用[非商业源码公开许可证](https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/LICENSE)，**不是 OSI 认可的开源许可**。商业用途（包括公司内部商业项目的开发、测试、维护）需另行书面授权。第三方材料适用各自许可证，见[第三方声明](https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/THIRD_PARTY_NOTICES.md)。

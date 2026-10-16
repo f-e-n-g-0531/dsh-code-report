@@ -3,7 +3,7 @@ import {scanOptions} from './configuration.mjs';
 import {realpath,open} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {XMLParser,XMLValidator} from 'fast-xml-parser';
-import {inside,regular,secretPath} from './paths.mjs';
+import {inside,regular,secretPath,internalPath} from './paths.mjs';
 import {run} from './process.mjs';
 import {svnRevision,svnBranch,branchUrl} from './svn-endpoint.mjs';
 const xml=text=>{if(/<!DOCTYPE|<!ENTITY/i.test(text)||XMLValidator.validate(text)!==true)throw new Error('无效 SVN XML');return new XMLParser({ignoreAttributes:false,parseTagValue:false,parseAttributeValue:false}).parse(text);};
@@ -48,9 +48,11 @@ export async function collect(cwd,request,signal,onProgress=()=>{}){
    const resolve=async ref=>{const id=(await exec('git',['rev-parse','--verify','--end-of-options',ref+'^{commit}'])).trim();if(!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(id))throw new Error('无法解析提交');return id;};
    repo.a=await resolve(a);repo.b=await resolve(b);
    repo.files=(await exec('git',['diff','--no-color','--no-ext-diff','--no-textconv','--ignore-submodules=none','--no-renames','--name-only','-z',repo.a,repo.b,'--'])).split('\0').filter(Boolean);
-   if(repo.files.some(secretPath))throw new Error('差异包含敏感路径，请拆分发布范围后重试');
-   repo.diff=await exec('git',['-c','core.quotePath=false','diff','--no-color','--no-ext-diff','--no-textconv','--ignore-submodules=none','--no-renames','--submodule=short','--unified=3',repo.a,repo.b,'--']);
-   repo.summary=await exec('git',['diff','--no-color','--no-ext-diff','--no-textconv','--ignore-submodules=none','--stat',repo.a,repo.b,'--']);
+   repo.excludedPaths=repo.files.filter(internalPath);repo.files=repo.files.filter(p=>!internalPath(p));
+   if(repo.files.some(secretPath))throw new Error('项目 '+repo.path+' 差异包含敏感路径：'+repo.files.filter(secretPath).join('、'));
+   const exclusions=repo.excludedPaths.length?[':(exclude,icase,glob)**/.git',':(exclude,icase,glob)**/.git/**',':(exclude,icase,glob)**/.svn',':(exclude,icase,glob)**/.svn/**']:[];
+   repo.diff=await exec('git',['-c','core.quotePath=false','diff','--no-color','--no-ext-diff','--no-textconv','--ignore-submodules=none','--no-renames','--submodule=short','--unified=3',repo.a,repo.b,'--',...exclusions]);
+   repo.summary=await exec('git',['diff','--no-color','--no-ext-diff','--no-textconv','--ignore-submodules=none','--stat',repo.a,repo.b,'--',...exclusions]);
   }else{
    if(request.allowSvnNetwork!==true)throw new Error('SVN 历史读取需要勾选仓库访问授权');
    const branchA=svnBranch(row.branchA),branchB=svnBranch(row.branchB);
@@ -72,10 +74,31 @@ export async function collect(cwd,request,signal,onProgress=()=>{}){
    repo.identity={uuid:info.repository.uuid,repositoryRoot:info.repository.root,urlA,urlB};
    const targets=['--old='+urlA+'@'+repo.a,'--new='+urlB+'@'+repo.b];
    const changes=xml(await exec('svn',['diff','--summarize','--xml',...targets,...args]));
-   repo.files=list(changes.diff?.paths?.path).map(x=>typeof x==='string'?x:x['#text']);
-   if(repo.files.some(secretPath))throw new Error('差异包含敏感路径');
-   repo.diff=await exec('svn',['diff','--internal-diff',...targets,...args]);repo.summary=repo.files.join('\n');
+   const entries=list(changes.diff?.paths?.path).map(x=>{
+    const name=typeof x==='string'?x:x['#text'];
+    const base=[urlA,urlB].find(url=>name===url||name.startsWith(url+'/'));
+    if(!base)throw new Error('SVN 变更路径不属于比较端点');
+    const relative=decodeURIComponent(name.slice(base.length).replace(/^\//,''));
+    if(relative.split('/').some(p=>p==='..'||p==='.')||relative.includes('\\'))throw new Error('无效 SVN 变更路径');
+    return {relative,kind:x['@_kind']};
+   });
+   repo.excludedPaths=entries.filter(x=>internalPath(x.relative)).map(x=>x.relative);
+   const included=entries.filter(x=>!internalPath(x.relative));repo.files=included.map(x=>x.relative);
+   if(repo.files.some(secretPath))throw new Error('项目 '+repo.path+' 差异包含敏感路径：'+repo.files.filter(secretPath).join('、'));
+   if(!repo.excludedPaths.length)repo.diff=await exec('svn',['diff','--internal-diff',...targets,...args]);
+   else{
+    // Never request a recursive parent diff after exclusions: deleted directories contain old bodies too.
+    repo.diff='';
+    for(const entry of included){
+     if(!['file','dir'].includes(entry.kind))throw new Error('无法安全判断 SVN 变更类型');
+     const suffix=entry.relative?'/'+entry.relative.split('/').map(encodeURIComponent).join('/'):'';
+     repo.diff+=await exec('svn',['diff','--internal-diff','--depth','empty','--old='+urlA+suffix+'@'+repo.a,'--new='+urlB+suffix+'@'+repo.b,...args]);
+     if(Buffer.byteLength(repo.diff)>1024*1024)throw new Error('报告证据超过 1 MiB；请分批比较，未静默截断');
+    }
+   }
+   repo.summary=repo.files.join('\n');
   }
+  if(repo.excludedPaths?.length)result.limitations.push('项目 '+repo.path+' 已在正文读取前排除 '+repo.excludedPaths.length+' 条 .git / .svn 内部路径记录；未读取其正文，不属于本报告分析覆盖。');
   repo.requestedA=a;repo.requestedB=b;repo.diffHash=hash(repo.diff);result.repositories.push(repo);onProgress({phase:'collecting',completed:++completed,total,label:'项目差异已采集：'+row.path});
  }
  for(const name of request.contextPaths||[]){onProgress({phase:'collecting',completed,total,label:'读取源码：'+name});const file=await regular(cwd,name);const handle=await open(file,'r');let buf;try{const stat=await handle.stat();if(stat.size>128*1024)throw new Error('单个源码文件不能超过 128 KiB');const buffer=Buffer.alloc(128*1024+1);let offset=0;while(offset<buffer.length){const {bytesRead}=await handle.read(buffer,offset,buffer.length-offset,null);if(!bytesRead)break;offset+=bytesRead;}buf=buffer.subarray(0,offset);}finally{await handle.close();}if(buf.length>128*1024||buf.includes(0))throw new Error('源码文件过大或为二进制');result.context.push({path:name,provenance:'current-workspace',hash:hash(buf),text:new TextDecoder('utf-8',{fatal:true}).decode(buf)});onProgress({phase:'collecting',completed:++completed,total,label:'源码已采集：'+name});}
