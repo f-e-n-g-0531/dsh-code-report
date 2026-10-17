@@ -10,19 +10,21 @@ export function repositoryIssues(rows){
  if(!selected.length)return ['请至少勾选一个项目。'];
  const issues=[];
  if(selected.length>12)issues.push('已选择 '+selected.length+' 个项目，一次最多 12 个，请取消多余项目。');
- for(const {row,index} of selected){
-  const missing=[];
-  if(!row.path.trim())missing.push('项目路径');
-  if(row.type==='git'){
-   if(!row.a.trim()&&!row.branchA.trim())missing.push('Git A 分支（版本留空时必填）');
-   if(!row.b.trim()&&!row.branchB.trim())missing.push('Git B 分支（版本留空时必填）');
-  }
-  if(row.type==='svn'){
-   if(!row.branchA.trim())missing.push('SVN A 分支');
-   if(!row.branchB.trim())missing.push('SVN B 分支');
-  }
-  if(missing.length)issues.push('项目 '+(index+1)+'（'+(row.path.trim()||'未填写路径')+'）：请填写 '+missing.join('、')+'。');
- }
+ for(const {row,index} of selected){const missing=missingFields(row);if(missing.length)issues.push(repositoryIssue(row,index,missing));}
  return issues;
 }
+function missingFields(row){
+ const missing=[];
+ if(!row.path.trim())missing.push('项目路径');
+ if(row.type==='git'){
+  if(!row.a.trim()&&!row.branchA.trim())missing.push('Git A 分支（版本留空时必填）');
+  if(!row.b.trim()&&!row.branchB.trim())missing.push('Git B 分支（版本留空时必填）');
+ }
+ if(row.type==='svn'){
+  if(!row.branchA.trim())missing.push('SVN A 分支');
+  if(!row.branchB.trim())missing.push('SVN B 分支');
+ }
+ return missing;
+}
+function repositoryIssue(row,index,missing){return '项目 '+(index+1)+'（'+(row.path.trim()||'未填写路径')+'）：请填写 '+missing.join('、')+'。';}
 export function readyRows(rows){return repositoryIssues(rows).length===0;}
