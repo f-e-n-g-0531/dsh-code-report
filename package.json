@@ -1,6 +1,6 @@
 {
   "name": "@feng0531/dsh-code-report",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "private": false,
   "type": "module",
   "description": "Multi-repository Git/SVN release reports for DeepSeek Harness",
@@ -14,6 +14,7 @@
     "index.mjs",
     "src/*.mjs",
     "dist/client.js",
+    "dist/build-provenance.json",
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
@@ -26,7 +27,10 @@
   "scripts": {
     "build": "node build.mjs",
     "test": "node build.mjs && node --test test/*.test.mjs",
-    "check": "npm test",
+    "check": "npm run check:static && npm test",
+    "check:static": "node scripts/static-check.mjs",
+    "test:coverage": "node build.mjs && node --experimental-test-coverage --test test/*.test.mjs",
+    "test:browser": "node build.mjs && playwright test",
     "verify:package": "node scripts/package.mjs",
     "test:install": "node scripts/install.mjs",
     "release:npm": "node scripts/release.mjs npm",
@@ -48,8 +52,10 @@
     "fast-xml-parser": "5.11.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "esbuild": "^0.25.0",
-    "react": "^19.2.0"
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
   },
   "license": "SEE LICENSE IN LICENSE",
   "publishConfig": {

@@ -1,0 +1,320 @@
+{
+  "schema": 1,
+  "qualityNotice": "自动测试验证结构、ID归属及固定样例所选hunk含预期原文；事实、兼容性、QA可执行性须由人工逐项核对，不将引用有效等同结论正确。EVIDENCE_HUNK替换为指定hunk真实ID。",
+  "humanRubric": [
+    "逐条定位A/B证据与声明是否相符",
+    "未知契约与缺失调用方是否保守标记",
+    "QA是否包含前置、步骤、预期、优先级",
+    "是否虚构测试结果、迁移状态或性能收益",
+    "内部函数是否被误判公开API"
+  ],
+  "cases": [
+    {
+      "name": "public-parameter-addition",
+      "snapshot": {
+        "title": "评测夹具",
+        "createdAt": "fixed",
+        "limitations": [
+          "没有调用方全量代码，结论需人工复核"
+        ],
+        "repositories": [
+          {
+            "path": "app",
+            "type": "git",
+            "a": "a",
+            "b": "b",
+            "files": [
+              "api.js"
+            ],
+            "diff": "diff --git a/api.js b/api.js\n--- a/api.js\n+++ b/api.js\n@@ -1 +1 @@\n-export function query(id) {}\n+export function query(id, options) {}\n"
+          }
+        ],
+        "context": []
+      },
+      "output": {
+        "changes": [],
+        "interfaces": [
+          {
+            "text": "query 新增 options 参数；默认值、是否必填及旧调用兼容性待确认；公开导出是对外候选依据，应测试旧单参数调用及新参数错误输入。",
+            "evidenceIds": [
+              "EVIDENCE_HUNK"
+            ]
+          }
+        ],
+        "impacts": [],
+        "qa": [],
+        "unknowns": []
+      },
+      "schemaValid": true,
+      "humanChecks": [
+        "引用应定位实际签名而非仅文件头；本夹具仅自动检查schema，不自动证明引用语义正确",
+        "确认参数默认值未知时没有虚构兼容保证"
+      ],
+      "evidenceSelector": {
+        "kind": "hunk",
+        "contains": [
+          "-export function query(id) {}",
+          "+export function query(id, options) {}"
+        ]
+      }
+    },
+    {
+      "name": "deleted-api",
+      "snapshot": {
+        "title": "评测夹具",
+        "createdAt": "fixed",
+        "limitations": [
+          "没有调用方全量代码，结论需人工复核"
+        ],
+        "repositories": [
+          {
+            "path": "app",
+            "type": "git",
+            "a": "a",
+            "b": "b",
+            "files": [
+              "api.js"
+            ],
+            "diff": "diff --git a/api.js b/api.js\n--- a/api.js\n+++ /dev/null\n@@ -1 +0,0 @@\n-export function oldApi() {}\n"
+          }
+        ],
+        "context": []
+      },
+      "output": {
+        "changes": [],
+        "interfaces": [
+          {
+            "text": "删除公开导出的 oldApi，对外使用情况和替代接口待确认；需检索消费者并测试旧调用失败行为。",
+            "evidenceIds": [
+              "EVIDENCE_HUNK"
+            ]
+          }
+        ],
+        "impacts": [],
+        "qa": [],
+        "unknowns": []
+      },
+      "schemaValid": true,
+      "humanChecks": [
+        "确认删文件证据而不是误判新增",
+        "不补造替代接口或迁移已完成"
+      ],
+      "evidenceSelector": {
+        "kind": "hunk",
+        "contains": [
+          "-export function oldApi() {}"
+        ]
+      }
+    },
+    {
+      "name": "no-diff",
+      "snapshot": {
+        "title": "评测夹具",
+        "createdAt": "fixed",
+        "limitations": [
+          "没有调用方全量代码，结论需人工复核"
+        ],
+        "repositories": [
+          {
+            "path": "app",
+            "type": "git",
+            "a": "a",
+            "b": "b",
+            "files": [],
+            "diff": ""
+          }
+        ],
+        "context": []
+      },
+      "output": {
+        "changes": [],
+        "interfaces": [],
+        "impacts": [],
+        "qa": [],
+        "unknowns": [
+          {
+            "text": "固定端点无文本差异；未提供二进制内容及完整调用图，不保证接口无变化。",
+            "evidenceIds": []
+          }
+        ]
+      },
+      "schemaValid": true,
+      "humanChecks": [
+        "空差异不能宣称测试通过或完整兼容"
+      ]
+    },
+    {
+      "name": "cross-project-unknown",
+      "snapshot": {
+        "title": "评测夹具",
+        "createdAt": "fixed",
+        "limitations": [
+          "没有调用方全量代码，结论需人工复核"
+        ],
+        "repositories": [
+          {
+            "path": "app",
+            "type": "git",
+            "a": "a",
+            "b": "b",
+            "files": [
+              "api.js"
+            ],
+            "diff": "@@ -1 +1 @@\n-old\n+new\n"
+          }
+        ],
+        "context": []
+      },
+      "output": {
+        "changes": [],
+        "interfaces": [],
+        "impacts": [],
+        "qa": [],
+        "unknowns": [
+          {
+            "text": "未提供另一项目消费者代码，跨项目影响待确认。",
+            "evidenceIds": []
+          }
+        ]
+      },
+      "schemaValid": true,
+      "humanChecks": [
+        "不能依据项目名虚构调用关系"
+      ]
+    },
+    {
+      "name": "workspace-not-history",
+      "snapshot": {
+        "title": "评测夹具",
+        "createdAt": "fixed",
+        "limitations": [
+          "没有调用方全量代码，结论需人工复核"
+        ],
+        "repositories": [
+          {
+            "path": "app",
+            "type": "git",
+            "a": "a",
+            "b": "b",
+            "files": [],
+            "diff": ""
+          }
+        ],
+        "context": [
+          {
+            "path": "api.js",
+            "provenance": "current-workspace",
+            "hash": "current",
+            "text": "export const latest = true;"
+          }
+        ]
+      },
+      "output": {
+        "changes": [],
+        "interfaces": [],
+        "impacts": [],
+        "qa": [],
+        "unknowns": [
+          {
+            "text": "当前工作区源码不能证明历史 A/B 契约，兼容性未知。",
+            "evidenceIds": []
+          }
+        ]
+      },
+      "schemaValid": true,
+      "humanChecks": [
+        "不将当前源码归因到A或B历史版本"
+      ]
+    },
+    {
+      "name": "invalid-reference",
+      "snapshot": {
+        "title": "评测夹具",
+        "createdAt": "fixed",
+        "limitations": [
+          "没有调用方全量代码，结论需人工复核"
+        ],
+        "repositories": [
+          {
+            "path": "app",
+            "type": "git",
+            "a": "a",
+            "b": "b",
+            "files": [
+              "api.js"
+            ],
+            "diff": "@@ -1 +1 @@\n-a\n+b"
+          }
+        ],
+        "context": []
+      },
+      "output": {
+        "changes": [
+          {
+            "text": "改动",
+            "evidenceIds": [
+              "not-in-batch"
+            ]
+          }
+        ],
+        "interfaces": [],
+        "impacts": [],
+        "qa": [],
+        "unknowns": []
+      },
+      "schemaValid": false,
+      "humanChecks": [
+        "自动引用校验必须拒绝未知ID"
+      ]
+    },
+    {
+      "name": "valid-id-false-claim",
+      "snapshot": {
+        "title": "评测夹具",
+        "createdAt": "fixed",
+        "limitations": [
+          "没有调用方全量代码，结论需人工复核"
+        ],
+        "repositories": [
+          {
+            "path": "app",
+            "type": "git",
+            "a": "a",
+            "b": "b",
+            "files": [
+              "api.js"
+            ],
+            "diff": "@@ -1 +1 @@\n-a\n+b"
+          }
+        ],
+        "context": []
+      },
+      "output": {
+        "changes": [
+          {
+            "text": "所有线上调用方迁移完成且性能提升100倍。",
+            "evidenceIds": [
+              "EVIDENCE_HUNK"
+            ]
+          }
+        ],
+        "interfaces": [],
+        "impacts": [],
+        "qa": [],
+        "unknowns": []
+      },
+      "schemaValid": true,
+      "humanChecks": [
+        "此项结构有效但结论无证据，是人工质量拒绝样例",
+        "不得把schema通过率当事实正确率"
+      ],
+      "evidenceSelector": {
+        "kind": "hunk",
+        "contains": [
+          "-a",
+          "+b"
+        ]
+      }
+    }
+  ]
+}

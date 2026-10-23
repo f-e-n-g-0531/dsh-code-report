@@ -10,7 +10,7 @@ export function repositoryIssues(rows){
  if(!selected.length)return ['请至少勾选一个项目。'];
  const issues=[];
  if(selected.length>12)issues.push('已选择 '+selected.length+' 个项目，一次最多 12 个，请取消多余项目。');
- for(const {row,index} of selected){const missing=missingFields(row);if(missing.length)issues.push(repositoryIssue(row,index,missing));}
+ for(const {row,index} of selected)issues.push(...rowIssues(rows,index));
  return issues;
 }
 function missingFields(row){
@@ -28,3 +28,15 @@ function missingFields(row){
 }
 function repositoryIssue(row,index,missing){return '项目 '+(index+1)+'（'+(row.path.trim()||'未填写路径')+'）：请填写 '+missing.join('、')+'。';}
 export function readyRows(rows){return repositoryIssues(rows).length===0;}
+const normalizedPath=value=>value.trim().replaceAll('\\','/').replace(/\/+$/,'')||'.';
+export function rowIssues(rows,index){
+ const row=rows[index];if(!row?.enabled)return [];
+ const missing=missingFields(row),issues=missing.length?[repositoryIssue(row,index,missing)]:[];
+ if(rows.some((other,i)=>i!==index&&other.enabled&&normalizedPath(other.path)===normalizedPath(row.path)))issues.push('项目 '+(index+1)+'：路径重复，请仅保留一项。');
+ return issues;
+}
+export function zeroDifferenceWarning(row){
+ if(!row.enabled)return '';
+ const a=row.a.trim()||row.branchA.trim(),b=row.b.trim()||row.branchB.trim();
+ return a&&a===b&&(row.type==='git'||row.branchA.trim()===row.branchB.trim())?'A/B 指向相同版本或分支，预计无差异；不会自动比较上一版。':'';
+}

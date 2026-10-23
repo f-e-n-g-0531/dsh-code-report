@@ -1,0 +1,2 @@
+# Keep build-input hashes and packaged sources identical across CI platforms.
+* text=auto eol=lf

@@ -1,3 +1,6 @@
+export {createAnalysisPlan, analyzeReport} from './analysis.mjs';
+import {cancellableChunks} from './analysis.mjs';
+
 export const inline=value=>String(value).replace(/[\r\n]/g,' ').replace(/[&<>|*_\[\]\x60]/g,c=>'&#'+c.charCodeAt(0)+';');
 export function fence(text,lang=''){const matches=String(text).match(/\x60+/g)||[];let length=3;for(const match of matches)length=Math.max(length,match.length+1);const marker='`'.repeat(length);return marker+lang+'\n'+text+'\n'+marker;}
 const INTERFACE_NO_MODEL='## 对外接口变更\n\n未调用模型，尚未分析对外接口变更；请人工核对差异，不能据此判断没有接口变化。';
@@ -7,7 +10,7 @@ export function interfaceSection(analysis){if(!analysis)return INTERFACE_NO_MODE
 const ANALYSIS_MISSING='未调用模型。本报告只包含差异证据；业务影响范围与 QA 测试计划尚待人工分析。';
 const LOCAL_ROUTE='模式：本地证据报告（未发送模型）';
 const releaseScopeLines=repositories=>repositories.map(r=>'- **'+inline(r.path)+'** ('+r.type+')：'+inline(r.type==='svn'?r.branchA+' @ r'+r.a:r.requestedA)+' → '+inline(r.type==='svn'?r.branchB+' @ r'+r.b:r.requestedB)+'；固定端点 '+inline(r.a)+' → '+inline(r.b)+'；'+r.files.length+' 个变更路径');
-const sourceLines=context=>context.map(c=>'- '+inline(c.path)+'；当前工作区快照；SHA-256 '+c.hash);
+const sourceLines=context=>context.map(c=>'- '+inline(c.path)+'；'+(c.provenance==='version-A'||c.provenance==='version-B'?inline(c.repository)+'；固定版本 '+inline(c.revision)+'（'+c.provenance+'）':'当前工作区快照')+'；SHA-256 '+c.hash);
 const limitationLines=limitations=>[...limitations.map(x=>'- '+x),'- 模型输出为待人工复核的推断，不代表测试通过、缺陷证明或发布批准。'];
 const routeLine=route=>route?'模型：'+inline(route.provider)+' / '+inline(route.model):LOCAL_ROUTE;
 const excludedPathLines=r=>r.excludedPaths?.length?['','### 排除的内部路径 · '+inline(r.path),'','以下路径仅记录排除清单，正文未读取，不属于分析覆盖：',...r.excludedPaths.map(p=>'- '+inline(p))]:[];
@@ -23,7 +26,7 @@ const ROUTE_INVALID='请填写 DSH 已配置的提供方与模型 ID';
 function validateRoute(route){if(!route||typeof route.provider!=='string'||!route.provider||route.provider.length>200||typeof route.model!=='string'||!route.model||route.model.length>200)throw new Error(ROUTE_INVALID);}
 async function consumeAnalysis(stream,signal){
  let output='',size=0,finished=false;
- for await(const chunk of stream){signal?.throwIfAborted();if(finished)throw new Error('模型在结束后继续输出');if(chunk.type==='tool-call-delta'||chunk.blockType==='tool-call'||chunk.block?.type==='tool-call')throw new Error('模型请求了未授权工具');if(chunk.type==='text-delta'||chunk.type==='reasoning-delta'){size+=Buffer.byteLength(chunk.text);if(size>256*1024)throw new Error('模型输出过大');if(chunk.type==='text-delta')output+=chunk.text;}if(chunk.type==='finish'){if(chunk.reason.kind!=='stop')throw new Error('模型未完整完成：'+chunk.reason.kind);finished=true;}}
+ for await(const chunk of cancellableChunks(stream,signal)){signal?.throwIfAborted();if(finished)throw new Error('模型在结束后继续输出');if(chunk.type==='tool-call-delta'||chunk.blockType==='tool-call'||chunk.block?.type==='tool-call')throw new Error('模型请求了未授权工具');if(chunk.type==='text-delta'||chunk.type==='reasoning-delta'){size+=Buffer.byteLength(chunk.text);if(size>256*1024)throw new Error('模型输出过大');if(chunk.type==='text-delta')output+=chunk.text;}if(chunk.type==='finish'){if(chunk.reason.kind!=='stop')throw new Error('模型未完整完成：'+chunk.reason.kind);finished=true;}}
  if(!finished||!output.trim())throw new Error('模型未返回完整分析');return output;
 }
 export async function analyze(llm,route,snapshot,signal){

@@ -4,7 +4,8 @@ import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
-import vm from 'node:vm';
+import React from 'react';
+import {loadClientEntry,sourceProvenance,sha256} from './provenance.mjs';
 import {npm} from './npm.mjs';
 const root=process.cwd(),pkg=JSON.parse(await readFile('package.json','utf8'));
 const [digest,filename]=(await readFile('release/SHA256SUMS.txt','utf8')).trim().split(/\s+/);const archive=path.join(root,'release',filename);assert.equal(createHash('sha256').update(await readFile(archive)).digest('hex'),digest);
@@ -14,6 +15,16 @@ try{
  const installed=path.join(temp,'node_modules',...pkg.name.split('/'));const manifest=JSON.parse(await readFile(path.join(installed,'package.json'),'utf8'));assert.equal(manifest.version,pkg.version);
  const plugin=await import(pathToFileURL(path.join(installed,'index.mjs')));let handler;
  assert.ok(plugin.inject.includes('webServer'));let route;const ctx={effect:fn=>fn(),webServer:{register(value){route=value;return()=>{};}},connection:{register(owner,channel,fn){assert.equal(owner,ctx);assert.equal(channel,'/code-report-rpc');handler=fn;return owner.effect(()=>owner.webServer.register({kind:'prefix',path:channel}));}}};plugin.apply(ctx);assert.equal(typeof handler,'function');assert.equal(route.path,'/code-report-rpc');assert.equal((await handler('runtime-info',{})).ok,true);
- let client;vm.runInNewContext(await readFile(path.join(installed,'dist/client.js'),'utf8'),{window:{__ModuleLoader__:{load(entry){client=entry;}}}});assert.equal(client.id,pkg.name);
+ const provenance=JSON.parse(await readFile(path.join(installed,'dist/build-provenance.json'),'utf8'));
+ const expected=await sourceProvenance(root);
+ assert.equal(provenance.version,manifest.version);assert.equal(provenance.sourceHash,expected.sourceHash,'Installed package was built from different inputs');
+ const clientBytes=await readFile(path.join(installed,'dist/client.js'));assert.equal(sha256(clientBytes),provenance.clientHash);
+ const client=loadClientEntry(clientBytes.toString('utf8'));assert.equal(client.id,pkg.name);
+ assert.equal(client.buildInfo?.version,manifest.version,'Installed embedded client version mismatch');
+ assert.equal(client.buildInfo?.sourceHash,provenance.sourceHash);
+ const frontend=client.factory(id=>{assert.equal(id,'react');return React;});assert.equal(typeof frontend.apply,'function');
+ const slots=[];frontend.apply({connection:{},slots:{inject(_name,body){body();},register(options,component){slots.push({options,component});}}});
+ assert.equal(slots.length,2);assert.equal(slots[0].options.key,slots[1].options.id);
+ assert.equal(typeof slots[0].component,'function');
  console.log('Exact tarball production-only isolated install passed; stub host, not live GUI acceptance');
 }finally{await rm(temp,{recursive:true,force:true});}

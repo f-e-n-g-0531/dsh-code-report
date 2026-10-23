@@ -19,8 +19,8 @@ test('capture explains missing fields and counts only selected repositories',()=
  assert.match(repositoryIssues([{...git,path:'  '}]).join(' '),/项目路径/);
  assert.match(repositoryIssues([{...git,a:' ',b:''}]).join(' '),/c3animation.*Git A 分支.*Git B 分支/);
  assert.match(repositoryIssues([{...git,type:'svn',branchA:'',branchB:''}]).join(' '),/SVN A 分支、SVN B 分支/);
- assert.equal(readyRows(Array.from({length:12},()=>git)),true);
- assert.match(repositoryIssues(Array.from({length:13},()=>git)).join(' '),/13.*最多 12/);
+ assert.equal(readyRows(Array.from({length:12},(_,index)=>({...git,path:'project-'+index}))),true);
+ assert.match(repositoryIssues(Array.from({length:13},(_,index)=>({...git,path:'project-'+index}))).join(' '),/13.*最多 12/);
 });
 test('empty scan states never imply scanning after failure or cancellation',()=>{assert.match(scanMessage('scanning'),/正在扫描/);for(const state of ['idle','failed','cancelled','completed'])assert.doesNotMatch(scanMessage(state),/正在/);assert.match(scanMessage('failed'),/尚未确认项目数量/);});
 test('large nested subtree is never traversed',async t=>{const cwd=await mkdtemp(path.join(tmpdir(),'report-shallow-'));t.after(()=>rm(cwd,{recursive:true,force:true}));await mkdir(path.join(cwd,'a-large'));for(let i=0;i<100;i++)await mkdir(path.join(cwd,'a-large',String(i)));await mkdir(path.join(cwd,'z-client','.git'),{recursive:true});const result=await discover(cwd,undefined,{maxDepth:32,maxDirectories:100000});assert.ok(result.repositories.some(r=>r.path==='z-client'));assert.equal(result.visited,3);assert.equal(result.limited,false);assert.deepEqual(result.warnings,[]);});

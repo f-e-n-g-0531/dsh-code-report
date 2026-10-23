@@ -2,37 +2,75 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
+import {webcrypto} from 'node:crypto';
+import {build} from 'esbuild';
 import React from 'react';
 import {runtimeGate,PACKAGE_NAME,PROTOCOL_VERSION} from '../src/protocol.mjs';
+import {captureBlocker} from '../src/result-state.mjs';
+import {repositoryIssues,fresh,mergeRepositories} from '../src/repositories.mjs';
 const {version}=JSON.parse(await readFile(new URL('../package.json',import.meta.url),'utf8'));
-test('business runtime gate rejects missing old foreign and incompatible hosts',()=>{const valid={packageName:PACKAGE_NAME,runningVersion:version,protocol:PROTOCOL_VERSION};assert.equal(runtimeGate(valid,version),'');for(const bad of [null,{...valid,runningVersion:'0.3.1'},{...valid,protocol:99},{...valid,packageName:'other'}])assert.ok(runtimeGate(bad,version));});
-test('compact panel restores saved SVN permission without restoring model consent',async()=>{let entry;const source=await readFile(new URL('../dist/client.js',import.meta.url),'utf8');const saved={schema:1,allowSvnNetwork:true,title:'上次发布',context:'client/api.ts',provider:'p',model:'m',scan:{maxDepth:20,maxDirectories:30000},rows:[{path:'client',type:'svn',a:'r1',b:'r2',branchA:'trunk',branchB:'release',enabled:true}]};const hooks={...React,useState:initial=>[typeof initial==='function'?initial():initial,()=>{}],useRef:value=>({current:value}),useEffect:()=>{}};vm.runInNewContext(source,{window:{__ModuleLoader__:{load(v){entry=v;}}},localStorage:{getItem(){return JSON.stringify(saved);}}});const plugin=entry.factory(()=>hooks);let Page;plugin.apply({connection:{},slots:{inject(n,fn){fn();},register(options,component){if(options.name==='main')Page=component;}}});const page=Page({useSessions:fn=>fn({byId:{s:{id:'s',cwd:'G:/one',retainedBy:{mainView:1}}}})});const tree=page.type(page.props);const all=[];const walk=node=>{if(!node||typeof node!=='object')return;if(Array.isArray(node)){node.forEach(walk);return;}all.push(node);walk(node.props?.children);};walk(tree);assert.ok(all.some(n=>n.type==='input'&&n.props.value==='上次发布'));assert.ok(all.some(n=>n.type==='div'&&n.props.role==='alert'));const scanButton=all.find(n=>n.type==='button'&&n.props.children==='扫描 / 重新发现');assert.equal(scanButton.props.disabled,true);const captureButton=all.find(n=>n.type==='button'&&n.props.children==='开始执行 · 采集差异');assert.equal(captureButton.props.disabled,true);assert.ok(!all.some(n=>n.type==='input'&&n.props.type==='number'));const network=all.find(n=>n.type==='input'&&n.props.type==='checkbox');assert.equal(network.props.checked,true);const table=all.find(n=>typeof n.type==='function'&&n.props.rows);assert.equal(table.props.rows[0].a,'r1');const rendered=table.type(table.props);const cells=[];const collect=node=>{if(!node||typeof node!=='object')return;if(Array.isArray(node)){node.forEach(collect);return;}cells.push(node);collect(node.props?.children);};collect(rendered);assert.ok(cells.some(n=>n.type==='table'));assert.ok(cells.some(n=>n.type==='input'&&n.props['aria-label']==='版本 A 1'&&n.props.value==='r1'));assert.ok(cells.some(n=>n.type==='input'&&n.props['aria-label']==='SVN 分支 B 1'&&n.props.value==='release'));});
-test('capture blocker clears after required inputs and SVN permission are supplied',async()=>{
- const source=await readFile(new URL('../src/client.jsx',import.meta.url),'utf8');
- const line=source.split(String.fromCharCode(10)).find(x=>x.includes('const issues=repositoryIssues'));
- const {repositoryIssues,fresh}=await import('../src/repositories.mjs');
- const reason=new Function('rows','network','busy','compatibility','repositoryIssues',line+';return captureReason;');
- const git={...fresh(),path:'c3animation',a:'main',b:'HEAD'};
- assert.match(reason([{...git,a:''}],false,'','',repositoryIssues),/c3animation.*Git A 分支/);
- assert.equal(reason([git],false,'','',repositoryIssues),'');
- assert.equal(reason([{...git,a:'',b:'',branchA:'main',branchB:'release'}],false,'','',repositoryIssues),'');
- const svn={...git,type:'svn',branchA:'trunk',branchB:'trunk'};
- assert.match(reason([svn],false,'','',repositoryIssues),/勾选允许读取 SVN/);
- assert.equal(reason([svn],true,'','',repositoryIssues),'');
- assert.match(reason([git],false,'扫描项目','',repositoryIssues),/扫描项目/);
- assert.equal(reason([git],false,'','后台验证失败',repositoryIssues),'后台验证失败');
- assert.match(source,/aria-describedby={captureReason/);
+// Test the current client in memory. This neither writes dist nor substitutes for browser tests.
+const compiled=await build({entryPoints:['src/client.jsx'],bundle:true,write:false,format:'cjs',platform:'browser',external:['react'],loader:{'.css':'text'}});
+function harness(saved,{rpc=async()=>({ok:true,value:{packageName:PACKAGE_NAME,runningVersion:version,protocol:PROTOCOL_VERSION}})}={}){
+ const states=[],refs=[],effects=[],registrations=[];let cursor=0,refCursor=0,effectCursor=0,Page;
+ const hooks={...React,
+  useState(initial){const index=cursor++;if(!(index in states))states[index]=typeof initial==='function'?initial():initial;return [states[index],value=>{states[index]=typeof value==='function'?value(states[index]):value;}];},
+  useRef(value){const index=refCursor++;if(!refs[index])refs[index]={current:value};return refs[index];},
+  useEffect(fn,deps){effects[effectCursor++]={fn,deps};}
+ };
+ const sandbox={module:{exports:{}},require:id=>{assert.equal(id,'react');return hooks;},localStorage:{getItem:()=>saved?JSON.stringify(saved):null},TextEncoder,crypto:webcrypto,AbortController,AbortSignal,Date,setTimeout,clearTimeout,setInterval,clearInterval};
+ vm.runInNewContext(compiled.outputFiles[0].text,sandbox);
+ sandbox.module.exports.apply({connection:{rpc:{call:rpc}},slots:{inject(_name,fn){fn();},register(options,component){registrations.push({options,component});if(options.name==='main')Page=component;}}});
+ return {effects,registrations,render(){cursor=0;refCursor=0;effectCursor=0;const page=Page({useSessions:fn=>fn({byId:{s:{id:'s',cwd:'G:/one',retainedBy:{mainView:1}}}})});return page.type(page.props);}};
+}
+function nodes(tree){const all=[];function walk(node){if(!node||typeof node!=='object')return;if(Array.isArray(node)){node.forEach(walk);return;}all.push(node);walk(node.props?.children);}walk(tree);return all;}
+test('business runtime gate rejects missing old foreign and incompatible hosts',()=>{
+ const valid={packageName:PACKAGE_NAME,runningVersion:version,protocol:PROTOCOL_VERSION};assert.equal(runtimeGate(valid,version),'');
+ for(const bad of [null,{...valid,runningVersion:'0.3.1'},{...valid,protocol:99},{...valid,packageName:'other'}])assert.ok(runtimeGate(bad,version));
 });
-test('automatic discovery runs once and does not restart after verification or update unlock',async()=>{const source=await readFile(new URL('../src/client.jsx',import.meta.url),'utf8');const line=source.split(String.fromCharCode(10)).find(x=>x.includes('!initialScanStarted.current'));let calls=0;const initialScanStarted={current:false};const effect=(compatibility)=>{new Function('useEffect','session','compatibility','initialScanStarted','scan',line)(fn=>fn(),{id:'s'},compatibility,initialScanStarted,()=>{calls++;});};effect('checking');assert.equal(calls,0);effect('');assert.equal(calls,1);for(const blocked of ['verifying','updating','failed']){effect(blocked);effect('');}assert.equal(calls,1);});
-test('successful discovery never clears existing report preview or consent',async()=>{const source=await readFile(new URL('../src/client.jsx',import.meta.url),'utf8');const line=source.split(String.fromCharCode(10)).find(x=>x.includes('const scan=()=>'));const changes=[];let rows=[{path:'one',type:'git',enabled:true,a:'main',b:'HEAD'}];const factory=new Function('compatibility','setScanError','setScanState','setScanWarnings','perform','tracked','session','scanSettings','invalidate','setRows','mergeRepositories','rows','setVisited','setReport','setPreview','setConsent',line+';return scan;');const {mergeRepositories}=await import('../src/repositories.mjs');const scan=factory('',()=>{},()=>{},()=>{},async(label,fn)=>fn(new AbortController().signal),async()=>({repositories:[{path:'two',type:'git'}],warnings:[],visited:3}),{id:'s'},{},()=>changes.push('invalidate'),fn=>{rows=fn(rows);},mergeRepositories,rows,()=>{},()=>changes.push('report'),()=>changes.push('preview'),()=>changes.push('consent'));await scan();assert.deepEqual(changes,[]);assert.equal(rows.length,2);assert.equal(rows[0].a,'main');assert.equal(rows[1].enabled,false);});
-test('built client loads through DSH module loader and registers matching panel slots',async()=>{
- let entry;const source=await readFile(new URL('../dist/client.js',import.meta.url),'utf8');
- vm.runInNewContext(source,{window:{__ModuleLoader__:{load(value){entry=value;}}}});
- assert.equal(entry.id,'@feng0531/dsh-code-report');const plugin=entry.factory(id=>{assert.equal(id,'react');return React;});
- const registrations=[];plugin.apply({connection:{},slots:{inject(_name,fn){fn();},register(options,component){registrations.push({options,component});}}});
- assert.match(await readFile(new URL('../src/client.jsx',import.meta.url),'utf8'),/开始执行/);assert.match(source,/progress/);assert.equal(registrations[1].options.name,'sidebar.panellist');assert.equal(registrations[1].options.order,66);assert.equal(registrations.length,2);assert.equal(registrations[0].options.key,registrations[1].options.id);assert.equal(registrations[1].options.label(),'发布报告');
- let selected;const page=registrations[0].component({useSessions:selector=>{selected=selector({byId:{s:{id:'s',cwd:'/workspace',retainedBy:{mainView:1}}}});return selected;}});
+test('panel restores SVN permission while model approval and active preview remain absent',()=>{
+ const saved={schema:1,allowSvnNetwork:true,title:'上次发布',context:'client/api.ts',provider:'p',model:'m',scan:{maxDepth:20},rows:[{...fresh(),path:'client',type:'svn',a:'r1',b:'r2',branchA:'trunk',branchB:'release'}]};
+ const all=nodes(harness(saved).render());
+ assert.ok(all.some(node=>node.type==='input'&&node.props.value==='上次发布'));
+ assert.equal(all.find(node=>node.type==='button'&&node.props.children==='扫描 / 重新发现').props.disabled,true);
+ assert.equal(all.find(node=>node.type==='button'&&node.props.children==='开始执行 · 采集差异').props.disabled,true);
+ assert.equal(all.find(node=>node.type==='input'&&node.props.type==='checkbox').props.checked,true);
+ assert.equal(all.some(node=>node.props?.onGenerate),false);
+});
+test('capture blocker uses production pure state rules, including SVN permission',()=>{
+ const git={...fresh(),path:'c3animation',a:'main',b:'HEAD'};
+ const reason=(rows,network=false,busy='',compatibility='')=>captureBlocker(rows,network,busy,compatibility,repositoryIssues(rows));
+ assert.match(reason([{...git,a:''}]),/c3animation.*Git A 分支/);
+ assert.equal(reason([git]),'');assert.equal(reason([{...git,a:'',b:'',branchA:'main',branchB:'release'}]),'');
+ const svn={...git,type:'svn',branchA:'trunk',branchB:'trunk'};
+ assert.match(reason([svn]),/勾选允许读取 SVN/);assert.equal(reason([svn],true),'');assert.match(reason([git],false,'扫描项目'),/扫描项目/);assert.equal(reason([git],false,'','后台验证失败'),'后台验证失败');
+});
+test('discovery retains selected inputs and adds unselected projects',()=>{
+ const before=[{...fresh(),path:'one',a:'main',b:'HEAD'}];
+ const after=mergeRepositories(before,[{path:'two',type:'git'}]);
+ assert.equal(after[0].a,'main');assert.equal(after[0].enabled,true);assert.equal(after[1].enabled,false);assert.equal(before.length,1);
+});
+test('automatic discovery effect starts once across verification unlocks',async()=>{
+ let calls=0;
+ const instance=harness(undefined,{rpc:async(_channel,endpoint)=>{
+  if(endpoint==='runtime-info')return {ok:true,value:{packageName:PACKAGE_NAME,runningVersion:version,protocol:PROTOCOL_VERSION}};
+  if(endpoint==='discover'){calls++;return {ok:true,value:{repositories:[],warnings:[],visited:1}};}
+  throw new Error('unexpected '+endpoint);
+ }});
+ instance.render();
+ const discovery=()=>instance.effects.find(item=>item.deps?.length===2&&item.deps[0]==='s');
+ discovery().fn();assert.equal(calls,0);
+ instance.effects.find(item=>item.deps?.length===1&&item.deps[0]===0).fn();
+ await new Promise(resolve=>setImmediate(resolve));instance.render();
+ discovery().fn();await new Promise(resolve=>setImmediate(resolve));assert.equal(calls,1);
+ instance.render();discovery().fn();await new Promise(resolve=>setImmediate(resolve));assert.equal(calls,1);
+});
+test('client registers matching main/sidebar slots and uses active session identity',()=>{
+ const instance=harness(),registrations=instance.registrations;
+ assert.equal(registrations.length,2);assert.equal(registrations[0].options.key,registrations[1].options.id);
+ assert.equal(registrations[1].options.order,66);assert.equal(registrations[1].options.label(),'发布报告');
+ const page=registrations[0].component({useSessions:fn=>fn({byId:{s:{id:'s',cwd:'G:/one',retainedBy:{mainView:1}}}})});
  assert.equal(page.props.session.id,'s');
- const client=await readFile(new URL('../src/client.jsx',import.meta.url),'utf8');assert.ok(client.includes("setScanState(signal.aborted?'cancelled':'failed')"));assert.ok(client.includes('scanState={scanState}'));assert.ok(client.indexOf('{scanError&&')<client.indexOf('<RepositoryCards'));assert.ok(client.includes('saveConfiguration(globalThis.localStorage,session.cwd'));assert.ok(client.includes('scan:scanSettings'));assert.ok(source.includes('cr-config-table'));assert.ok((await readFile(new URL('../src/RepositoryCards.jsx',import.meta.url),'utf8')).includes('只填空白'));
- const css=await readFile(new URL('../src/style.css',import.meta.url),'utf8');assert.ok(css.includes('.cr-wide{width:100%;max-width:none;'));assert.ok(css.includes('.cr-root .cr-check{display:flex;'));
+ const other=registrations[0].component({useSessions:fn=>fn({byId:{s:{id:'s',cwd:'G:/two',retainedBy:{mainView:1}}}})});
+ assert.notEqual(page.key,other.key);
 });
