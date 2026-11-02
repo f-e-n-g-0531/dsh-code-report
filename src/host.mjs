@@ -1,11 +1,12 @@
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import {runtimeInfo,checkUpdate} from './updates.mjs';
 import {collect,discover,listRefs} from './collect.mjs';
 import {createAnalysisPlan,analyzeReport,markdown} from './report.mjs';
 
 const REQUEST_TIMEOUT=240000,PREVIEW_TTL=10*60*1000,PROGRESS_TTL=10*60*1000;
 const PREVIEW_LIMIT=16,PREVIEW_BYTES=32*1024*1024,PROGRESS_LIMIT=64,ACTIVE_LIMIT=2;
-const TERMINAL_PHASES=['completed','failed','cancelled'];
+const TERMINAL_PHASES=['completed','stopped'];
+const PAID_ID_LIMIT=1024;
 const endpointNames=['discover','preview','generate','analysis-plan','refs'];
 
 function problem(code,message,details={}){
@@ -50,47 +51,67 @@ function createPreviewStore(ctx,now){
   };
   return {prune,claim,release,add,discard:id=>items.delete(id)};
 }
-function createProgressStore(ctx,now){
-  const items=new Map(),expired=item=>now()-item.updatedAt>PROGRESS_TTL;
-  const begin=(id,sessionId,cwd)=>{
+function createProgressStore(ctx,now,backendInstanceId){
+  const items=new Map(),paidIds=new Map();
+  const terminal=item=>TERMINAL_PHASES.includes(item.value.phase);
+  const expired=item=>terminal(item)&&now()-item.updatedAt>PROGRESS_TTL;
+  const execution=item=>({backendInstanceId,dispatch:item.dispatchCount?'dispatched':'not-dispatched',dispatchCount:item.dispatchCount,completedBatches:item.completedBatches,totalBatches:item.totalBatches,resultAvailability:item.result?'available':'unavailable',phase:terminal(item)?item.value.phase:'pending'});
+  const begin=(id,sessionId,cwd,endpoint,fingerprint)=>{
     if(typeof id!=='string'||!/^[a-zA-Z0-9-]{1,100}$/.test(id))throw problem('input','无效任务标识');
     for(const [key,item]of items)if(expired(item))items.delete(key);
-    if(items.has(id))throw problem('input','任务标识重复');
-    for(const [key,item]of items){if(items.size<PROGRESS_LIMIT)break;if(TERMINAL_PHASES.includes(item.value.phase))items.delete(key);}
+    const prior=items.get(id),known=paidIds.get(id);
+    if(prior||known){
+      const owner=prior||known;
+      if(owner.sessionId!==sessionId||owner.cwd!==cwd||owner.endpoint!==endpoint||owner.fingerprint!==fingerprint)throw problem('operation-conflict','任务标识已绑定其他请求，禁止重复发送');
+      if(prior?.result)return {operation:prior,replay:prior.result};
+      throw problem('operation-exists','此任务标识已使用，请只读核对结果；禁止重新派发',{...(prior?{execution:execution(prior)}:{backendInstanceId})});
+    }
+    for(const [key,item]of items){if(items.size<PROGRESS_LIMIT)break;if(terminal(item))items.delete(key);}
     if(items.size>=PROGRESS_LIMIT)throw problem('busy','活动任务进度缓存已满');
-    const operation={sessionId,cwd,updatedAt:now(),value:{phase:'starting',label:'准备执行'}};
-    items.set(id,operation);return operation;
+    const operation={id,sessionId,cwd,endpoint,fingerprint,dispatchCount:0,completedBatches:0,totalBatches:0,updatedAt:now(),value:{phase:'starting',label:'准备执行'}};
+    items.set(id,operation);
+    return {operation};
   };
-  const update=(item,value)=>{if(item){item.value=value;item.updatedAt=now();}};
+  const authorize=item=>{
+    if(!item)return;
+    if(paidIds.size>=PAID_ID_LIMIT)throw problem('busy','本后台实例的付费任务身份容量已满，下载不会释放身份名额。请先恢复并下载全部所需报告，再有计划地重载后台；重载将丢失内存报告，不会自动继续任务');
+    paidIds.set(item.id,{sessionId:item.sessionId,cwd:item.cwd,endpoint:item.endpoint,fingerprint:item.fingerprint});
+  };
+  const update=(item,value)=>{if(item&&!terminal(item)){item.value=value;item.updatedAt=now();if(Number.isInteger(value.completed))item.completedBatches=value.completed;if(Number.isInteger(value.total))item.totalBatches=value.total;}};
   const finish=(item,result)=>{
     if(!item)return;
     const bytes=Buffer.byteLength(JSON.stringify(result));
-    // Retain bounded paid results for a lost response; evict oldest retained bodies only.
     const retained=()=>[...items.values()].reduce((sum,value)=>sum+(value.resultBytes||0),0);
     for(const value of items.values()){
       if(retained()+bytes<=PREVIEW_BYTES)break;
       if(value.result){delete value.result;delete value.resultBytes;}
     }
     if(bytes<=PREVIEW_BYTES){item.result=result;item.resultBytes=bytes;}
-    update(item,{phase:'completed',completed:1,total:1,label:'报告完成，可只读恢复'});
+    item.value={phase:'completed',completed:item.completedBatches,total:item.totalBatches,label:'报告完成，可只读恢复'};item.updatedAt=now();
+  };
+  const stop=(item,error)=>{
+    if(!item||terminal(item))return;
+    item.error={code:error.code||'code-report/request-failed',message:String(error.message||'任务已停止').slice(0,1200)};
+    item.value={phase:'stopped',label:item.error.message};item.updatedAt=now();
+  };
+  const owned=async(payload,signal,code)=>{
+    const cwd=await sessionCwd(ctx,payload?.sessionId,signal),item=items.get(payload?.operationId);
+    if(!item||item.sessionId!==payload.sessionId||item.cwd!==cwd||expired(item))throw problem(code,'任务记录已过期、不可用或归属变化；不能据此假定未执行或可免费重试',{backendInstanceId});
+    return item;
   };
   const result=async(payload,signal)=>{
-    const cwd=await sessionCwd(ctx,payload?.sessionId,signal),item=items.get(payload?.operationId);
-    if(!item||item.sessionId!==payload.sessionId||item.cwd!==cwd||expired(item))throw problem('result-unavailable','已完成报告不在缓存中，请勿将未知状态当作可安全重试');
-    if(item.result)return {status:'completed',result:item.result};
-    if(item.value.phase==='completed')throw problem('result-unavailable','报告正文已被缓存淘汰；任务曾完成，不能据此假定可以免费重试');
-    return {status:TERMINAL_PHASES.includes(item.value.phase)?'failed':'pending',phase:item.value.phase};
+    const item=await owned(payload,signal,'result-unavailable'),facts=execution(item);
+    if(item.result)return {status:'completed',result:item.result,execution:facts};
+    if(item.value.phase==='completed')return {status:'unavailable',phase:'completed',execution:facts};
+    if(item.value.phase==='stopped')return {status:'stopped',phase:'stopped',error:item.error,execution:facts};
+    return {status:'pending',phase:item.value.phase,execution:facts};
   };
-  const read=async(payload,signal)=>{
-    const cwd=await sessionCwd(ctx,payload?.sessionId,signal),item=items.get(payload?.operationId);
-    if(!item||item.sessionId!==payload.sessionId||item.cwd!==cwd||expired(item))throw problem('progress-unavailable','进度不可用');
-    return item.value;
-  };
-  return {begin,update,read,finish,result};
+  const read=async(payload,signal)=>{const item=await owned(payload,signal,'progress-unavailable');return {...item.value,execution:execution(item)};};
+  return {begin,authorize,update,read,finish,stop,result,execution};
 }
 function publicPlan(plan){
   if(!plan)return null;
-  return {id:plan.id,inputBudget:plan.inputBudget,estimated:plan.estimated,batches:plan.batches.map(({id,evidenceIds,inputBytes})=>({id,evidenceIds,inputBytes})),coverage:plan.coverage};
+  return {id:plan.id,formatVersion:plan.formatVersion,evidenceVersion:plan.evidenceVersion,inputBudget:plan.inputBudget,estimated:plan.estimated,batches:plan.batches.map(({id,evidenceIds,inputBytes})=>({id,evidenceIds,inputBytes})),coverage:plan.coverage};
 }
 function routeKey(route){
   if(!route||typeof route.provider!=='string'||!route.provider.trim()||route.provider.length>200||typeof route.model!=='string'||!route.model.trim()||route.model.length>200)throw problem('input','请填写 DSH 已配置的提供方与模型 ID');
@@ -99,7 +120,8 @@ function routeKey(route){
 
 // Dependencies are trusted in-process test seams, never fields accepted over RPC.
 export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,plan=createAnalysisPlan,analyze=analyzeReport,now=()=>Date.now()}={}){
-  const previews=createPreviewStore(ctx,now),progress=createProgressStore(ctx,now);let active=0;
+  const backendInstanceId=randomUUID();
+  const previews=createPreviewStore(ctx,now),progress=createProgressStore(ctx,now,backendInstanceId);let active=0;
   const assertSession=async(payload,cwd,signal)=>{if(await sessionCwd(ctx,payload.sessionId,signal)!==cwd)throw problem('session-changed','会话目录已变更');};
   const endpoints={
     discover:({payload,cwd,signal,update})=>scan(cwd,signal,payload.scan,update),
@@ -125,23 +147,27 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
       if(!p.plan||payload.planId!==p.plan.id)throw problem('plan-mismatch','分析计划已变化或不可用，请重新确认发送范围');
       const key=routeKey(payload.route);
       if(p.routeKey!==key){p.completed=new Map();p.routeKey=key;}
-      signal.throwIfAborted();p.used=true;
+      signal.throwIfAborted();progress.authorize(operation);p.used=true;
       // Recheck authority before every model dispatch, not only before the first batch.
       let dispatched=false;
       const llm={async *stream(input){
         await assertSession(payload,cwd,signal);signal.throwIfAborted();
         if(!dispatched&&now()-p.time>=PREVIEW_TTL)throw problem('preview-expired','预览已过期，请重新采集');
-        dispatched=true;yield* ctx.llm.stream(input);
+        dispatched=true;if(operation)operation.dispatchCount++;yield* ctx.llm.stream(input);
       }};
       update({phase:'analyzing',label:'正在分析固定快照；分片内部进度不可量化',completed:p.completed.size,total:p.plan.batches.length});
       try{
         const result=await analyze(llm,payload.route,p.snapshot,{signal,plan:p.plan,completed:p.completed,onProgress:update});
         if(result.completed instanceof Map)p.completed=result.completed;
-        await assertSession(payload,cwd,signal);signal.throwIfAborted();
-        const value={markdown:markdown(p.snapshot,result.markdown,payload.route),coverage:result.coverage};
+        // Completed validated analysis is a server fact, separate from cancelled delivery.
+        // Still recheck authoritative ownership without borrowing the delivery signal.
+        await assertSession(payload,cwd,AbortSignal.timeout(15000));
+        if(operation){operation.completedBatches=p.completed.size;operation.totalBatches=p.plan.batches.length;}
+        const value={markdown:markdown(p.snapshot,result.markdown,payload.route,{structured:true}),coverage:result.coverage};
         progress.finish(operation,value);previews.discard(payload.previewId);return value;
       }catch(error){
         if(error.completed instanceof Map)p.completed=error.completed;
+        if(operation){operation.completedBatches=p.completed.size;operation.totalBatches=p.plan.batches.length;}
         if(!error.code)error.code='code-report/analysis-incomplete';
         error.details={...error.details,coverage:error.coverage,completedBatches:p.completed.size,remainingBatches:p.plan.batches.length-p.completed.size,requiresConfirmation:true};
         throw error;
@@ -149,24 +175,32 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
     }
   };
   return async(endpoint,payload,signal)=>{
-    if(endpoint==='runtime-info')return respond(runtimeInfo);
+    if(endpoint==='runtime-info')return respond(()=>({...runtimeInfo(),backendInstanceId}));
     if(endpoint==='check-update')return respond(()=>checkUpdate({signal}));
     if(endpoint==='release-preview')return respond(()=>previews.release(payload,signal));
     if(endpoint==='progress')return respond(()=>progress.read(payload,signal));
     if(endpoint==='result')return respond(()=>progress.result(payload,signal));
-    if(active>=ACTIVE_LIMIT)return failure(problem('busy','报告任务繁忙，请稍后重试'));
     active++;let operation;
     try{
       signal=AbortSignal.any([...(signal?[signal]:[]),AbortSignal.timeout(REQUEST_TIMEOUT)]);signal.throwIfAborted();previews.prune();
       if(!endpointNames.includes(endpoint)||!payload||typeof payload!=='object')throw problem('input','无效请求');
       const cwd=await sessionCwd(ctx,payload.sessionId,signal);signal.throwIfAborted();
-      if(payload.operationId!==undefined)operation=progress.begin(payload.operationId,payload.sessionId,cwd);
+      if(payload.operationId!==undefined||endpoint==='generate'){
+        const fingerprint=createHash('sha256').update(JSON.stringify([endpoint,payload.previewId,payload.planId,payload.route?.provider,payload.route?.model,payload.sendToModel])).digest('hex');
+        const started=progress.begin(payload.operationId,payload.sessionId,cwd,endpoint,fingerprint);
+        if(started.replay)return {ok:true,value:started.replay};
+        operation=started.operation;
+      }
+      if(active>ACTIVE_LIMIT)throw problem('busy','报告任务繁忙，请稍后重试');
       const update=value=>progress.update(operation,value);
       const value=await endpoints[endpoint]({payload,cwd,signal,update,operation});
-      signal.throwIfAborted();update({phase:'completed',completed:1,total:1,label:'执行完成'});return {ok:true,value};
+      if(operation?.value.phase!=='completed')signal.throwIfAborted();
+      update({phase:'completed',completed:1,total:1,label:'执行完成'});return {ok:true,value};
     }catch(error){
       if(signal?.aborted){error=problem(signal.reason?.name==='TimeoutError'?'timeout':'cancelled','执行已取消或超时',error.details||{});}
-      progress.update(operation,{phase:signal?.aborted?'cancelled':'failed',label:error.message});return failure(error);
+      progress.stop(operation,error);
+      if(operation)error.details={...error.details,execution:progress.execution(operation)};
+      return failure(error);
     }finally{active--;}
   };
 }

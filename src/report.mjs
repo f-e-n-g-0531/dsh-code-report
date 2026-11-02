@@ -1,22 +1,25 @@
 export {createAnalysisPlan, analyzeReport} from './analysis.mjs';
 import {cancellableChunks} from './analysis.mjs';
+import {markdownText, markdownFence} from './markdown-text.mjs';
 
-export const inline=value=>String(value).replace(/[\r\n]/g,' ').replace(/[&<>|*_\[\]\x60]/g,c=>'&#'+c.charCodeAt(0)+';');
-export function fence(text,lang=''){const matches=String(text).match(/\x60+/g)||[];let length=3;for(const match of matches)length=Math.max(length,match.length+1);const marker='`'.repeat(length);return marker+lang+'\n'+text+'\n'+marker;}
+export const inline = markdownText;
+export const fence = markdownFence;
 const INTERFACE_NO_MODEL='## 对外接口变更\n\n未调用模型，尚未分析对外接口变更；请人工核对差异，不能据此判断没有接口变化。';
 const INTERFACE_INCOMPLETE='## 对外接口变更\n\n模型未提供独立接口变更章节，当前接口分析不完整，请人工核对或补充证据后重新分析；这不表示没有接口变化。';
 function hasInterfaceHeading(analysis){let fenced=false,marker='',length=0;for(const line of analysis.split(/\r?\n/)){const match=line.match(/^ {0,3}(`{3,}|~{3,})/);if(match){if(!fenced){fenced=true;marker=match[1][0];length=match[1].length;}else if(match[1][0]===marker&&match[1].length>=length)fenced=false;continue;}if(!fenced&&/^ {0,3}#{1,6} +对外接口变更(?: *#*)? *$/.test(line))return true;}return false;}
 export function interfaceSection(analysis){if(!analysis)return INTERFACE_NO_MODEL;return hasInterfaceHeading(analysis)?'':INTERFACE_INCOMPLETE;}
 const ANALYSIS_MISSING='未调用模型。本报告只包含差异证据；业务影响范围与 QA 测试计划尚待人工分析。';
 const LOCAL_ROUTE='模式：本地证据报告（未发送模型）';
-const releaseScopeLines=repositories=>repositories.map(r=>'- **'+inline(r.path)+'** ('+r.type+')：'+inline(r.type==='svn'?r.branchA+' @ r'+r.a:r.requestedA)+' → '+inline(r.type==='svn'?r.branchB+' @ r'+r.b:r.requestedB)+'；固定端点 '+inline(r.a)+' → '+inline(r.b)+'；'+r.files.length+' 个变更路径');
-const sourceLines=context=>context.map(c=>'- '+inline(c.path)+'；'+(c.provenance==='version-A'||c.provenance==='version-B'?inline(c.repository)+'；固定版本 '+inline(c.revision)+'（'+c.provenance+'）':'当前工作区快照')+'；SHA-256 '+c.hash);
-const limitationLines=limitations=>[...limitations.map(x=>'- '+x),'- 模型输出为待人工复核的推断，不代表测试通过、缺陷证明或发布批准。'];
+const releaseScopeLines=repositories=>repositories.map(r=>'- **'+inline(r.path)+'** ('+inline(r.type)+')：'+inline(r.type==='svn'?r.branchA+' @ r'+r.a:r.requestedA)+' → '+inline(r.type==='svn'?r.branchB+' @ r'+r.b:r.requestedB)+'；固定端点 '+inline(r.a)+' → '+inline(r.b)+'；'+r.files.length+' 个变更路径');
+const sourceLines=context=>context.map(c=>'- '+inline(c.path)+'；'+(c.provenance==='version-A'||c.provenance==='version-B'?inline(c.repository)+'；固定版本 '+inline(c.revision)+'（'+c.provenance+'）':'当前工作区快照')+'；SHA-256 '+inline(c.hash));
+const limitationLines=limitations=>[...limitations.map(x=>'- '+inline(x)),'- 模型输出为待人工复核的推断，不代表测试通过、缺陷证明或发布批准。'];
 const routeLine=route=>route?'模型：'+inline(route.provider)+' / '+inline(route.model):LOCAL_ROUTE;
 const excludedPathLines=r=>r.excludedPaths?.length?['','### 排除的内部路径 · '+inline(r.path),'','以下路径仅记录排除清单，正文未读取，不属于分析覆盖：',...r.excludedPaths.map(p=>'- '+inline(p))]:[];
-const evidenceLines=r=>['','### '+inline(r.path),'','差异 SHA-256：'+r.diffHash,'',fence(r.summary,'text'),'',fence(r.diff,'diff')];
-export function markdown(snapshot,analysis,route){
- const out=['# '+inline(snapshot.title),'','生成时间：'+snapshot.createdAt,'','## 发布范围','',...releaseScopeLines(snapshot.repositories),'','## 改动内容、对外接口、影响范围与 QA 测试建议','',analysis||ANALYSIS_MISSING,'',interfaceSection(analysis),'',routeLine(route),'','## 附带源码','',...sourceLines(snapshot.context),'','## 覆盖范围与限制','',...limitationLines(snapshot.limitations),'','## 差异证据'];
+const evidenceLines=r=>['','### '+inline(r.path),'','差异 SHA-256：'+inline(r.diffHash),'',fence(r.summary,'text'),'',fence(r.diff,'diff')];
+export function markdown(snapshot,analysis,route,{structured=false}={}){
+ // Only callers holding program-generated, validated output may opt into structured markup.
+ const renderedAnalysis=analysis?(structured?analysis:fence(analysis,'text')):ANALYSIS_MISSING;
+ const out=['# '+inline(snapshot.title),'','生成时间：'+inline(snapshot.createdAt),'','## 发布范围','',...releaseScopeLines(snapshot.repositories),'','## 改动内容、对外接口、影响范围与 QA 测试建议','',renderedAnalysis,'',interfaceSection(analysis),'',routeLine(route),'','## 附带源码','',...sourceLines(snapshot.context),'','## 覆盖范围与限制','',...limitationLines(snapshot.limitations),'','## 差异证据'];
  for(const r of snapshot.repositories)out.push(...excludedPathLines(r));
  for(const r of snapshot.repositories)out.push(...evidenceLines(r));
  return out.join('\n')+'\n';

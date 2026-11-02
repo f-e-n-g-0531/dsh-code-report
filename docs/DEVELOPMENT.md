@@ -32,12 +32,13 @@ npm run test:install
 
 - [宿主入口](<../index.mjs>)：注册 DSH 服务。
 - [宿主编排](<../src/host.mjs>)：会话目录、预览生命周期、进度、限流、确认与分片重试。测试依赖注入仅为进程内接口，不接受 RPC 覆盖。
-- [共享协议](<../src/protocol.mjs>)：通道和协议版本，不能依赖 Node 或 DSH 服务。新分析计划协议为版本 2，旧界面不能绕过版本门禁。
+- [共享协议](<../src/protocol.mjs>)：通道和协议版本，不能依赖 Node 或 DSH 服务。v0.7.1 使用协议版本 3，包含结构化执行恢复状态；v0.7.0 的协议 2 界面不能绕过版本门禁，升级后需重载前后台。
 - [采集](<../src/collect.mjs>)、[预算](<../src/budget.mjs>)、[路径](<../src/paths.mjs>)、[进程](<../src/process.mjs>)：只读固定版本、来源、增量资源控制及取消。
-- [证据索引](<../src/evidence.mjs>)：文件清单与差异块/源码单元，ID 绑定快照和准确文本，不重写差异正文。
+- [证据索引](<../src/evidence.mjs>)：格式版本 2；统一解析文件清单与差异块/源码单元，ID 绑定快照和准确文本，不重写差异正文。SVN property 头和值分开；路径只精确匹配 included 列表，不能按块序号猜测。无可归属文本的 included 文件/目录（含空字符串根路径）生成独立 scope 范围证据，计入片数及输入预算，不当作正文覆盖。SVN 在排除内部路径后逐 entry 读取时可附 diffParts:{path,start,end}，以完整 diff 的 UTF-16 连续区间绑定采集路径，不改原始正文；整仓 diff 或外部旧快照没有此元数据时不能假定同等定位能力。
 - [结构化分析](<../src/analysis.mjs>)：保守输入预算、顺序分片、输出与引用校验、确定性 Markdown。旧 analyze API 保留供直接调用兼容，宿主新生成流程不回退自由 Markdown。
-- [报告组装](<../src/report.mjs>)：本地差异、模型分析、上下文来源与限制。
+- [报告组装](<../src/report.mjs>)、[文本转义](<../src/markdown-text.mjs>)：统一转义标题、来源、哈希、日期、限制与非受信任分析字符串等字段；保留原始 diff 围栏和 snapshot。旧 analyze 字符串仍原样返回，markdown 入口将自由文本安全呈现；markdown 的可选第四参 {structured:true} 仅供宿主传入 analyzeReport 程序生成且字段已转义的分析，不根据输入字符串识别可信标记，也不接受 RPC 任意声明。
 - [界面](<../src/client.jsx>)、[结果内存](<../src/result-state.mjs>)：配置、快照、报告分开；不保存模型同意，不把源码自动写入 localStorage。
+- [生命周期控制器](<../src/lifecycle-controller.mjs>)：在插件 apply 实例登记模型任务身份，协调业务与安装租约；面板挂载周期不拥有付费任务。该租约不是跨标签或跨客户端的全局锁。
 - [更新界面](<../src/UpdatePanel.jsx>)、[更新控制器](<../src/update-client.mjs>)、[版本查询](<../src/updates.mjs>)：明确确认、原生安装、互斥及重启提示。
 
 界面使用构建时版本，后台版本在模块首次加载时固定。主页面先校验包身份、版本和协议，再自动发现一次。刷新页面不重载后台；生产宿主更新需要按原生结果手动处理，不承诺热更新。
@@ -46,7 +47,7 @@ npm run test:install
 
 首次只扫描根目录和一级子目录，不进入更深目录；最多 500 项目、100000 目录、约 120 秒循环预算。单次文件系统读取和命令另有限制，不能把循环预算称为文件系统硬时限。跳过隐藏、常见缓存及链接目录；合并保留已有输入，新项目不选中。
 
-Git 版本可留空，使用指定本地分支最新提交，再固定 SHA；也可填本地分支、SHA、标签。SVN 两侧必须指定仓库相对分支路径；版本可留空取各分支最新一次提交，显式历史版本仅接受数字或 r 前缀。固定两侧 peg/operative 端点并验证 UUID 和仓库根一致，不允许任意 URL。Git refs 查询只读本地，不 fetch。
+Git 版本可留空，使用指定本地分支最新提交，再固定 SHA；也可填本地分支、SHA、标签。SVN 两侧必须指定仓库相对分支路径；版本可留空取各分支最新一次提交，显式历史版本仅接受数字或 r 前缀。固定两侧 peg/operative 端点并验证 UUID 和仓库根一致，不允许任意 URL。Git refs、发现、差异及版本源码读取均走 runGitRead：清除继承的 GIT_*，设置 GIT_NO_LAZY_FETCH=1、空 GIT_ALLOW_PROTOCOL 和 protocol.allow=never，拒绝按需补取对象。该策略约束 Git 命令，不是操作系统级网络沙箱；真实 HTTP/SSH 等远程组合仍需独立验证。所需对象缺失直接失败，不自动修复 partial clone 或联网。普通 run 供测试建仓等用途，不代替报告读取的限制。Git patch 显式固定前缀、行标记、word diff、算法与 hunk 相关选项，仍不宣称隔离所有仓库配置。
 
 contextPaths 为显式工作区文件列表。versionContexts 为 {repository,path,side:A或B} 列表，repository 必须是已选项目；内容只能从固定版本读取，不存在/非普通文件/符号链接/二进制/非法 UTF-8 时失败，不回退磁盘。context 条目记录 provenance、repository、revision 和哈希。当前工作区源码不作为历史版本证据。
 
@@ -56,13 +57,15 @@ contextPaths 为显式工作区文件列表。versionContexts 为 {repository,pa
 
 preview 返回 expiresAt、固定版本元数据、本地 Markdown 和 analysisPlan。计划只公开 ID、证据 ID、片数、预算与覆盖元数据，不返回内部分片源码。计划不可用时仍可下载本地报告。analysis-plan 可重规划 4000–64000 字节的输入估算预算，包含提示词和 JSON 包装，不是 tokens 或模型适配器实际 wire 长度；最多 32 片。不能保证任意 8 MiB 证据都能在 32 片内完成。
 
-generate 必须提供 sessionId、previewId、匹配的 planId、route 和 sendToModel=true；每片派发前重验会话目录和取消。模型只返回五组数组 changes/interfaces/impacts/qa/unknowns，每项 text/evidenceIds。非未知结论必须引用本片有效证据；未知无引用时明确限制。拒绝自由 Markdown、无效引用、工具调用、截断、未 stop 和结束后输出。每片模型输出含推理最多 256 KiB，maxTokens=8192。
+generate 必须提供 sessionId、previewId、匹配的 planId、route、sendToModel=true 及由前端先登记的 operationId；每片派发前重验会话目录和取消。模型只返回五组数组 changes/interfaces/impacts/qa/unknowns，每项 text/evidenceIds。非未知结论必须引用本片有效证据；未知无引用时明确限制。拒绝自由 Markdown、无效引用、工具调用、截断、未 stop 和结束后输出。每片模型输出含推理最多 256 KiB，maxTokens=8192。
+
+计划与 checkpoint 格式版本均为 2；计划 ID 绑定证据格式、提示及分片 payload 哈希。已完成片必须校验格式、payloadHash、planId、batchId、provider/model 与条目 schema；旧格式或异内容不复用，不悄悄当成功。
 
 成功结果保留各片条目及证据来源，不把机械汇总称为完整跨仓调用图。引用有效只证明定位成立，不证明结论正确；已处理片数不等于代码理解覆盖率。质量评测应人工检查接口漏报、误报、证据支持度及 QA 可执行性，不能只验证 schema。
 
-预览宿主内存最多 16 项，总源证据 32 MiB，开始分析前满 10 分钟拒绝；重规划不延长有效期。进行中预览不被清理；成功删除预览，并按 operationId 在进度缓存中短期保留可只读恢复的报告；若生成响应丢失，只查询 result，不自动重发模型调用。报告缓存总正文最多 32 MiB、10 分钟、受进度容量淘汰；未知状态提示操作者先恢复，不保证永久留存。失败保留已校验片及覆盖信息，只有同计划、同路由可再次确认后重试剩余片；改变计划/路由清缓存，不自动重试模型。若请求已发送，撤回与计费依服务端而定。
+预览宿主内存最多 16 项，总源证据 32 MiB，开始分析前满 10 分钟拒绝；重规划不延长有效期。进行中预览不被清理；成功删除预览，并按 operationId 在进度缓存中短期保留可只读恢复的报告；若生成响应丢失，只查询 result，不自动重发模型调用。报告缓存总正文最多 32 MiB，终态记录 10 分钟，受进度容量淘汰；未知状态提示操作者先恢复，不保证永久留存。result 结构化区分 completed（正文可用）、pending（仍在运行）、stopped（宿主本地停止）与 unavailable（完成但正文不在）；记录过期或归属变化不能证明未执行。execution 包含 backendInstanceId、dispatch/dispatchCount、completedBatches/totalBatches、resultAvailability 和本地阶段；次数是本地派发记录，不是供应商计费收据。同 operationId 仅允许完全相同的会话/目录/端点/请求指纹：已完成且正文还在可重放结果，其他情况只读核对不重派。后台实例保留最多 1024 个付费 ID 身份，达到上限拒绝新付费任务，不静默忘记后复用。恢复或下载不会释放名额；先核对并下载需要的结果，再由操作者有计划地重载，重载会丢失内存身份及报告，不会续跑或迁移任务。失败保留已校验片及覆盖信息，只有同计划、同路由可再次确认后重试剩余片；改变计划/路由清缓存，不自动重试模型。若请求已发送，撤回与计费依服务端而定。
 
-报告按 session+cwd 在当前插件实例内存保留当前展示与最近成功模型报告，最多 16 会话/32 MiB，可能淘汰；新本地采集不覆盖最近模型副本。修改草稿只作 stale 标记，不把旧报告当新范围结果；切回会话不恢复模型同意或活动预览。未知结果的恢复句柄仅存 operationId，独立内存最多 64 会话；切回仍阻断新生成和更新，只有只读恢复或明确放弃后解除。刷新/重载前应恢复并下载。
+报告按 session+cwd 在当前插件实例内存保留当前展示与最近成功模型报告，最多 16 会话/32 MiB，可能淘汰；新本地采集不覆盖最近模型副本。修改草稿只作 stale 标记，不把旧报告当新范围结果；切回会话不恢复模型同意或活动预览。未知结果的恢复身份不随报告正文 LRU 淘汰。付费任务归 apply 实例而非 Panel 所有；离开面板或切换会话不等于取消，结果写回原 session+cwd。取消后仍保留任务身份，须只读核对；不能按错误文案推断未派发、未计费或可安全重试。业务、refs 与安装使用同实例租约，最多一个 active/unknown 付费任务；结果未知时阻止新业务及安装。只读恢复和下载不受新业务版本/更新门禁控制，但恢复仍须通过宿主会话权限检查。明确停止后仍需新 operationId 和重新授权才能重试；放弃恢复只标记操作者意图，不释放未知任务租约；仍须宿主明确 stopped/completed 后才能新业务或安装，不停止供应商请求，也不证明免费。刷新/重载会丢失前端内存，不承诺跨刷新、宿主重启恢复或供应商 exactly-once；刷新/重载前应恢复并下载。
 
 ## 安全与可重复证明
 

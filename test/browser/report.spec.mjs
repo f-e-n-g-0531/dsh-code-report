@@ -168,6 +168,97 @@ test('native update restart barrier survives session remount and prevents repeat
  expect((await stats(page)).installCalls).toBe(1);expect((await stats(page)).modelCalls).toBe(0);
 });
 
+
+async function startHeldAnalysis(page,options={}){
+ await open(page,{holdGenerate:true,...options});await selectGit(page);await collect(page);await route(page);await consent(page).check();await generate(page).click();
+ await expect.poll(async()=>(await stats(page)).modelCalls).toBe(1);
+}
+async function assertPaidProof(page,{dispatches=1,installs=0}={}){
+ const value=await stats(page);expect(value.modelCalls).toBe(dispatches);expect(value.calls.filter(call=>call.endpoint==='generate')).toHaveLength(dispatches);expect(value.installCalls).toBe(installs);
+ const identifiers=value.calls.filter(call=>call.endpoint==='generate').map(call=>call.payload.operationId);expect(new Set(identifiers).size).toBe(identifiers.length);
+ return value;
+}
+async function downloadCurrent(page){const pending=page.waitForEvent('download');await page.getByRole('button',{name:'下载 .md 文件',exact:true}).click();return readFile(await (await pending).path(),'utf8');}
+
+test('terminal paid completion and stopped proof clear a previously polled analyzing state',async({page})=>{
+ for(const failGenerate of [false,true]){
+  await startHeldAnalysis(page,{failGenerate});await expect(page.locator('.cr-progress')).toContainText('fixture analyzing');
+  const before=await stats(page);const operationId=before.calls.find(call=>call.endpoint==='generate').payload.operationId;
+  expect(before.calls.some(call=>call.endpoint==='progress'&&call.payload.operationId===operationId)).toBe(true);
+  await page.evaluate(()=>window.fixture.releaseGenerate());
+  if(failGenerate){await expect(page.getByRole('alert').filter({hasText:'fixture 模型失败'})).toBeVisible();await expect(page.locator('.cr-progress')).toContainText('fixture 模型失败');}
+  else {await expect(report(page)).toContainText('模型报告 a');await expect(page.locator('.cr-progress')).toContainText('模型分析完成');}
+  await expect(page.locator('.cr-progress')).not.toContainText('fixture analyzing');await expect(capture(page)).toBeEnabled();await assertPaidProof(page);
+ }
+});
+
+test('in-place successful analysis is fresh and session restoration remains conservatively stale',async({page})=>{
+ await startHeldAnalysis(page);await expect(page.locator('.cr-progress')).toContainText('fixture analyzing');
+ await page.evaluate(()=>window.fixture.releaseGenerate());await expect(report(page)).toContainText('模型报告 a');
+ const stale=page.getByRole('status').filter({hasText:'已有报告与当前草稿可能不同，旧结果已保留'});await expect(stale).toHaveCount(0);
+ await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await expect(report(page)).toHaveCount(0);
+ await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await expect(report(page)).toContainText('模型报告 a');await expect(stale).toBeVisible();await assertPaidProof(page);
+});
+
+test('in-flight paid work survives Panel detach and late success returns only to original session',async({page})=>{
+ await startHeldAnalysis(page);await page.getByRole('button',{name:'测试会话 B',exact:true}).click();
+ await expect(page.locator('.cr-workspace')).toContainText('G:/fixture/b');await expect(report(page)).toHaveCount(0);
+ await expect(capture(page)).toBeDisabled();await page.evaluate(()=>window.fixture.releaseGenerate());
+ await expect.poll(async()=>(await stats(page)).settledGenerations).toBe(1);await page.getByRole('button',{name:'测试会话 A',exact:true}).click();
+ await expect(report(page)).toContainText('模型报告 a');expect((await stats(page)).generateAborts).toBe(0);await assertPaidProof(page);
+});
+
+test('detached paid response loss retains same operation for read-only recovery',async({page})=>{
+ await startHeldAnalysis(page,{failGenerateResponse:true});await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await page.evaluate(()=>window.fixture.releaseGenerate());
+ await expect.poll(async()=>(await stats(page)).settledGenerations).toBe(1);await expect(report(page)).toHaveCount(0);
+ await page.getByRole('button',{name:'测试会话 A',exact:true}).click();
+ const recovery=page.getByRole('button',{name:'恢复已完成报告',exact:true});
+ if(await recovery.count())await recovery.click();await expect(report(page)).toContainText('模型报告 a');
+ const proof=await assertPaidProof(page);expect(proof.generateAborts).toBe(0);const paid=proof.calls.find(call=>call.endpoint==='generate');const reads=proof.calls.filter(call=>call.endpoint==='result');expect(reads.length).toBeGreaterThan(0);expect(reads.every(call=>call.payload.operationId===paid.payload.operationId&&call.payload.sessionId==='a')).toBe(true);
+});
+
+test('explicit paid cancellation retains unknown identity and later completion restores without dispatch',async({page})=>{
+ await startHeldAnalysis(page);await page.getByRole('button',{name:'取消模型任务',exact:true}).click();
+ await expect(page.getByRole('button',{name:'恢复已完成报告',exact:true})).toBeVisible();await expect(capture(page)).toBeDisabled();
+ const before=await assertPaidProof(page);expect(before.generateAborts).toBe(1);const operation=before.calls.find(call=>call.endpoint==='generate').payload.operationId;
+ await page.getByRole('checkbox',{name:'我确认标记放弃恢复；未知任务屏障仍保留，不解锁新业务或安装',exact:true}).check();await page.getByRole('button',{name:'放弃恢复',exact:true}).click();await expect(capture(page)).toBeDisabled();await expect(generate(page)).toBeDisabled();
+ await page.getByRole('button',{name:'恢复已完成报告',exact:true}).click();await expect(capture(page)).toBeDisabled();
+ await page.evaluate(()=>window.fixture.releaseGenerate());await expect.poll(async()=>(await stats(page)).settledGenerations).toBe(1);
+ await page.getByRole('button',{name:'恢复已完成报告',exact:true}).click();await expect(report(page)).toContainText('模型报告 a');
+ const after=await assertPaidProof(page);expect(after.calls.filter(call=>call.endpoint==='result').every(call=>call.payload.operationId===operation)).toBe(true);
+});
+
+test('unknown paid work in A blocks installation and refs in B while downloads remain local',async({page})=>{
+ await open(page);await selectGit(page);await collect(page);await analyze(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
+ await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await selectGit(page);await collect(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
+ await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await collect(page);await route(page);
+ await page.evaluate(()=>window.fixture.configure({holdGenerate:true}));await consent(page).check();await generate(page).click();await expect.poll(async()=>(await stats(page)).modelCalls).toBe(2);
+ await page.getByRole('button',{name:'取消模型任务',exact:true}).click();await expect(page.getByRole('button',{name:'恢复已完成报告',exact:true})).toBeVisible();
+ await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await expect(report(page)).toContainText('本地证据 b');await expect(capture(page)).toBeDisabled();
+ await expect(page.getByRole('button',{name:'读取本地分支/标签',exact:true})).toBeDisabled();
+ await page.getByText(/插件版本与更新 ·/).click();const update=page.getByRole('button',{name:'检查更新',exact:true});if(await update.isEnabled())await update.click();
+ const install=page.getByRole('button',{name:'更新到 99.0.0',exact:true});if(await install.count())await expect(install).toBeDisabled();
+ const before=await stats(page);expect(await downloadCurrent(page)).toContain('本地证据 b');expect((await stats(page)).calls).toEqual(before.calls);
+ await page.evaluate(()=>window.fixture.releaseGenerate());await expect.poll(async()=>(await stats(page)).settledGenerations).toBe(2);
+ await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await page.getByRole('button',{name:'恢复已完成报告',exact:true}).click();await expect(report(page)).toContainText('模型报告 a');await assertPaidProof(page,{dispatches:2});
+});
+
+test('native installation lease blocks cross-session refs and collection but preserves downloads',async({page})=>{
+ await open(page,{holdInstall:true});await selectGit(page);await collect(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
+ await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await selectGit(page);await collect(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
+ await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await page.getByText(/插件版本与更新 ·/).click();await page.getByRole('button',{name:'检查更新',exact:true}).click();await page.getByRole('checkbox',{name:/我确认将此插件更新到/}).check();await page.getByRole('button',{name:'更新到 99.0.0',exact:true}).click();
+ await expect.poll(async()=>(await stats(page)).installCalls).toBe(1);await page.getByRole('button',{name:'测试会话 B',exact:true}).click();
+ await expect(capture(page)).toBeDisabled();await expect(page.getByRole('button',{name:'读取本地分支/标签',exact:true})).toBeDisabled();const before=await stats(page);expect(await downloadCurrent(page)).toContain('本地证据 b');expect((await stats(page)).calls).toEqual(before.calls);
+ await page.evaluate(()=>window.fixture.releaseInstall());await expect(page.getByRole('alert').filter({hasText:/重启/}).first()).toBeVisible();await assertPaidProof(page,{dispatches:0,installs:1});
+});
+
+test('a held refs request owns the business lease and prevents concurrent native installation',async({page})=>{
+ await open(page,{holdRefs:true});await selectGit(page);await page.getByText(/插件版本与更新 ·/).click();await page.getByRole('button',{name:'检查更新',exact:true}).click();await page.getByRole('checkbox',{name:/我确认将此插件更新到/}).check();
+ await page.getByRole('button',{name:'读取本地分支/标签',exact:true}).click();await expect.poll(async()=>(await stats(page)).calls.filter(call=>call.endpoint==='refs').length).toBe(1);
+ await expect(page.getByRole('button',{name:'更新到 99.0.0',exact:true})).toBeDisabled();await expect(capture(page)).toBeDisabled();await assertPaidProof(page,{dispatches:0});
+ await page.evaluate(()=>window.fixture.releaseRefs());await expect(page.getByText('已载入 3 个本地引用，在 A/B 输入中选择；不会 fetch。')).toBeVisible();await expect(page.getByRole('button',{name:'更新到 99.0.0',exact:true})).toBeEnabled();
+});
+
 for(const width of [320,680,1280])test('viewport '+width+' supports long paths, 500 rows and keyboard selection',async({page},testInfo)=>{
  await page.setViewportSize({width,height:900});const errors=await open(page,{count:500});
  await expect(page.getByRole('checkbox',{name:/^纳入项目 [0-9]+$/})).toHaveCount(500);

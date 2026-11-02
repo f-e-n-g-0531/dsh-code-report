@@ -5,16 +5,18 @@ import RepositoryCards from './RepositoryCards.jsx';
 import {version} from '../package.json';
 import {runtimeGate} from './protocol.mjs';
 import {createUpdateController} from './update-client.mjs';
+import {createLifecycleController} from './lifecycle-controller.mjs';
 import {createClientRpc} from './client-rpc.mjs';
 import {fresh,mergeRepositories,repositoryIssues} from './repositories.mjs';
 import {DEFAULT_SCAN,loadConfiguration,saveConfiguration} from './configuration.mjs';
-import {createResultStore,staleResult,previewExpired,generationBlocker,parseVersionContexts,captureBlocker,needsResultRecovery,readCompletedResult} from './result-state.mjs';
+import {createResultStore,staleResult,previewExpired,generationBlocker,parseVersionContexts,captureBlocker,completedViewResult,terminalAnalysisProgress} from './result-state.mjs';
 export const inject=['slots','connection','remote','remote.pluginManager'];
 
 export function apply(ctx){
  const rpc=createClientRpc(ctx.connection);
- const updateController=createUpdateController();
  const results=createResultStore();
+ const lifecycle=createLifecycleController({rpc,results});
+ const updateController=createUpdateController({lifecycle});
  function Page(props){
   const session=props.useSessions(s=>Object.values(s.byId).find(row=>(row.retainedBy.mainView??0)>0));
   return <Panel key={JSON.stringify([session?.id,session?.cwd])} session={session}/>;
@@ -43,9 +45,25 @@ export function apply(ctx){
   const [provider,setProvider]=useState(saved?.provider||''),[model,setModel]=useState(saved?.model||''),[consent,setConsent]=useState(false);
   const [preview,setPreview]=useState(null),[result,setResult]=useState(()=>results.get(session));
   const [latestAnalysis,setLatestAnalysis]=useState(()=>results.getAnalysis(session));
-  const [pendingRecovery,setPendingRecovery]=useState(()=>results.getRecovery(session)),[abandonConfirmed,setAbandonConfirmed]=useState(false);
-  const pendingRecoveryRef=useRef(pendingRecovery);
-  const setRecovery=value=>{results.setRecovery(session,value);pendingRecoveryRef.current=value;setPendingRecovery(value);setAbandonConfirmed(false);};
+  const [lifecycleState,setLifecycleState]=useState(()=>lifecycle.getSnapshot());
+  useEffect(()=>lifecycle.subscribe(setLifecycleState),[]);
+  const ownTask=lifecycleState.paid?.sessionKey===JSON.stringify([session?.id,session?.cwd])?lifecycleState.paid:null;
+  const pendingRecovery=ownTask;
+  const pendingRecoveryRef=useRef(pendingRecovery);pendingRecoveryRef.current=pendingRecovery;
+  const [abandonConfirmed,setAbandonConfirmed]=useState(false),[recovering,setRecovering]=useState(false);
+  const globalBusy=!!lifecycleState.lease;
+  const draftRevision=useRef(0),submittedOperation=useRef(null);
+  useEffect(()=>{
+   if(lifecycleState.lastCompleted?.sessionKey===JSON.stringify([session?.id,session?.cwd])){
+    setResult(completedViewResult(results.get(session),lifecycleState.lastCompleted,submittedOperation.current,draftRevision.current));
+    setLatestAnalysis(results.getAnalysis(session));setPreview(null);setConsent(false);
+    setProgress(terminalAnalysisProgress(lifecycleState.lastCompleted));setProgressWarning('');
+   }
+   if(lifecycleState.lastFailure?.sessionKey===JSON.stringify([session?.id,session?.cwd])){
+    setError(lifecycleState.lastFailure.message);setConsent(false);
+    setProgress(terminalAnalysisProgress(null,lifecycleState.lastFailure));setProgressWarning('');
+   }
+  },[lifecycleState.lastCompleted,lifecycleState.lastFailure]);
   const [busy,setBusy]=useState(''),[error,setError]=useState(''),[progress,setProgress]=useState(null),[progressWarning,setProgressWarning]=useState('');
   const [scanState,setScanState]=useState('idle'),[scanError,setScanError]=useState(''),[scanWarnings,setScanWarnings]=useState([]),[visited,setVisited]=useState(null);
   const [inputBudget,setInputBudget]=useState('24000'),[planDirty,setPlanDirty]=useState(false),[now,setNow]=useState(Date.now);
@@ -57,12 +75,23 @@ export function apply(ctx){
   },[preview?.previewId]);
   useEffect(()=>{
    const id=preview?.previewId;
-   return()=>{if(id&&session?.id)void rpc('release-preview',{sessionId:session.id,previewId:id}).catch(()=>{});};
+   return()=>{if(id&&session?.id&&!lifecycle.hasPaid(session))void rpc('release-preview',{sessionId:session.id,previewId:id}).catch(()=>{});};
   },[preview?.previewId,session?.id]);
   const expired=preview?previewExpired(preview,now):false;
   useEffect(()=>{if(expired)setConsent(false);},[expired]);
+  useEffect(()=>{
+   if(!ownTask)return;
+   const ac=new AbortController();let timer,failures=0;
+   const poll=async()=>{
+    try{const value=await rpc('progress',{sessionId:session.id,operationId:ownTask.operationId},ac.signal);if(!ac.signal.aborted){setProgress(value);setProgressWarning('');failures=0;}}
+    catch(error){if(!ac.signal.aborted&&++failures>=2)setProgressWarning('进度连接暂时失联；任务身份仍保留，请只读恢复。'+error.message);}
+    if(!ac.signal.aborted)timer=setTimeout(poll,500);
+   };
+   timer=setTimeout(poll,250);return()=>{ac.abort();clearTimeout(timer);};
+  },[ownTask?.operationId]);
   const keepResult=value=>{results.set(session,value);setResult(value);setLatestAnalysis(results.getAnalysis(session));};
   const invalidate=()=>{
+   draftRevision.current++;
    setPreview(null);setConsent(false);setProgress(null);setPlanDirty(false);
    setResult(previous=>{const next=staleResult(previous);if(next)results.set(session,next);return next;});
   };
@@ -84,6 +113,7 @@ export function apply(ctx){
    const update=updateController.getSnapshot();
    if(controller.current)return;
    if(compatibility||update.updating||update.barrier){setError(compatibility||'更新未完成或需要重载');return;}
+   let lease;try{lease=lifecycle.acquireBusiness(label,session);}catch(error){setError(error.message);return;}
    const ac=new AbortController();controller.current=ac;setBusy(label);setError('');setProgressWarning('');setProgress({phase:'starting',label});
    try{
     await fn(ac.signal);
@@ -96,6 +126,7 @@ export function apply(ctx){
      if(error.code==='code-report/preview-expired'){setPreview(previous=>previous?{...previous,expiresAt:0}:null);setConsent(false);}
     }
    }finally{
+    lease.release();
     if(controller.current===ac){controller.current=null;if(mounted.current){if(ac.signal.aborted)setProgress({phase:'cancelled',label:'执行已取消；已有报告已保留'});setBusy('');setProgressWarning('');}}
    }
   };
@@ -109,20 +140,6 @@ export function apply(ctx){
    };
    timer=setTimeout(poll,250);
    try{return await rpc(endpoint,{...payload,operationId},signal);}
-   catch(error){
-    if(endpoint!=='generate'||signal.aborted||!needsResultRecovery(error))throw error;
-    // A successful paid call can lose only its response. Query once; never redispatch it.
-    let recovered;
-    try{recovered=await readCompletedResult(rpc,session.id,operationId,AbortSignal.any([signal,AbortSignal.timeout(15000)]));}
-    catch{/* Keep an ambiguous outcome recoverable by a manual read-only request. */}
-    if(signal.aborted||!mounted.current)throw error;
-    if(recovered?.status==='completed')return recovered.result;
-    if(recovered?.status!=='failed'){
-     setRecovery({operationId});
-     throw new Error('分析响应中断，任务结果尚未确认。请使用“恢复已完成报告”只读查询；不会再次调用模型或计费。');
-    }
-    throw error;
-   }
    finally{polling.abort();clearTimeout(timer);}
   };
   const scan=()=>{
@@ -137,13 +154,13 @@ export function apply(ctx){
     }catch(error){if(mounted.current){setScanState(signal.aborted?'cancelled':'failed');if(!signal.aborted)setScanError(error.message);}throw error;}
    });
   };
-  useEffect(()=>{if(session?.id&&!compatibility&&!initialScanStarted.current){initialScanStarted.current=true;void scan();}},[session?.id,compatibility]);
+  useEffect(()=>{if(session?.id&&!compatibility&&!lifecycle.getSnapshot().lease&&!initialScanStarted.current){initialScanStarted.current=true;void scan();}},[session?.id,compatibility,lifecycleState.revision]);
   let versionContexts=[],contextIssue='';
   try{
    versionContexts=parseVersionContexts(versionContext,rows);
    if(versionContexts.length+context.split(/\r?\n/).filter(line=>line.trim()).length>20)contextIssue='当前工作区与版本源码合计最多 20 个文件。';
   }catch(error){contextIssue=error.message;}
-  const issues=repositoryIssues(rows),captureReason=pendingRecovery?'上次分析结果尚未确认，请先恢复报告或明确放弃恢复。':captureBlocker(rows,network,busy,compatibility,issues,contextIssue);
+  const issues=repositoryIssues(rows),captureReason=globalBusy?'当前插件实例有任务或更新尚未确认，请先完成或恢复。':captureBlocker(rows,network,busy,compatibility,issues,contextIssue);
   const capture=()=>{
    if(captureReason)return;
    return perform('采集版本差异',async signal=>{
@@ -152,38 +169,31 @@ export function apply(ctx){
     if(!signal.aborted&&mounted.current){setNow(Date.now());setPreview(value);setInputBudget(String(value.analysisPlan?.inputBudget||24000));keepResult({markdown:value.markdown,stale:false,kind:'local'});}
    });
   };
-  const generateReason=generationBlocker({preview,now,compatibility,busy,consent,provider,model,pendingRecovery})||(planDirty?'输入预算已变化，请先更新分析计划。':'');
+  const generateReason=generationBlocker({preview,now,compatibility,busy:busy||(globalBusy?'其他任务执行中':''),consent,provider,model,pendingRecovery})||(planDirty?'输入预算已变化，请先更新分析计划。':'');
   const generate=()=>{
    const approved=consent;setConsent(false);
-   if(generateReason||pendingRecoveryRef.current)return;
-   return perform('模型分析中',async signal=>{
-    const value=await tracked('generate',{sessionId:session.id,previewId:preview.previewId,planId:preview.analysisPlan.id,sendToModel:approved,route:{provider:provider.trim(),model:model.trim()}},signal);
-    if(!signal.aborted&&mounted.current){keepResult({markdown:value.markdown,stale:false,coverage:value.coverage,kind:'analysis'});setPreview(null);setRecovery(null);}
-   });
+   if(generateReason||lifecycle.getSnapshot().lease)return;
+   try{
+    setError('');
+    const operation=lifecycle.startGenerate(session,{previewId:preview.previewId,planId:preview.analysisPlan.id,sendToModel:approved,route:{provider:provider.trim(),model:model.trim()}});
+    submittedOperation.current={operationId:operation.operationId,draftRevision:draftRevision.current};
+   }catch(error){setError(error.message);}
   };
-  const recover=()=>{
-   const pending=pendingRecoveryRef.current;
-   if(!pending)return;
-   return perform('只读恢复报告',async signal=>{
-    const response=await readCompletedResult(rpc,session.id,pending.operationId,AbortSignal.any([signal,AbortSignal.timeout(15000)]));
-    if(signal.aborted||!mounted.current)return;
-    setConsent(false);
-    if(response.status==='completed'){
-     keepResult({markdown:response.result.markdown,coverage:response.result.coverage,stale:false,kind:'analysis'});
-     setPreview(null);setRecovery(null);
-    }else if(response.status==='failed'){
-     setRecovery(null);setError('已确认上次分析任务失败；可重新确认后重试剩余分片。');
-    }else setError('后台任务仍在执行，结果尚未确认；请稍后再次只读恢复，勿重复生成。');
-   });
+  const recover=async()=>{
+   if(recovering||!lifecycle.hasPaid(session))return;
+   setRecovering(true);setConsent(false);setError('');
+   try{await lifecycle.recover(session);}catch(error){if(mounted.current)setError(error.message);}
+   finally{if(mounted.current)setRecovering(false);}
   };
   const abandonRecovery=()=>{
    if(!abandonConfirmed||busy)return;
-   setRecovery(null);setConsent(false);setError('你已明确放弃恢复。再次生成可能重复调用和计费，请重新确认；原快照可能已失效。');
+   try{lifecycle.abandon(session);setAbandonConfirmed(false);setConsent(false);setError('已标记放弃恢复，但未知任务的安全屏障继续保留；请核对到宿主明确停止或完成，不能据此重新派发或安装。');}
+   catch(error){setError(error.message);}
   };
   const budgetValid=/^\d+$/.test(inputBudget)&&Number(inputBudget)>=4000&&Number(inputBudget)<=64000;
   const replan=()=>{
    setConsent(false);
-   if(!preview||expired||!budgetValid||pendingRecoveryRef.current)return;
+   if(!preview||expired||!budgetValid||globalBusy)return;
    return perform('更新分析计划',async signal=>{
     const value=await tracked('analysis-plan',{sessionId:session.id,previewId:preview.previewId,inputBudget:Number(inputBudget)},signal);
     if(!signal.aborted&&mounted.current){setPreview(previous=>({...previous,analysisPlan:value.analysisPlan,planError:null}));setPlanDirty(false);}
@@ -191,34 +201,36 @@ export function apply(ctx){
   };
   const loadRefs=async(repositoryPath,signal)=>{
    if(compatibility||updateController.getSnapshot().updating||updateController.getSnapshot().barrier)throw new Error('后台或更新状态尚不可用');
-   return (await rpc('refs',{sessionId:session.id,repositoryPath},signal)).refs;
+   const lease=lifecycle.acquireBusiness('读取本地 refs',session);
+   try{return (await rpc('refs',{sessionId:session.id,repositoryPath},signal)).refs;}finally{lease.release();}
   };
   return <section className="cr-root"><style>{css}</style>
    <header><div><small>DSH CODE REPORT · {version}</small><h1>发布报告配置</h1><p>版本差异 · 对外接口变更 · 影响范围 · QA 测试建议</p></div><div className="cr-actions"><button disabled={!session||!!busy||updating} onClick={store}>保存配置</button><button disabled={!session||!!busy||updating||!!pendingRecovery} onClick={restore}>恢复已保存</button></div></header>
-   <details className="cr-update-details"><summary>插件版本与更新 · {version}</summary><UpdatePanel rpc={rpc} manager={ctx.remote?.pluginManager} reportBusy={!!busy||!!pendingRecovery} controller={updateController} updateState={updateState}/></details>
+   <details className="cr-update-details"><summary>插件版本与更新 · {version}</summary><UpdatePanel rpc={rpc} manager={ctx.remote?.pluginManager} reportBusy={!!busy||!!lifecycleState.paid||lifecycleState.lease?.kind==='business'} controller={updateController} updateState={updateState}/></details>
    {configNotice&&<p className="cr-hint" role="status">{configNotice}</p>}
    {compatibility&&<div className="cr-error" role="alert">{compatibility}<button disabled={!!busy||updating||!!updateBarrier} onClick={()=>setRuntimeAttempt(value=>value+1)}>重新验证后台</button></div>}
-   <fieldset className="cr-report-form" disabled={updating}>
+   <fieldset className="cr-report-form">
     {!session?<p role="status">请先打开一个带工作目录的会话。</p>:<>
      <p className="cr-workspace">当前工作区：{session.cwd} · 仅读取，不修改版本库</p>
-     <div className="cr-scan-settings"><button disabled={!!busy||!!compatibility} onClick={scan}>扫描 / 重新发现</button>{busy==='扫描项目'&&<button onClick={()=>controller.current?.abort()}>取消扫描</button>}<span className="cr-hint">只检查工作区根目录及一级子文件夹，不递归。{visited!==null?'上次检查 '+visited+' 个目录。':''}嵌套项目可手动添加；已保存的项目不会自动删除。</span></div>
-     <fieldset disabled={!!busy||!!pendingRecovery}><legend>1. 发布范围</legend><label className="cr-wide">报告标题<input value={title} onChange={event=>{invalidate();setTitle(event.target.value);}} maxLength={160}/></label>
+     <div className="cr-scan-settings"><button disabled={!!busy||!!compatibility||globalBusy} onClick={scan}>扫描 / 重新发现</button>{busy==='扫描项目'&&<button onClick={()=>controller.current?.abort()}>取消扫描</button>}<span className="cr-hint">只检查工作区根目录及一级子文件夹，不递归。{visited!==null?'上次检查 '+visited+' 个目录。':''}嵌套项目可手动添加；已保存的项目不会自动删除。</span></div>
+     <fieldset disabled={!!busy||globalBusy}><legend>1. 发布范围</legend><label className="cr-wide">报告标题<input value={title} onChange={event=>{invalidate();setTitle(event.target.value);}} maxLength={160}/></label>
       <div className="cr-section-intro"><div><h2>工作区项目</h2><p>{scanStateLabel(scanState)}当前列表 {rows.length} 个项目 · 已纳入 {rows.filter(row=>row.enabled).length} / 12。勾选需要生成报告的项目。</p></div><div className="cr-actions"><button onClick={()=>{invalidate();setRows(rows.map(row=>({...row,enabled:false})));}}>全部取消</button><button onClick={()=>{invalidate();setRows(rows.map((row,index)=>({...row,enabled:index<12})));}}>纳入前 12 项</button></div></div>
       {scanError&&<p className="cr-error" role="alert">{scanError}</p>}{scanWarnings.length>0&&<ul className="cr-scan-warnings">{scanWarnings.map((warning,index)=><li key={index}>{warning}</li>)}</ul>}
-      <RepositoryCards replace={next=>{invalidate();setRows(next);}} scanState={scanState} rows={rows} change={change} remove={index=>{invalidate();setRows(rows.filter((_,i)=>i!==index));}} loadRefs={loadRefs} refsDisabled={!!compatibility}/>
+      <RepositoryCards replace={next=>{invalidate();setRows(next);}} scanState={scanState} rows={rows} change={change} remove={index=>{invalidate();setRows(rows.filter((_,i)=>i!==index));}} loadRefs={loadRefs} refsDisabled={!!compatibility||globalBusy}/>
       <button disabled={rows.length>=500} onClick={()=>{invalidate();setRows([...rows,fresh()]);}}>＋ 添加项目</button>
       <p className="cr-hint">自动扫描当前工作区，保留已经填写的版本。路径相对于工作区，根目录填「.」。版本留空默认取对应 A/B 分支最新提交；两侧分支相同且版本均留空时无差异。Git 仅用本地已有分支，不自动 fetch；SVN 仍需历史读取授权。</p>
       <label className="cr-check"><input type="checkbox" checked={network} onChange={event=>{invalidate();setNetwork(event.target.checked);}}/> 允许通过 SVN 工作副本地址读取历史版本（可能访问网络；此勾选随工作区配置保存，不保存密码）</label>
       <label className="cr-check"><input type="checkbox" checked={allowBatches} onChange={event=>{invalidate();setAllowBatches(event.target.checked);}}/> 允许分批分析较大差异（总证据最多 8 MiB；默认 1 MiB，多片可能多次计费，发送前再次确认）</label>
      </fieldset>
-     <details className="cr-optional"><summary>2. 附带项目源码（可选）{context.trim()||versionContext.trim()?' · 已填写':''}</summary><fieldset disabled={!!busy||!!pendingRecovery}><legend>源码文件</legend><p>每行填写一个工作区内的源码文件路径。仅附带明确选中的文件；不会自动打包整仓或扫描调用链。</p>
+     <details className="cr-optional"><summary>2. 附带项目源码（可选）{context.trim()||versionContext.trim()?' · 已填写':''}</summary><fieldset disabled={!!busy||globalBusy}><legend>源码文件</legend><p>每行填写一个工作区内的源码文件路径。仅附带明确选中的文件；不会自动打包整仓或扫描调用链。</p>
       <textarea aria-label="源码上下文路径" rows={4} placeholder={'app/src/api.ts\napp/src/config.ts'} value={context} onChange={event=>{invalidate();setContext(event.target.value);}}/>
       <label>固定版本源码（每行：仓库路径|A或B|仓库相对路径）<textarea aria-label="固定版本源码路径" rows={3} placeholder="app|A|src/api.ts" value={versionContext} onChange={event=>{invalidate();setVersionContext(event.target.value);}}/></label>
       <p className="cr-hint">两种来源合计最多 20 个 UTF-8 文本文件，单文件 128 KiB；当前工作区内容与历史 A/B 版本分开标记。敏感路径被拦截，但仍须自行检查源码内的密钥。</p>{contextIssue&&<p role="alert" className="cr-error">{contextIssue}</p>}
      </fieldset></details>
      <div className="cr-actions cr-execute"><button className="cr-primary" disabled={!!captureReason} aria-describedby={captureReason?'cr-capture-reason':undefined} onClick={capture}>开始执行 · 采集差异</button>{captureReason&&<span id="cr-capture-reason" role="status" aria-live="polite">{captureReason}</span>}{busy&&<><span role="status">{busy}…</span><button onClick={()=>controller.current?.abort()}>取消</button></>}</div>
-     {pendingRecovery&&<section className="cr-stale" aria-label="报告恢复"><p role="status">上次分析响应中断，结果尚未确认。恢复只读取已有报告，不调用模型、不再次计费。恢复标识仅在当前插件实例内按会话及工作区暂存，切回原会话可继续恢复；刷新、重载前请恢复并下载。</p><button disabled={!!busy||!!compatibility} onClick={recover}>恢复已完成报告</button><label className="cr-check"><input type="checkbox" checked={abandonConfirmed} disabled={!!busy} onChange={event=>setAbandonConfirmed(event.target.checked)}/>我确认放弃只读恢复；再次生成可能重复调用和计费</label><button disabled={!!busy||!abandonConfirmed} onClick={abandonRecovery}>放弃恢复</button></section>}
-     {preview&&<PreviewSection preview={preview} busy={busy||(pendingRecovery?'等待只读恢复':'')} expired={expired} provider={provider} model={model} consent={consent} setProvider={setProvider} setModel={setModel} setConsent={setConsent} generateReason={generateReason} onGenerate={generate} onCapture={capture} inputBudget={inputBudget} budgetValid={budgetValid} planDirty={planDirty} onBudget={value=>{setInputBudget(value);setConsent(false);setPlanDirty(true);}} onReplan={replan} compatibility={compatibility} now={now}/>}
+     {lifecycleState.paid&&!ownTask&&<p className="cr-stale" role="status">其他会话有模型任务执行中或结果未知；本插件实例暂停新业务和安装。请回原会话恢复。此互斥不覆盖其他标签页或客户端。</p>}
+     {pendingRecovery&&<section className="cr-stale" aria-label="报告恢复"><p role="status">{pendingRecovery.message} 恢复只读取已有报告，不调用模型、不再次计费。任务归属保留在当前插件实例，切换会话仅分离视图，不取消模型。恢复标识按会话及工作区暂存；刷新、重载或更换客户端不保证恢复，请先下载。</p><button disabled={recovering} onClick={recover}>恢复已完成报告</button><button onClick={()=>lifecycle.cancel(session)}>取消模型任务</button><label className="cr-check"><input type="checkbox" checked={abandonConfirmed} disabled={!!busy} onChange={event=>setAbandonConfirmed(event.target.checked)}/>我确认标记放弃恢复；未知任务屏障仍保留，不解锁新业务或安装</label><button disabled={!!busy||!abandonConfirmed||pendingRecovery.status==='running'} onClick={abandonRecovery}>放弃恢复</button></section>}
+     {preview&&<PreviewSection preview={preview} busy={busy||(globalBusy?'等待任务核对':'')} expired={expired} provider={provider} model={model} consent={consent} setProvider={setProvider} setModel={setModel} setConsent={setConsent} generateReason={generateReason} onGenerate={generate} onCapture={capture} inputBudget={inputBudget} budgetValid={budgetValid} planDirty={planDirty} onBudget={value=>{setInputBudget(value);setConsent(false);setPlanDirty(true);}} onReplan={replan} compatibility={compatibility} now={now}/>}
      {progress&&<ProgressSection progress={progress}/>}{progressWarning&&<p className="cr-error" role="status">{progressWarning}</p>}
      {error&&error!==scanError&&<p className="cr-error" role="alert">{error}</p>}
      {latestAnalysis&&result?.kind!=='analysis'&&<p className="cr-stale">上一份成功模型报告仍保留，与当前草稿可能不同。<button onClick={()=>keepResult({...latestAnalysis,stale:true})}>查看上一份模型报告</button><button onClick={()=>downloadMarkdown(latestAnalysis.markdown)}>下载上一份模型报告</button></p>}

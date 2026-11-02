@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createResultStore,staleResult,previewExpired,generationBlocker,parseVersionContexts,captureBlocker,needsResultRecovery,readCompletedResult} from '../src/result-state.mjs';
+import {createResultStore,staleResult,previewExpired,generationBlocker,parseVersionContexts,captureBlocker,completedViewResult,terminalAnalysisProgress,needsResultRecovery,readCompletedResult} from '../src/result-state.mjs';
 import {fresh,repositoryIssues,rowIssues,zeroDifferenceWarning} from '../src/repositories.mjs';
 import {createClientRpc} from '../src/client-rpc.mjs';
 const one={id:'one',cwd:'G:/workspace'},two={id:'two',cwd:'G:/workspace'};
@@ -12,6 +12,17 @@ test('private result store restores only bounded session and workspace scoped re
  store.set(two,{markdown:'second'});store.set({id:'three',cwd:'G:/workspace'},{markdown:'third'});assert.equal(store.get(one),null);
  assert.equal(createResultStore().get(two),null);
  store.set(one,{markdown:'x'.repeat(101)});assert.equal(store.get(one),null);
+});
+test('in-place completion is fresh only for the submitted operation and unchanged draft',()=>{
+ const result={markdown:'report',stale:true},completion={operationId:'op'};
+ const submission={operationId:'op',draftRevision:2};
+ assert.equal(completedViewResult(result,completion,submission,2).stale,false);
+ assert.equal(completedViewResult(result,completion,submission,3).stale,true);
+ assert.equal(completedViewResult(result,completion,null,2).stale,true);
+ assert.equal(completedViewResult(result,completion,{...submission,operationId:'other'},2).stale,true);
+ assert.equal(result.stale,true);
+ assert.equal(terminalAnalysisProgress(completion).phase,'completed');
+ assert.equal(terminalAnalysisProgress(null,{message:'stopped'}).phase,'failed');
 });
 test('draft invalidation retains old report but never mutates its evidence',()=>{
  const original={markdown:'fixed evidence',stale:false,coverage:{total:2}};
@@ -68,13 +79,13 @@ test('unknown paid operation recovery survives session switches without crossing
 });
 test('ambiguous model outcome is read once without dispatch or inherited approval',async()=>{
  assert.equal(needsResultRecovery(new Error('response lost')),true);
- assert.equal(needsResultRecovery({code:'code-report/analysis-incomplete'}),false);
+ assert.equal(needsResultRecovery({code:'code-report/analysis-incomplete'}),true);
  const calls=[];
  const rpc=async(endpoint,payload)=>{calls.push({endpoint,payload});return {status:'completed',result:{markdown:'paid result',coverage:{total:1}}};};
  const response=await readCompletedResult(rpc,'one','operation');
  assert.equal(response.result.markdown,'paid result');
  assert.deepEqual(calls,[{endpoint:'result',payload:{sessionId:'one',operationId:'operation'}}]);
- for(const status of ['pending','failed'])assert.equal((await readCompletedResult(async()=>({status}),'one','operation')).status,status);
+ for(const status of ['pending','stopped','unavailable'])assert.equal((await readCompletedResult(async()=>({status}),'one','operation')).status,status);
  await assert.rejects(readCompletedResult(async()=>({status:'completed'}),'one','operation'),/响应无效/);
  assert.match(generationBlocker({pendingRecovery:{operationId:'operation'}}),/勿重复生成/);
 });

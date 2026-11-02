@@ -5,11 +5,14 @@ import {createHash} from 'node:crypto';
 import {XMLParser,XMLValidator} from 'fast-xml-parser';
 import {inside,regular,relative,secretPath,internalPath} from './paths.mjs';
 import {createCollectionBudget} from './budget.mjs';
-import {run} from './process.mjs';
+import {run,runGitRead} from './process.mjs';
 import {svnRevision,svnBranch,branchUrl} from './svn-endpoint.mjs';
 const MAX_REPOSITORIES=12,MAX_CONTEXT_FILES=20,MAX_CONTEXT_FILE_BYTES=128*1024,MAX_DISCOVERED_PROJECTS=500,SCAN_BUDGET_MS=120000,DIRECTORY_PROGRESS_INTERVAL=50;
 const SKIP_DIRECTORY=/^(\.|node_modules$|dist$|build$|Library$|Temp$|obj$|bin$)/i;
-const GIT_DIFF_FLAGS=['--no-color','--no-ext-diff','--no-textconv','--ignore-submodules=none'];
+// Explicit grammar: repository config must not rename prefixes, drop blank context,
+// enable word diffs, change path relativity, or merge distant hunks.
+const GIT_DIFF_FLAGS=['--no-color','--no-ext-diff','--no-textconv','--ignore-submodules=none','--no-relative','--no-renames'];
+const GIT_PATCH_FLAGS=['--src-prefix=a/','--dst-prefix=b/','--line-prefix=','--output-indicator-new=+','--output-indicator-old=-','--output-indicator-context= ','--word-diff=none','--diff-algorithm=myers','--no-indent-heuristic','--inter-hunk-context=0'];
 const GIT_INTERNAL_EXCLUSIONS=[':(exclude,icase,glob)**/.git',':(exclude,icase,glob)**/.git/**',':(exclude,icase,glob)**/.svn',':(exclude,icase,glob)**/.svn/**'];
 const SVN_ACCESS_ARGS=['--non-interactive','--no-auth-cache'];
 const xml=text=>{if(/<!DOCTYPE|<!ENTITY/i.test(text)||XMLValidator.validate(text)!==true)throw new Error('无效 SVN XML');return new XMLParser({ignoreAttributes:false,parseTagValue:false,parseAttributeValue:false}).parse(text);};
@@ -105,8 +108,9 @@ function boundedExec(root, budget, checkpoint = () => {}, options = {}) {
  return async (command, args) => {
   budget.check();
   checkpoint();
-  const value = await run(command, args, {cwd:root, signal:budget.signal, timeoutMs:budget.commandTimeout(), ...options,
-   onStdoutBytes:bytes => budget.assertAdditional(bytes)});
+  const commandOptions = {cwd:root, signal:budget.signal, timeoutMs:budget.commandTimeout(), ...options,
+   onStdoutBytes:bytes => budget.assertAdditional(bytes)};
+  const value = command === 'git' ? await runGitRead(args, commandOptions) : await run(command, args, commandOptions);
   budget.check();
   return value;
  };
@@ -130,7 +134,7 @@ async function gitEvidence(exec,root,repo,a,b){
  repo.excludedPaths=repo.files.filter(internalPath);repo.files=repo.files.filter(p=>!internalPath(p));
  assertNoSecretPaths(repo);
  const exclusions=repo.excludedPaths.length?GIT_INTERNAL_EXCLUSIONS:[];
- repo.diff=await exec('git',['-c','core.quotePath=false','diff',...GIT_DIFF_FLAGS,'--no-renames','--submodule=short','--unified=3',repo.a,repo.b,'--',...exclusions]);
+ repo.diff=await exec('git',['-c','core.quotePath=false','-c','diff.suppressBlankEmpty=false','diff',...GIT_DIFF_FLAGS,...GIT_PATCH_FLAGS,'--submodule=short','--unified=3',repo.a,repo.b,'--',...exclusions]);
  repo.summary=await exec('git',['diff',...GIT_DIFF_FLAGS,'--stat',repo.a,repo.b,'--',...exclusions]);
 }
 async function svnResolveEndpoint(exec,info,url,rev){
@@ -142,13 +146,17 @@ async function svnResolveEndpoint(exec,info,url,rev){
  if(entries.length!==1)throw new Error('无法解析 SVN 分支最新提交');
  return svnRevision(entries[0]['@_revision']);
 }
-function svnChange(x,urlA,urlB){
- const name=typeof x==='string'?x:x['#text'];
- const base=[urlA,urlB].find(url=>name===url||name.startsWith(url+'/'));
- if(!base)throw new Error('SVN 变更路径不属于比较端点');
- const relative=decodeURIComponent(name.slice(base.length).replace(/^\//,''));
- if(relative.split('/').some(p=>p==='..'||p==='.')||relative.includes('\\'))throw new Error('无效 SVN 变更路径');
- return {relative,kind:x['@_kind']};
+function svnChange(entry, urlA, urlB) {
+ const name = entry?.['#text'];
+ if (typeof name !== 'string') throw new Error('无效 SVN 变更路径');
+ // A may be an ancestor of B; always remove the longest matching endpoint.
+ const base = [urlA, urlB].sort((a,b) => b.length-a.length).find(url => name === url || name.startsWith(url + '/'));
+ if (!base) throw new Error('SVN 变更路径不属于比较端点');
+ const relative = decodeURIComponent(name.slice(base.length).replace(/^\//, ''));
+ if (relative.split('/').some(part => part === '..' || part === '.') || relative.includes('\\')) throw new Error('无效 SVN 变更路径');
+ const kind = entry['@_kind'], item = entry['@_item'], props = entry['@_props'];
+ if (!['file','dir'].includes(kind) || !['added','deleted','modified','none'].includes(item) || !['modified','none'].includes(props)) throw new Error('无法安全判断 SVN 变更元数据');
+ return {relative, kind, item, props};
 }
 async function svnEntryDiff(exec,repo,entry,urlA,urlB){
  if(!['file','dir'].includes(entry.kind))throw new Error('无法安全判断 SVN 变更类型');
@@ -168,13 +176,19 @@ async function svnEvidence(exec,repo,root,row,request,a,b,checkpoint,onEntry){
  const entries=list(xml(await exec('svn',['diff','--summarize','--xml',...targets,...SVN_ACCESS_ARGS])).diff?.paths?.path).map(x=>svnChange(x,urlA,urlB));
  repo.excludedPaths=entries.filter(x=>internalPath(x.relative)).map(x=>x.relative);
  const included=entries.filter(x=>!internalPath(x.relative));repo.files=included.map(x=>x.relative);
+ repo.changes = included.map(({relative:path,kind,item,props}) => ({path,kind,item,props}));
  assertNoSecretPaths(repo);
  if(!repo.excludedPaths.length)repo.diff=await exec('svn',['diff','--internal-diff',...targets,...SVN_ACCESS_ARGS]);
  else{
   // Never request a recursive parent diff after exclusions: deleted directories contain old bodies too.
   repo.diff='';
+  repo.diffParts = [];
   for (const [index, entry] of included.entries()) {
-   repo.diff += await svnEntryDiff(exec, repo, entry, urlA, urlB);
+   const start = repo.diff.length;
+   const text = await svnEntryDiff(exec, repo, entry, urlA, urlB);
+   repo.diff += text;
+   // Offsets refer to the exact original UTF-16 string, not re-encoded byte counts.
+   if (text.length) repo.diffParts.push({path:entry.relative,start,end:repo.diff.length});
    checkpoint();
    onEntry?.(index + 1, included.length, entry.relative);
   }

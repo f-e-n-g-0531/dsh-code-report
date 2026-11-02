@@ -56,9 +56,34 @@ jobs:
           name: package-${{ matrix.os }}-node-${{ matrix.node }}
           path: release/
           if-no-files-found: error
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DSH_BROWSER_OUTPUT: ${{ runner.temp }}/dsh-code-report-browser-results
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --include=dev --ignore-scripts
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+      - name: Preserve browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/dsh-code-report-browser-results
+          if-no-files-found: warn
+          retention-days: 14
   release:
     if: startsWith(github.ref, 'refs/tags/') && (github.event_name == 'push' || inputs.publish)
-    needs: test
+    needs: [test, browser]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:

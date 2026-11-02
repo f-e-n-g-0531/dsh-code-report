@@ -12,7 +12,7 @@ export function createResultStore({limit=16,maxBytes=32*1024*1024}={}){
   setRecovery(session,value){
    const key=resultKey(session);recoveries.delete(key);
    if(value?.operationId&&session?.id&&session?.cwd)recoveries.set(key,{operationId:value.operationId});
-   while(recoveries.size>64)recoveries.delete(recoveries.keys().next().value);
+   // Unresolved paid identities are safety barriers: never silently evict them.
   },
   set(session,value){
    if(!session?.id||!session?.cwd||!value?.markdown)return;
@@ -26,6 +26,15 @@ export function createResultStore({limit=16,maxBytes=32*1024*1024}={}){
   },
   delete(session){entries.delete(resultKey(session));}
  };
+}
+export function completedViewResult(result,completion,submission,draftRevision){
+ if(!result)return null;
+ const current=submission?.operationId===completion?.operationId&&submission?.draftRevision===draftRevision;
+ return {...result,stale:!current};
+}
+export function terminalAnalysisProgress(completion,failure){
+ if(completion)return {phase:'completed',completed:1,total:1,label:'模型分析完成'};
+ return {phase:'failed',label:failure?.message||'模型任务已在本地终止；请核对费用并重新确认。'};
 }
 export function staleResult(result){return result?{...result,stale:true}:null;}
 export function previewExpired(preview,now=Date.now()){
@@ -42,12 +51,12 @@ export function generationBlocker({preview,now,compatibility,busy,consent,provid
  if(!consent)return '请确认本次发送范围和分批调用费用。';
  return '';
 }
-// Only transport/unknown failures are ambiguous; explicit business failures may be retried after consent.
-export function needsResultRecovery(error){return !String(error?.code||'').startsWith('code-report/');}
+// Error names do not establish dispatch, billing or retry safety; reconcile every failed dispatch.
+export function needsResultRecovery(){return true;}
 export async function readCompletedResult(rpc,sessionId,operationId,signal){
  const response=await rpc('result',{sessionId,operationId},signal);
  if(response?.status==='completed'&&typeof response.result?.markdown==='string')return response;
- if(response?.status==='pending'||response?.status==='failed')return response;
+ if(['pending','stopped','unavailable'].includes(response?.status))return response;
  throw new Error('报告恢复响应无效，执行结果仍未知；请勿重复生成。');
 }
 export function parseVersionContexts(text,rows){

@@ -8,13 +8,26 @@ export function isolatedEnvironment(source = process.env) {
 function decodeUtf8(bytes) { return new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes); }
 
 /** Bound both streams; wait for process close even when cancellation emits error first. */
-export function run(command, args, {cwd, signal, maxBytes = DEFAULT_MAX_BYTES, timeoutMs = COMMAND_TIMEOUT_MS, onStdoutBytes} = {}) {
+export function run(command, args, options = {}) {
+  return execute(command, args, options, isolatedEnvironment());
+}
+
+/** Report reads must neither contact promisor remotes nor backfill missing objects.
+ * Keep this policy separate from run(): fixture init/clone and release tooling are not report reads.
+ * GIT_ALLOW_PROTOCOL overrides even repository-specific protocol.<name>.allow settings.
+ */
+export function runGitRead(args, options = {}) {
+  const env = {...isolatedEnvironment(), GIT_NO_LAZY_FETCH: '1', GIT_ALLOW_PROTOCOL: '', GIT_PROTOCOL_FROM_USER: '0'};
+  return execute('git', ['-c', 'protocol.allow=never', ...args], options, env);
+}
+
+function execute(command, args, {cwd, signal, maxBytes = DEFAULT_MAX_BYTES, timeoutMs = COMMAND_TIMEOUT_MS, onStdoutBytes} = {}, env) {
   return new Promise((resolve, reject) => {
     signal?.throwIfAborted();
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('无效命令预算');
     const timeout = Math.min(timeoutMs, COMMAND_TIMEOUT_MS);
     const byteLimit = Math.min(maxBytes, DEFAULT_MAX_BYTES);
-    const child = spawn(command, args, {cwd, signal, shell: false, windowsHide: true, env: isolatedEnvironment()});
+    const child = spawn(command, args, {cwd, signal, shell: false, windowsHide: true, env});
     let bytes = 0, stdoutBytes = 0, out = [], err = [], failure, forceTimer;
     const stop = error => {
       if (!failure) failure = error;

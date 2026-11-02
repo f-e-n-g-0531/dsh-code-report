@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
 import {createHandler} from '../src/host.mjs';
 import {createAnalysisPlan,analyzeReport} from '../src/report.mjs';
 
@@ -14,7 +15,7 @@ function fixture(options={}){
   return {handler,sessions,setClock:value=>{clock=value;},calls:()=>calls};
 }
 async function preview(f){const result=await f.handler('preview',{sessionId:'s',request:{}});assert.equal(result.ok,true);return result.value;}
-const send=(p,extra={})=>({sessionId:'s',previewId:p.previewId,planId:p.analysisPlan.id,route,sendToModel:true,...extra});
+const send=(p,extra={})=>({sessionId:'s',operationId:randomUUID(),previewId:p.previewId,planId:p.analysisPlan.id,route,sendToModel:true,...extra});
 
 test('preview is local, expires explicitly and public plan contains no raw batch payload',async()=>{
   const f=fixture(),p=await preview(f);assert.equal(f.calls(),0);assert.equal(p.expiresAt,601000);assert.equal(p.analysisPlan.batches.length,2);assert.equal(JSON.stringify(p.analysisPlan).includes('not-public'),false);assert.match(p.markdown,/未调用模型/);
@@ -61,10 +62,11 @@ test('expiry is checked at the first actual model dispatch, not just task claim'
   const f=fixture({analyze:async(llm)=>{f.setClock(601000);for await(const chunk of llm.stream({})){}throw new Error('unreachable');}});
   const p=await preview(f),result=await f.handler('generate',send(p));assert.equal(result.error.code,'code-report/preview-expired');assert.equal(f.calls(),0);
 });
-test('validated results survive cancellation after analysis and before response delivery',async()=>{
+test('validated complete report commits before cancelled response delivery and remains recoverable',async()=>{
   const ac=new AbortController(),finished=new Map([['one',{}],['two',{}]]);
   const f=fixture({analyze:async()=>{ac.abort();return {markdown:'done',completed:finished};}});const p=await preview(f);
-  const result=await f.handler('generate',send(p),ac.signal);assert.equal(result.error.code,'code-report/cancelled');assert.equal(result.error.details.completedBatches,2);
+  const result=await f.handler('generate',send(p,{operationId:'completed-during-abort'}),ac.signal);assert.equal(result.ok,true);
+  const recovered=await f.handler('result',{sessionId:'s',operationId:'completed-during-abort'});assert.equal(recovered.value.status,'completed');assert.equal(recovered.value.execution.completedBatches,2);assert.equal(recovered.value.execution.dispatchCount,0);assert.equal(f.calls(),0);
 });
 test('pre-cancelled requests and invalid routes do not dispatch',async()=>{
   const f=fixture(),p=await preview(f),ac=new AbortController();ac.abort();assert.equal((await f.handler('generate',send(p),ac.signal)).error.code,'code-report/cancelled');
@@ -77,7 +79,7 @@ test('completed paid report is recoverable by read-only operation id and isolate
   const f=fixture(),p=await preview(f),payload=send(p,{operationId:'paid-result'});
   const generated=await f.handler('generate',payload);assert.equal(generated.ok,true);assert.equal(f.calls(),2);
   for(let i=0;i<3;i++){
-    const recovered=await f.handler('result',{sessionId:'s',operationId:'paid-result'});assert.equal(recovered.ok,true);assert.deepEqual(recovered.value,{status:'completed',result:generated.value});
+    const recovered=await f.handler('result',{sessionId:'s',operationId:'paid-result'});assert.equal(recovered.ok,true);assert.equal(recovered.value.status,'completed');assert.deepEqual(recovered.value.result,generated.value);assert.equal(recovered.value.execution.dispatchCount,2);assert.equal(recovered.value.execution.resultAvailability,'available');
   }
   assert.equal(f.calls(),2);
   assert.equal((await f.handler('result',{sessionId:'other',operationId:'paid-result'})).ok,false);
@@ -88,7 +90,7 @@ test('evicted completed result body is unknown, never reported as a failed model
   const f=fixture({analyze:async()=>({markdown:'x'.repeat(17*1024*1024),coverage:{}})});
   for(const operationId of ['large-first','large-second']){const p=await preview(f);assert.equal((await f.handler('generate',send(p,{operationId}))).ok,true);}
   const recovered=await f.handler('result',{sessionId:'s',operationId:'large-first'});
-  assert.equal(recovered.ok,false);assert.equal(recovered.error.code,'code-report/result-unavailable');assert.match(recovered.error.message,/曾完成/);
+  assert.equal(recovered.ok,true);assert.equal(recovered.value.status,'unavailable');assert.equal(recovered.value.execution.phase,'completed');assert.equal(recovered.value.execution.resultAvailability,'unavailable');
   assert.equal((await f.handler('result',{sessionId:'s',operationId:'large-second'})).value.status,'completed');
 });
 test('read-only recovery reports a pending operation without starting another analysis',async()=>{
@@ -131,4 +133,59 @@ test('aborting an adapter that ignores signal releases active capacity and previ
 test('refs are session-derived and cannot override cwd via payload',async()=>{
   let root;const f=fixture({refs:async(cwd,name)=>{root=cwd;assert.equal(name,'.');return ['refs/heads/main'];}});
   const result=await f.handler('refs',{sessionId:'s',repositoryPath:'.',cwd:'/etc'});assert.equal(result.ok,true);assert.equal(root,'/workspace');assert.deepEqual(result.value.refs,['refs/heads/main']);
+});
+
+test('paid operation identity is idempotent, fingerprint-bound, and never replayed after expiry',async()=>{
+  const f=fixture(),p=await preview(f),payload=send(p,{operationId:'idempotent-paid'});
+  const first=await f.handler('generate',payload);assert.equal(first.ok,true);assert.equal(f.calls(),2);
+  const replay=await f.handler('generate',payload);assert.deepEqual(replay,first);assert.equal(f.calls(),2);
+  const conflict=await f.handler('generate',{...payload,route:{...route,model:'other'}});assert.equal(conflict.error.code,'code-report/operation-conflict');assert.equal(f.calls(),2);
+  f.setClock(601001);const expired=await f.handler('generate',payload);assert.equal(expired.error.code,'code-report/operation-exists');assert.equal(f.calls(),2);
+  const q=await preview(f);assert.equal((await f.handler('generate',send(q,{operationId:'idempotent-paid'}))).error.code,'code-report/operation-conflict');assert.equal(f.calls(),2);
+});
+
+test('active duplicate cannot dispatch twice and active metadata survives nominal TTL',async()=>{
+  let finish,started;const ready=new Promise(resolve=>{started=resolve;});
+  const f=fixture({analyze:async(llm)=>{for await(const chunk of llm.stream({})){}started();await new Promise(resolve=>{finish=resolve;});return {markdown:'done',coverage:{}};}});
+  const p=await preview(f),payload=send(p,{operationId:'active-identity'}),running=f.handler('generate',payload);await ready;
+  f.setClock(700000);
+  const duplicate=await f.handler('generate',payload);assert.equal(duplicate.error.code,'code-report/operation-exists');assert.equal(f.calls(),1);
+  const pending=await f.handler('result',{sessionId:'s',operationId:payload.operationId});assert.equal(pending.value.status,'pending');assert.equal(pending.value.execution.dispatchCount,1);
+  finish();assert.equal((await running).ok,true);assert.equal(f.calls(),1);
+});
+
+test('stopped tasks expose dispatch and checkpoints but do not claim free retry',async()=>{
+  const f=fixture({analyze:async(llm,r,s,{completed})=>{for await(const chunk of llm.stream({})){}completed.set('one',{});const error=new Error('provider response lost');error.completed=completed;throw error;}}),p=await preview(f);
+  const failed=await f.handler('generate',send(p,{operationId:'stopped-paid'}));assert.equal(failed.ok,false);
+  assert.equal(failed.error.details.execution.phase,'stopped');assert.equal(failed.error.details.execution.dispatchCount,1);assert.equal(failed.error.details.execution.completedBatches,1);
+  const stopped=await f.handler('result',{sessionId:'s',operationId:'stopped-paid'});assert.equal(stopped.value.status,'stopped');assert.equal(stopped.value.execution.dispatch,'dispatched');assert.equal(stopped.value.execution.resultAvailability,'unavailable');assert.equal(f.calls(),1);
+});
+
+test('completion authority still rejects changed cwd even when response signal was cancelled',async()=>{
+  const ac=new AbortController();const f=fixture({analyze:async()=>{f.sessions.set('s',{header:{cwd:'/changed'}});ac.abort();return {markdown:'private',coverage:{}};}}),p=await preview(f);
+  const failed=await f.handler('generate',send(p,{operationId:'changed-cwd-abort'}),ac.signal);assert.equal(failed.ok,false);
+  assert.equal((await f.handler('result',{sessionId:'s',operationId:'changed-cwd-abort'})).ok,false);
+  f.sessions.set('s',{header:{cwd:'/workspace'}});const restored=await f.handler('result',{sessionId:'s',operationId:'changed-cwd-abort'});assert.equal(restored.value.status,'stopped');assert.equal(restored.value.execution.resultAvailability,'unavailable');
+});
+
+test('paid id ledger fails closed at capacity rather than permitting forgotten replay',async()=>{
+  const f=fixture({analyze:async()=>({markdown:'done',coverage:{}})});
+  for(let index=0;index<1024;index++){const p=await preview(f);assert.equal((await f.handler('generate',send(p,{operationId:'paid-cap-'+index}))).ok,true);}
+  const p=await preview(f);const full=await f.handler('generate',send(p,{operationId:'paid-cap-full'}));assert.equal(full.error.code,'code-report/busy');assert.equal(f.calls(),0);
+  assert.equal((await f.handler('generate',send(p,{operationId:'paid-cap-0'}))).error.code,'code-report/operation-conflict');
+});
+
+test('invalid preflight requests cannot exhaust lifetime paid identity capacity',async()=>{
+  const f=fixture();for(let index=0;index<1030;index++){
+    const value=await f.handler('generate',{sessionId:'s',operationId:'invalid-'+index,previewId:'absent',sendToModel:false});assert.equal(value.error.code,'code-report/preview-expired');assert.equal(value.error.details.execution.dispatchCount,0);
+  }
+  const p=await preview(f);assert.equal((await f.handler('generate',send(p))).ok,true);assert.equal(f.calls(),2);
+});
+
+test('actual mock dispatch completed during delivery abort remains recoverable with zero-call replay',async()=>{
+  const ac=new AbortController();let f;f=fixture({analyze:async(llm,r,s,{completed})=>{for await(const chunk of llm.stream({})){}completed.set('one',{});ac.abort();return {markdown:'validated',completed,coverage:{}};}});
+  const p=await preview(f),payload=send(p,{operationId:'dispatched-complete-abort'});
+  assert.equal((await f.handler('generate',payload,ac.signal)).ok,true);assert.equal(f.calls(),1);
+  const recovered=await f.handler('result',{sessionId:'s',operationId:payload.operationId});assert.equal(recovered.value.status,'completed');assert.equal(recovered.value.execution.dispatchCount,1);
+  assert.equal((await f.handler('generate',payload)).ok,true);assert.equal(f.calls(),1);
 });

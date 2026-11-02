@@ -58,7 +58,7 @@ test('automatic discovery effect starts once across verification unlocks',async(
   throw new Error('unexpected '+endpoint);
  }});
  instance.render();
- const discovery=()=>instance.effects.find(item=>item.deps?.length===2&&item.deps[0]==='s');
+ const discovery=()=>instance.effects.find(item=>item.deps?.length===3&&item.deps[0]==='s');
  discovery().fn();assert.equal(calls,0);
  instance.effects.find(item=>item.deps?.length===1&&item.deps[0]===0).fn();
  await new Promise(resolve=>setImmediate(resolve));instance.render();

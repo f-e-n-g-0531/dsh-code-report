@@ -65,6 +65,24 @@ test('partial success is resumable only by explicit subsequent call using same p
   await assert.rejects(analyzeReport({}, route, source, {plan, completed: bad}), /非本批/);
 });
 
+test('format versions and payload hashes bind plans and reject legacy checkpoints', async () => {
+  const source = snapshot(), plan = createAnalysisPlan(source);
+  assert.equal(plan.formatVersion, 2);
+  assert.equal(plan.evidenceVersion, 2);
+  const {evidenceHash} = await import('../src/evidence.mjs');
+  assert.equal(plan.batches[0].payloadHash, evidenceHash(JSON.stringify(plan.batches[0].snapshot)));
+  const result = await analyzeReport(model(payload => stream(document(payload.evidence[0].id))), route, source, {plan});
+  const [id, checkpoint] = [...result.completed][0];
+  assert.equal(checkpoint.formatVersion, 2);
+  assert.equal(checkpoint.payloadHash, plan.batches[0].payloadHash);
+  for (const invalid of [{...checkpoint, formatVersion: 1}, {...checkpoint, payloadHash: 'old'}, Object.fromEntries(Object.entries(checkpoint).filter(([key]) => !['formatVersion', 'payloadHash'].includes(key)))]) {
+    await assert.rejects(analyzeReport({}, route, source, {plan, completed: new Map([[id, invalid]])}), /不可复用/);
+  }
+  const altered = {...source, limitations: ['new scope limitation']};
+  assert.notEqual(createAnalysisPlan(altered).id, plan.id);
+  assert.notEqual(createAnalysisPlan(altered).batches[0].payloadHash, plan.batches[0].payloadHash);
+});
+
 test('plan mismatch and already aborted calls never dispatch model', async () => {
   let calls = 0;
   const llm = {stream() { calls++; throw new Error('must not run'); }}, source = snapshot();
