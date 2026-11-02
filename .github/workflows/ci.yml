@@ -59,8 +59,6 @@ jobs:
   browser:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      DSH_BROWSER_OUTPUT: ${{ runner.temp }}/dsh-code-report-browser-results
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,6 +71,8 @@ jobs:
       - run: npm ci --include=dev --ignore-scripts
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
+        env:
+          DSH_BROWSER_OUTPUT: ${{ runner.temp }}/dsh-code-report-browser-results
       - name: Preserve browser evidence
         if: always()
         uses: actions/upload-artifact@v4

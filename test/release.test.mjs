@@ -25,6 +25,15 @@ test('single browser job gates publishing without replacing the four-matrix pack
  assert.match(release,/if: startsWith[(]github[.]ref, 'refs\/tags\/'[)] && [(]github[.]event_name == 'push' \|\| inputs[.]publish[)]/);
 });
 
+test('runner temporary output path is scoped to browser step, never job environment',async()=>{
+ const source=await readFile(new URL('../.github/workflows/ci.yml',import.meta.url),'utf8');
+ const browser=source.split('  browser:\n')[1]?.split('  release:\n')[0];assert.ok(browser);
+ const jobContext=browser.split(/^    steps:/m)[0];
+ assert.doesNotMatch(jobContext,/runner[.]temp|DSH_BROWSER_OUTPUT/,'runner context is unavailable at jobs.<job>.env');
+ assert.match(browser,/^      - run: npm run test:browser\r?\n        env:\r?\n          DSH_BROWSER_OUTPUT: \$\{\{ runner[.]temp \}\}\/dsh-code-report-browser-results$/m);
+ assert.match(browser,/^          path: \$\{\{ runner[.]temp \}\}\/dsh-code-report-browser-results$/m);
+});
+
 test('release entry script passes Node syntax validation',()=>{const r=spawnSync(process.execPath,['--check','scripts/release.mjs'],{encoding:'utf8'});assert.equal(r.status,0,r.stderr);});
 test('npm publish uses explicit local tarball path rather than GitHub shorthand',async()=>{const source=await readFile(new URL('../scripts/release.mjs',import.meta.url),'utf8');assert.ok(source.includes("['publish','./release/'+name"));});
 test('tag validator accepts matching stable version and rejects mismatch',async()=>{const pkg=JSON.parse(await readFile(new URL('../package.json',import.meta.url),'utf8'));const file=new URL('../scripts/verify-tag.mjs',import.meta.url);const {fileURLToPath}=await import('node:url');for(const [tag,expected]of [['v'+pkg.version,0],['v999.0.0',1],['main',1]]){const r=spawnSync(process.execPath,[fileURLToPath(file)],{env:{...process.env,GITHUB_REF_NAME:tag},encoding:'utf8'});assert.equal(r.status===0?0:1,expected);}});

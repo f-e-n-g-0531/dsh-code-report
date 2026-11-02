@@ -35,6 +35,10 @@ Windows SVN 来自校验过 SHA-256 的工具归档，UTF-8 manifest 修改仅�
 
 发布脚本按 SHA-256 比对内容，不覆盖不一致的既有 npm 版本或 GitHub 资产。GitHub 已有正式 Release 的缺失资产可以补齐；新 Release 先建草稿，防止不完整资产直接公开。
 
+## CI 配置失败后的版本处理
+
+v0.7.1 的 workflow 在 job-level env 中使用 runner.temp，上下文在该位置不可用，GitHub 拒绝整条 workflow；远端测试未启动，npm 未发布。保留已公开的 v0.7.1 标签，不移动标签补发。修复配置后使用 v0.7.2，重新构建、验证并触发发布；旧版本本地通过不等于新版本或远端通过。
+
 ## 部分成功后的恢复
 
 优先在**原 Actions 运行**重跑失败的发布任务，复用该运行保留的原始制品。
