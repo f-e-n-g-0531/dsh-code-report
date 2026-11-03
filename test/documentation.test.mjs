@@ -40,16 +40,25 @@ test('GBK documentation distinguishes decoding, hashes and unverified history',a
  assert.ok(readme.includes('源码按完整文件优先严格 UTF-8'));
  assert.ok(readme.includes('按原始 LF 字节边界逐行'));
  assert.ok(readme.includes('路径名单、SVN XML 等元数据仍严格要求 UTF-8'));
- assert.ok(readme.includes('本版已完成 232 项本地回归、29 项浏览器验证'));
+ const encodingHistory=notes.split('## v0.8.1 历史记录')[1]?.split('## v0.8.0 历史记录')[0];
+ assert.ok(encodingHistory?.includes('232/232'));assert.ok(encodingHistory?.includes('29/29'));
  assert.doesNotMatch(readme,/仅支持无 NUL 的有效 UTF-8|GBK[/]GB18030 等非法字节会拒绝/);
  for(const text of ['fatal UTF-8','fatal GB18030','ASCII','读取顺序拼接原字节','不是全仓未过滤 diff 的哈希','不改变付费任务生命周期'])assert.ok(development.includes(text),text);
  assert.ok(acceptance.includes('v0.8.1 编码支持本地验收'));
  assert.ok(acceptance.includes('模拟服务显示中文不证明真实 GBK 字节采集通过'));
  const history=notes.split('## v0.8.0 历史记录')[1];
  assert.ok(history.includes('215/215'));assert.ok(history.includes('29/29'));
- const current=notes.split('## v0.8.0 历史记录')[0];
- assert.ok(current.includes('232/232'));assert.ok(current.includes('29/29'));assert.ok(current.includes('正式发布以远端门禁'));
- assert.doesNotMatch(current,/215[/]215/);
+ assert.ok(encodingHistory.includes('正式发布以远端门禁'));
+ assert.doesNotMatch(encodingHistory,/215[/]215/);
+});
+
+test('remote-default documentation exposes network, migration and isolation boundaries',async()=>{
+ const readme=await readFile('README.md','utf8'),development=await readFile('docs/DEVELOPMENT.md','utf8'),acceptance=await readFile('docs/ACCEPTANCE.md','utf8'),notes=await readFile('RELEASE-NOTES.md','utf8');
+ for(const text of ['远端实时读取','本地离线','remote / origin','会联网','非交互认证','读取远端分支/标签','读取本地分支/标签','不是 URL','完整抓取','失败不会回退本地','不修改业务仓库的 objects、refs 或工作区','HEAD~1','refs/remotes/origin/develop','观察时间','跨项目原子快照','临时磁盘','不重新读取 Git 远端','停止本地自有传输进程树并清理临时目录','不保证远端服务器撤销请求'])assert.ok(readme.includes(text),text);
+ assert.doesNotMatch(readme,/Git 读取 \| 严格本地|Git 分支 A\/B \|[^\n]*使用本地已有分支|Git 可点击对应项目的“读取本地 refs”/);
+ for(const text of ['旧 RPC 未提供 gitMode','remote/origin','runGitRemote','runGitRead','GIT_CONFIG_COUNT','credential.*','http.*','core.sshCommand','URL rewrite','helper','OS 网络/进程沙箱','observedAt','不承诺所有远端引用或跨项目原子一致','不重新访问 Git 远端'])assert.ok(development.includes(text),text);
+ for(const text of ['Git 配置迁移与模式切换','公网 HTTP/HTTPS/SSH','v0.9.0 远端默认','v0.8.1 编码支持本地验收'])assert.ok(acceptance.includes(text),text);
+ const current=notes.split('## v0.8.1 历史记录')[0];assert.ok(current.includes('不沿用'));assert.ok(current.includes('正式发布以远端门禁'));assert.doesNotMatch(current,/232[/]232|29[/]29/);
 });
 
 test('maintenance commands and release evidence boundaries stay explicit',async()=>{

@@ -22,6 +22,17 @@ test('capture explains missing fields and counts only selected repositories',()=
  assert.equal(readyRows(Array.from({length:12},(_,index)=>({...git,path:'project-'+index}))),true);
  assert.match(repositoryIssues(Array.from({length:13},(_,index)=>({...git,path:'project-'+index}))).join(' '),/13.*最多 12/);
 });
+test('new Git rows default remote without inventing remote branches from local discovery',()=>{
+ assert.equal(fresh().gitMode,'remote');assert.equal(fresh().gitRemote,'origin');
+ const discovered=mergeRepositories([],[{path:'client',type:'git',branch:'local-only'}]);
+ assert.equal(discovered[0].branchA,'');assert.equal(discovered[0].branchB,'');
+ const existing={...fresh(),path:'client',branchA:'develop',branchB:'release'};
+ assert.equal(mergeRepositories([existing],[{path:'client',type:'git',branch:'wrong-local'}])[0].branchA,'develop');
+ const offline=mergeRepositories([{...fresh(),path:'client',gitMode:'local'}],[{path:'client',type:'git',branch:'local-tip'}]);
+ assert.equal(offline[0].branchA,'local-tip');
+ assert.match(repositoryIssues([{...fresh(),a:'main',b:'release',gitMode:'other'}]).join(' '),/读取方式/);
+ assert.match(repositoryIssues([{...fresh(),a:'main',b:'release',gitRemote:'https://example/repo'}]).join(' '),/远端配置名/);
+});
 test('empty scan states never imply scanning after failure or cancellation',()=>{assert.match(scanMessage('scanning'),/正在扫描/);for(const state of ['idle','failed','cancelled','completed'])assert.doesNotMatch(scanMessage(state),/正在/);assert.match(scanMessage('failed'),/尚未确认项目数量/);});
 test('large nested subtree is never traversed',async t=>{const cwd=await mkdtemp(path.join(tmpdir(),'report-shallow-'));t.after(()=>rm(cwd,{recursive:true,force:true}));await mkdir(path.join(cwd,'a-large'));for(let i=0;i<100;i++)await mkdir(path.join(cwd,'a-large',String(i)));await mkdir(path.join(cwd,'z-client','.git'),{recursive:true});const result=await discover(cwd,undefined,{maxDepth:32,maxDirectories:100000});assert.ok(result.repositories.some(r=>r.path==='z-client'));assert.equal(result.visited,3);assert.equal(result.limited,false);assert.deepEqual(result.warnings,[]);});
 test('root and first-level repositories only, legacy options cannot re-enable recursion',async t=>{const cwd=await mkdtemp(path.join(tmpdir(),'report-root-'));t.after(()=>rm(cwd,{recursive:true,force:true}));await mkdir(path.join(cwd,'.git'));await mkdir(path.join(cwd,'client','.git'),{recursive:true});await mkdir(path.join(cwd,'client','nested','.git'),{recursive:true});const result=await discover(cwd,undefined,{maxDepth:32,maxDirectories:100000});assert.deepEqual(result.repositories.map(r=>r.path),['.','client']);assert.equal(result.visited,2);assert.equal(result.limited,false);assert.deepEqual(result.warnings,[]);const ac=new AbortController();ac.abort();await assert.rejects(discover(cwd,ac.signal));});

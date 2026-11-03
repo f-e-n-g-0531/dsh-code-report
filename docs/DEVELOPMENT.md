@@ -32,8 +32,9 @@ npm run test:install
 
 - [宿主入口](<../index.mjs>)：注册 DSH 服务。
 - [宿主编排](<../src/host.mjs>)：会话目录、预览生命周期、进度、限流、确认与分片重试。测试依赖注入仅为进程内接口，不接受 RPC 覆盖。
-- [共享协议](<../src/protocol.mjs>)：通道和协议版本，不能依赖 Node 或 DSH 服务。v0.8.1 候选版沿用协议版本 3，包含结构化执行恢复状态；v0.7.0 的协议 2 界面不能绕过版本门禁，升级后需重载前后台。
-- [采集](<../src/collect.mjs>)、[预算](<../src/budget.mjs>)、[路径](<../src/paths.mjs>)、[进程](<../src/process.mjs>)：只读固定版本、来源、增量资源控制及取消。
+- [共享协议](<../src/protocol.mjs>)：通道和协议版本，不能依赖 Node 或 DSH 服务。v0.9.0 候选版沿用协议版本 3，包含结构化执行恢复状态；v0.7.0 的协议 2 界面不能绕过版本门禁，升级后需重载前后台。
+- [采集](<../src/collect.mjs>)、[预算](<../src/budget.mjs>)、[路径](<../src/paths.mjs>)、[进程](<../src/process.mjs>)：固定版本、来源、增量资源控制及取消。
+- [远端 Git](<../src/git-remote.mjs>)：读取业务仓库原始远端配置，在临时裸仓库查询和完整抓取，回调后清理；不写业务仓库。
 - [证据索引](<../src/evidence.mjs>)：格式版本 2；统一解析文件清单与差异块/源码单元，ID 绑定快照和准确文本，不重写差异正文。SVN property 头和值分开；路径只精确匹配 included 列表，不能按块序号猜测。无可归属文本的 included 文件/目录（含空字符串根路径）生成独立 scope 范围证据，计入片数及输入预算，不当作正文覆盖。SVN 在排除内部路径后逐 entry 读取时可附 diffParts:{path,start,end}，以完整 diff 的 UTF-16 连续区间绑定采集路径，不改原始正文；整仓 diff 或外部旧快照没有此元数据时不能假定同等定位能力。
 - [结构化分析](<../src/analysis.mjs>)：保守输入预算、顺序分片、输出与引用校验、确定性 Markdown。旧 analyze API 保留供直接调用兼容，宿主新生成流程不回退自由 Markdown。
 - [报告组装](<../src/report.mjs>)、[文本转义](<../src/markdown-text.mjs>)：统一转义标题、来源、哈希、日期、限制与非受信任分析字符串等字段；保留原始 diff 围栏和 snapshot。旧 analyze 字符串仍原样返回，markdown 入口将自由文本安全呈现；markdown 的可选第四参 {structured:true} 仅供宿主传入 analyzeReport 程序生成且字段已转义的分析，不根据输入字符串识别可信标记，也不接受 RPC 任意声明。
@@ -47,7 +48,17 @@ npm run test:install
 
 首次只扫描根目录和一级子目录，不进入更深目录；最多 500 项目、100000 目录、约 120 秒循环预算。循环预算不保证正在等待的文件系统读取及时返回，不能将其称为文件系统硬时限。跳过点前缀隐藏、常见缓存及链接目录（不按 Windows Hidden 属性筛选）；合并保留已有输入，新项目不选中。
 
-Git 版本可留空，使用指定本地分支最新提交，再固定 SHA；也可填本地分支、SHA、标签。SVN 两侧必须指定仓库相对分支路径；版本可留空取各分支最新一次提交，显式历史版本仅接受数字或 r 前缀。固定两侧 peg/operative 端点并验证 UUID 和仓库根一致，不允许任意 URL。Git refs、发现、差异及版本源码读取均走 runGitRead：清除继承的 GIT_*，设置 GIT_NO_LAZY_FETCH=1、空 GIT_ALLOW_PROTOCOL 和 protocol.allow=never，拒绝按需补取对象。该策略约束 Git 命令，不是操作系统级网络沙箱；真实 HTTP/SSH 等远程组合仍需独立验证。所需对象缺失直接失败，不自动修复 partial clone 或联网。普通 run 供测试建仓等用途，不代替报告读取的限制。Git patch 显式固定前缀、行标记、word diff、算法与 hunk 相关选项，仍不宣称隔离所有仓库配置。
+Git 行字段 gitMode 为 remote/local，gitRemote 为远端配置名。UI 新建及旧配置缺字段均默认 remote/origin；选择远端模式即允许访问该配置远端，不另加网络 checkbox。UI 始终显式发送模式；旧 RPC 未提供 gitMode 时，后端兼容为 local，不把这一兼容默认用于新界面。切换模式或远端名清 refs、preview 和 consent，保留 A/B。
+
+远端模式先验证业务 root、读取唯一的原始 remote.<name>.url 与 sha1/sha256 格式；地址仅内部使用，不在返回值或错误中回显。配置名不是 URL。listRemoteRefs 用 ls-remote --symref 查询分支和标签，去重并排除 peeled tag；后续采集重新查询，在独立临时 bare 仓库完整 fetch heads、tags 及可达历史，不依赖业务 object store。支持 file/http/https/ssh/git、scp 和本地路径地址，拒绝 ext:: 与任意 remote helper。withRemoteRepository 回调仅给 {remote,observedAt,source:"remote"}，finally 清理临时目录，不 checkout/pull/merge，不修改业务 objects/refs/worktree；失败不回退本地。完整历史消耗网络、临时磁盘和时间，仍受系统资源限制。
+
+normalizeRemoteRef 仅将匹配所选远端的 origin/name、refs/remotes/origin/name（以 origin 为例）映射为 refs/heads/name；其他 main/develop、标签、SHA 和 HEAD~ 表达式保持 Git 解析，标签可用 refs/tags/name 避免歧义。HEAD 先按远端广告观察，再校验抓取后的目标 hash 相同；移动时失败并要求重采。其他分支取 fetch 时版本，observedAt 是抓取完成后的观察时间，不承诺所有远端引用或跨项目原子一致。A/B SHA、差异及固定版本源码在临时仓库内读取，临时目录释放后生成只使用快照，不重新访问 Git 远端。
+
+网络 runner runGitRemote 仅在受控临时目录使用。清除继承的 GIT_*，读取有效用户 global/system 配置后只重注入 credential.*、http.*、core.sshCommand；实际网络进程禁用全局/系统配置并用 GIT_CONFIG_COUNT 白名单。URL rewrite、hooks 与 ext/任意 remote helper 不继承，非交互认证依赖用户已配好的可信 credential helper/SSH。这些用户信任的程序可能执行，不能承诺不执行 helper 或提供 OS 网络/进程沙箱；公网认证组合另行验收。网络 execute 使用 killTree:true：POSIX 独立进程组先 TERM、随后 KILL，Windows 使用 taskkill /T /F，等待自有传输进程树停止及 close 后才返回，由上层 finally 清理临时目录。取消语义是停止本地自有传输进程树并清理临时目录；不保证远端服务器撤销请求，不等于服务器端事务回滚。
+
+本地离线模式、业务元数据及临时仓库内的只读差异/源码使用 runGitRead：清除继承 GIT_*，设置 GIT_NO_LAZY_FETCH=1、空 GIT_ALLOW_PROTOCOL 和 protocol.allow=never；缺对象失败，不自动联网补取。普通 run 供测试建仓等用途，不代替两类专用 runner。Git patch 显式固定前缀、行标记、word diff、算法与 hunk 相关选项，不宣称隔离所有仓库配置。
+
+SVN 两侧仍须仓库相对分支路径；版本可留空取各分支最新一次提交，显式历史版本仅接受数字或 r 前缀。固定两侧 peg/operative 端点并验证 UUID 和仓库根一致，不允许任意 URL，历史读取授权不变。
 
 contextPaths 为显式工作区文件或目录路径列表，允许根目录 `.`；目录递归展开为实际文件。展开跳过点前缀隐藏、敏感、依赖、构建和缓存路径、链接及非普通文件，limitations 记录排除计数；显式敏感路径仍拒绝。隐藏判断只基于点前缀，不读取 Windows Hidden 属性。目录展开不设固定条目、目录和深度上限；任一待附带文件含 NUL、UTF-8 与 GB18030 均无法解码或无法读取都使整次采集失败，不静默跳过或截断。
 

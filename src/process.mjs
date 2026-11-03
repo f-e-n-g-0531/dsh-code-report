@@ -21,19 +21,51 @@ export function runGitRead(args, options = {}) {
   return execute('git', ['-c', 'protocol.allow=never', ...args], options, env);
 }
 
-function execute(command, args, {cwd, signal, maxBytes, timeoutMs, onStdoutBytes, raw = false} = {}, env) {
+/** Network reads are only for caller-owned temporary bare repositories, never report worktrees.
+ * Retain credential/TLS/SSH settings without inheriting URL rewrites, hooks or remote helpers. */
+export async function runGitRemote(args, options = {}) {
+  const source = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
+  const safe = ['-c','core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'),'-c','core.fsmonitor=false'];
+  const configuration = await execute('git', [...safe,'config','--null','--list','--includes'], {...options,raw:false,onStdoutBytes:undefined}, source);
+  options.signal?.throwIfAborted();
+  const retained = [];
+  for (const record of configuration.split('\0')) {
+    const split = record.indexOf('\n');
+    if (split < 0) continue;
+    const key = record.slice(0,split), value = record.slice(split+1);
+    if (/^(?:credential[.]|http[.])|^core[.]sshcommand$/i.test(key)) retained.push([key,value]);
+  }
+  const env = {...isolatedEnvironment(source), GIT_TERMINAL_PROMPT:'0', GCM_INTERACTIVE:'never', GIT_CONFIG_COUNT:String(retained.length)};
+  retained.forEach(([key,value],index) => { env['GIT_CONFIG_KEY_' + index] = key; env['GIT_CONFIG_VALUE_' + index] = value; });
+  const protocols = ['-c','protocol.allow=never', ...['file','http','https','ssh','git'].flatMap(name => ['-c','protocol.' + name + '.allow=always']),'-c','protocol.ext.allow=never'];
+  return execute('git', [...safe,...protocols,'-c','fetch.recurseSubmodules=false','-c','submodule.recurse=false',...args], {...options,killTree:true}, env);
+}
+
+function execute(command, args, {cwd, signal, maxBytes, timeoutMs, onStdoutBytes, raw = false, killTree = false} = {}, env) {
   return new Promise((resolve, reject) => {
     signal?.throwIfAborted();
     if ((timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) ||
         (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 1))) throw new Error('无效命令预算');
-    const child = spawn(command, args, {cwd, signal, shell: false, windowsHide: true, env});
-    let bytes = 0, stdoutBytes = 0, stderrBytes = 0, out = [], err = [], failure, forceTimer, timer;
+    const child = spawn(command, args, {cwd, signal:killTree?undefined:signal, detached:killTree&&process.platform!=='win32', shell: false, windowsHide: true, env});
+    let bytes = 0, stdoutBytes = 0, stderrBytes = 0, out = [], err = [], failure, stopped = false, forceTimer, timer;
+    let treeStopped = Promise.resolve();
     const stop = error => {
-      if (!failure) failure = error;
-      child.kill();
-      // A process may ignore SIGTERM on POSIX. Do not leave the request waiting forever.
-      if (child.pid && !forceTimer) forceTimer = setTimeout(() => child.kill('SIGKILL'), 1000);
+      if (stopped) return;
+      stopped = true;failure = error;
+      if(killTree&&child.pid&&process.platform==='win32'){
+        treeStopped=new Promise(resolve=>{
+          const killer=spawn('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'});
+          killer.on('error',()=>{child.kill();resolve();});killer.on('close',()=>{child.kill();resolve();});
+        });
+      }else{
+        const terminate=force=>{try{if(killTree&&child.pid)process.kill(-child.pid,force?'SIGKILL':'SIGTERM');else child.kill(force?'SIGKILL':'SIGTERM');}catch{child.kill(force?'SIGKILL':'SIGTERM');}};
+        terminate(false);
+        if(killTree&&child.pid)treeStopped=new Promise(resolve=>{forceTimer=setTimeout(()=>{terminate(true);resolve();},1000);});
+        else if (child.pid && !forceTimer) forceTimer = setTimeout(() => terminate(true), 1000);
+      }
     };
+    const onAbort=()=>stop(signal.reason);
+    if(killTree){signal?.addEventListener('abort',onAbort,{once:true});if(signal?.aborted)onAbort();}
     if (timeoutMs !== undefined) {
       const deadline = performance.now() + timeoutMs;
       const expire = () => {
@@ -44,7 +76,7 @@ function execute(command, args, {cwd, signal, maxBytes, timeoutMs, onStdoutBytes
       expire();
     }
     const take = (target, stdout) => chunk => {
-      if (failure) return;
+      if (stopped) return;
       bytes += chunk.length;
       if (maxBytes !== undefined && bytes > maxBytes) return stop(new Error('命令输出超出采集上限，未生成不完整报告'));
       if (stdout && onStdoutBytes) {
@@ -60,10 +92,12 @@ function execute(command, args, {cwd, signal, maxBytes, timeoutMs, onStdoutBytes
     child.stdout.on('data', take(out, true));
     child.stderr.on('data', take(err, false));
     child.on('error', error => stop(error));
-    child.on('close', code => {
+    child.on('close', async code => {
+      signal?.removeEventListener('abort',onAbort);
+      await treeStopped;
       clearTimeout(timer);
       clearTimeout(forceTimer);
-      if (failure) return reject(failure);
+      if (stopped) return reject(failure);
       if (signal?.aborted) return reject(signal.reason);
       if (code !== 0) return reject(new Error(command + ' 读取失败: ' + Buffer.concat(err).toString('utf8').slice(0, 1200)));
       const output = Buffer.concat(out);

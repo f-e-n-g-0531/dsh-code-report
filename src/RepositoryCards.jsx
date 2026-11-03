@@ -23,21 +23,21 @@ function RepositoryRow({row,index,issues,warning,change,remove,loadRefs,refsDisa
  const [refs,setRefs]=useState([]),[loading,setLoading]=useState(false),[error,setError]=useState('');
  const request=useRef(null),mounted=useRef(true);
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;request.current?.abort();};},[]);
- useEffect(()=>{request.current?.abort();setRefs([]);setError('');setLoading(false);},[row.path,row.type]);
+ useEffect(()=>{request.current?.abort();setRefs([]);setError('');setLoading(false);},[row.path,row.type,row.gitMode,row.gitRemote]);
  const refreshRefs=async()=>{
   if(!loadRefs||loading)return;
   request.current?.abort();const ac=new AbortController();request.current=ac;setLoading(true);setError('');
-  try{const value=await loadRefs(row.path,ac.signal);if(!ac.signal.aborted&&mounted.current)setRefs(value);}
+  try{const value=await loadRefs(row.path,ac.signal,{gitMode:row.gitMode??'remote',gitRemote:row.gitRemote??'origin'});if(!ac.signal.aborted&&mounted.current)setRefs(value);}
   catch(error){if(!ac.signal.aborted&&mounted.current)setError(error.message);}
   finally{if(!ac.signal.aborted&&mounted.current)setLoading(false);}
  };
- const listId='cr-refs-'+index,issueId='cr-issues-'+index;
+ const listId='cr-refs-'+index,issueId='cr-issues-'+index,remote=(row.gitMode??'remote')==='remote';
  return <tr id={'cr-row-'+index} data-selected={row.enabled}>
   <td><input type="checkbox" checked={row.enabled} aria-label={'纳入项目 '+(index+1)} onChange={event=>change(index,'enabled',event.target.checked)}/></td>
   <td><input value={row.path} aria-label={'项目路径 '+(index+1)} aria-invalid={issues.length>0} aria-describedby={issues.length?issueId:undefined} placeholder="相对于工作区" onChange={event=>change(index,'path',event.target.value)}/><select value={row.type} aria-label={'VCS '+(index+1)} onChange={event=>change(index,'type',event.target.value)}><option value="git">Git</option><option value="svn">SVN</option></select>
    {!!issues.length&&<ul className="cr-row-issues" id={issueId}>{issues.map((text,i)=><li key={i}>{text}</li>)}</ul>}
    {warning&&<p className="cr-hint">{warning}</p>}
-   {row.type==='git'&&<><button disabled={refsDisabled||loading||!row.path.trim()} onClick={refreshRefs}>{loading?'读取本地 refs…':'读取本地分支/标签'}</button><datalist id={listId}>{refs.map(ref=><option key={ref} value={ref}/>)}</datalist>{refs.length>0&&<p className="cr-hint">已载入 {refs.length} 个本地引用，在 A/B 输入中选择；不会 fetch。</p>}{error&&<p className="cr-row-issues" role="alert">{error}</p>}</>}
+   {row.type==='git'&&<><label>Git 读取方式<select aria-label={'Git 读取方式 '+(index+1)} value={row.gitMode??'remote'} onChange={event=>change(index,'gitMode',event.target.value)}><option value="remote">远端实时读取</option><option value="local">本地离线</option></select></label>{remote&&<label>远端配置名<input aria-label={'Git 远端名 '+(index+1)} value={row.gitRemote??'origin'} placeholder="origin（非 URL）" onChange={event=>change(index,'gitRemote',event.target.value)}/></label>}<p className="cr-hint">{remote?'选择远端方式即允许访问该配置远端。查询和采集会联网并可能要求身份验证；采集在隔离临时目录完整抓取，不创建业务本地分支、不修改业务 refs 或工作区。失败不会回退本地。':'仅使用本地已有引用和对象，离线读取，不自动 fetch。'}</p><button disabled={refsDisabled||loading||!row.path.trim()} onClick={refreshRefs}>{loading?(remote?'读取远端 refs…':'读取本地 refs…'):(remote?'读取远端分支/标签':'读取本地分支/标签')}</button><datalist id={listId}>{refs.map(ref=><option key={ref} value={ref}/>)}</datalist>{refs.length>0&&<p className="cr-hint">已载入 {refs.length} 个{remote?'远端':'本地'}引用，在 A/B 输入中选择；{remote?'此次查询观察值，采集时会重新获取。':'不会 fetch。'}</p>}{error&&<p className="cr-row-issues" role="alert">{error}</p>}</>}
   </td>
   {['a','b'].map((side,i)=><td key={side} data-label={i?'B · 发布目标':'A · 比较基线'}>
    <input aria-label={row.type.toUpperCase()+' 分支 '+side.toUpperCase()+' '+(index+1)} value={row[i?'branchB':'branchA']} list={row.type==='git'?listId:undefined} placeholder={row.type==='git'?'分支，如 main / release':'仓库分支路径'} onChange={event=>change(index,i?'branchB':'branchA',event.target.value)}/>

@@ -65,6 +65,31 @@ test('automatic discovery effect starts once across verification unlocks',async(
  discovery().fn();await new Promise(resolve=>setImmediate(resolve));assert.equal(calls,1);
  instance.render();discovery().fn();await new Promise(resolve=>setImmediate(resolve));assert.equal(calls,1);
 });
+test('client submits explicit remote capture and refs options and retains offline selection',async()=>{
+ const calls=[];
+ const saved={schema:1,title:'remote',context:'',provider:'p',model:'m',rows:[{...fresh(),a:'main',b:'release'}]};
+ const instance=harness(saved,{rpc:async(_channel,endpoint,payload)=>{
+  calls.push({endpoint,payload});
+  if(endpoint==='runtime-info')return {ok:true,value:{packageName:PACKAGE_NAME,runningVersion:version,protocol:PROTOCOL_VERSION}};
+  if(endpoint==='refs')return {ok:true,value:{refs:['refs/heads/develop']}};
+  if(endpoint==='preview')return {ok:false,error:{message:'fixture capture stopped'}};
+  throw new Error('unexpected '+endpoint);
+ }});
+ instance.render();instance.effects.find(item=>item.deps?.length===1&&item.deps[0]===0).fn();
+ await new Promise(resolve=>setImmediate(resolve));let all=nodes(instance.render());
+ const cards=all.find(node=>node.props?.loadRefs);
+ await cards.props.loadRefs('.',undefined,{gitMode:'remote',gitRemote:'upstream'});
+ assert.equal(calls.at(-1).payload.gitMode,'remote');assert.equal(calls.at(-1).payload.gitRemote,'upstream');
+ await cards.props.loadRefs('.',undefined,{gitMode:'local',gitRemote:'origin'});
+ assert.equal(calls.at(-1).payload.gitMode,'local');
+ await all.find(node=>node.type==='button'&&node.props.children==='开始执行 · 采集差异').props.onClick();
+ const capture=calls.find(call=>call.endpoint==='preview');
+ assert.equal(capture.payload.request.repositories[0].gitMode,'remote');
+ assert.equal(capture.payload.request.repositories[0].gitRemote,'origin');
+ cards.props.change(0,'gitMode','local');all=nodes(instance.render());
+ await all.find(node=>node.type==='button'&&node.props.children==='开始执行 · 采集差异').props.onClick();
+ assert.equal(calls.filter(call=>call.endpoint==='preview').at(-1).payload.request.repositories[0].gitMode,'local');
+});
 test('client registers matching main/sidebar slots and uses active session identity',()=>{
  const instance=harness(),registrations=instance.registrations;
  assert.equal(registrations.length,2);assert.equal(registrations[0].options.key,registrations[1].options.id);

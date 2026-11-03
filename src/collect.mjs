@@ -7,6 +7,7 @@ import {inside,relative,secretPath,internalPath} from './paths.mjs';
 import {expandContextPaths,resolveContextFile} from './context-paths.mjs';
 import {createCollectionBudget} from './budget.mjs';
 import {run,runGitRead} from './process.mjs';
+import {withRemoteRepository,listRemoteRefs,normalizeRemoteRef} from './git-remote.mjs';
 import {decodeSourceBytes,decodeDiffBytes} from './text-encoding.mjs';
 import {svnRevision,svnBranch,branchUrl} from './svn-endpoint.mjs';
 const MAX_REPOSITORIES=12,MAX_DISCOVERED_PROJECTS=500,SCAN_BUDGET_MS=120000,DIRECTORY_PROGRESS_INTERVAL=50;
@@ -130,20 +131,22 @@ function boundedExec(root, budget, checkpoint = () => {}, options = {}) {
  };
 }
 
-export async function listRefs(cwd, repoPath, signal) {
+export async function listRefs(cwd, repoPath, signal, {gitMode,gitRemote} = {}) {
+ if (gitMode !== undefined && !['remote','local'].includes(gitMode)) throw new Error('无效 Git 来源模式');
  const root = await inside(cwd, repoPath, {root:true});
  const budget = createCollectionBudget({signal});
  const exec = boundedExec(root, budget);
  const top = (await exec('git', ['rev-parse', '--show-toplevel'])).trim();
  if (await realpath(top) !== root) throw new Error('请指定 Git 仓库根目录');
+ if (gitMode === 'remote') return listRemoteRefs(root,{remote:gitRemote??'origin',signal});
  const refs = await exec('git', ['for-each-ref', '--format=%(refname)', '--sort=refname', 'refs/heads', 'refs/tags', 'refs/remotes']);
  budget.check();
  return refs.split('\n').map(value => value.replace(/\r$/, '')).filter(Boolean);
 }
-async function gitEvidence(exec,root,repo,a,b){
- const top=(await exec('git',['rev-parse','--show-toplevel'])).trim();if(await realpath(top)!==await realpath(root))throw new Error('请指定 Git 仓库根目录');
- const resolve=async ref=>{const id=(await exec('git',['rev-parse','--verify','--end-of-options',ref+'^{commit}'])).trim();if(!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(id))throw new Error('无法解析提交');return id;};
- repo.a=await resolve(a);repo.b=await resolve(b);
+async function gitEvidence(exec,root,repo,a,b,{temporary=false}={}){
+ if(!temporary){const top=(await exec('git',['rev-parse','--show-toplevel'])).trim();if(await realpath(top)!==await realpath(root))throw new Error('请指定 Git 仓库根目录');}
+ const resolve=async (ref,side)=>{try{const id=(await exec('git',['rev-parse','--verify','--end-of-options',ref+'^{commit}'])).trim();if(!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(id))throw new Error('无法解析提交');return id;}catch(error){if(error?.name==='AbortError'||(!error.message?.startsWith('git 读取失败:')&&error.message!=='无法解析提交'))throw error;throw new Error('项目 '+repo.path+' 的 Git '+side+' 无法解析为提交：'+ref+'（'+(repo.gitSource==='remote'?'远端 '+repo.remote+' 固定快照':'本地离线')+'）。请检查分支、标签或 SHA；不会自动替换分支。');}};
+ repo.a=await resolve(a,'A');repo.b=await resolve(b,'B');
  repo.files=(await exec('git',['diff',...GIT_DIFF_FLAGS,'--no-renames','--name-only','-z',repo.a,repo.b,'--'])).split('\0').filter(Boolean);
  repo.excludedPaths=repo.files.filter(internalPath);repo.files=repo.files.filter(p=>!internalPath(p));
  assertNoSecretPaths(repo);
@@ -218,7 +221,7 @@ async function svnEvidence(exec,repo,root,row,request,a,b,checkpoint,onEntry){
  }
  repo.summary=repo.files.join('\n');
 }
-async function collectRepository(cwd,row,request,budget,result,onEntry){
+async function collectRepository(cwd,row,request,budget,result,onEntry,remoteContexts,onProgress){
  budget.check();if(!row||!['git','svn'].includes(row.type))throw new Error('仅支持 Git / SVN');
  const requested=side=>{const value=row[side];if(typeof value!=='string')throw new Error('版本必须是文本，留空表示分支最新提交');return value.trim();};
  const versionA=requested('a'),versionB=requested('b');
@@ -227,7 +230,18 @@ async function collectRepository(cwd,row,request,budget,result,onEntry){
  result.repositories.push(repo);
  const checkpoint=()=>budget.checkpoint(result);
  const exec=boundedExec(root,budget,checkpoint);
- if(row.type==='git')await gitEvidence(exec,root,repo,a,b);else await svnEvidence(exec,repo,root,row,request,a,b,checkpoint,onEntry);
+ if(row.type==='git'){
+  if(row.gitMode!==undefined&&!['remote','local'].includes(row.gitMode))throw new Error('无效 Git 来源模式');
+  repo.gitSource=row.gitMode==='remote'?'remote':'local';
+  if(repo.gitSource==='remote'){
+   await withRemoteRepository(root,{remote:row.gitRemote??'origin',signal:budget.signal,onProgress},async(temporary,source)=>{
+    budget.check();repo.remote=source.remote;repo.observedAt=source.observedAt;
+    repo.identity={gitSource:'remote',remote:source.remote,observedAt:source.observedAt};
+    await gitEvidence(boundedExec(temporary,budget,checkpoint),temporary,repo,normalizeRemoteRef(a,source.remote),normalizeRemoteRef(b,source.remote),{temporary:true});
+    for(const entry of request.versionContexts||[])if(entry.repository===repo.path)remoteContexts.set(entry,await readVersionContext(cwd,entry,[repo],budget,checkpoint,temporary));
+   });
+  }else await gitEvidence(exec,root,repo,a,b);
+ }else await svnEvidence(exec,repo,root,row,request,a,b,checkpoint,onEntry);
  checkpoint();
  return {repo,requestedA:a,requestedB:b};
 }
@@ -239,11 +253,11 @@ function sameSvnUrl(actual, expected) {
    a.search === b.search && a.hash === b.hash && decodeURIComponent(a.pathname) === decodeURIComponent(b.pathname);
  } catch { return false; }
 }
-async function readVersionContext(cwd, entry, repositories, budget, checkpoint) {
+async function readVersionContext(cwd, entry, repositories, budget, checkpoint, rootOverride) {
  const name = versionContextPath(entry.path);
  const repo = repositories.find(item => item.path === entry.repository);
  const revision = entry.side === 'A' ? repo.a : repo.b;
- const root = await inside(cwd, repo.path, {root:true});
+ const root = rootOverride ?? await inside(cwd, repo.path, {root:true});
  const exec = boundedExec(root, budget, checkpoint);
  let bytes;
  if (repo.type === 'git') {
@@ -300,10 +314,12 @@ export async function collect(cwd, request, signal, onProgress = () => {}) {
  };
  checkpoint();
  progress('准备读取版本差异');
+ const remoteContexts=new Map();
  for (const row of request.repositories) {
   progress('读取项目：' + row.path);
   const {repo,requestedA,requestedB} = await collectRepository(cwd, row, request, budget, result,
-   (count,entryTotal,name) => progress('读取 SVN 路径：' + row.path + '/' + name + '（' + count + '/' + entryTotal + '）'));
+   (count,entryTotal,name) => progress('读取 SVN 路径：' + row.path + '/' + name + '（' + count + '/' + entryTotal + '）'),remoteContexts,onProgress);
+  if(repo.type==='git')result.limitations.push(repo.gitSource==='remote'?'项目 '+repo.path+' 使用远端 '+repo.remote+'，在 '+repo.observedAt+' 取得独立临时快照并固定 A/B SHA；不更新本地跟踪引用，生成时不会重新读取远端。':'项目 '+repo.path+' 使用本地离线引用；不会联网更新，不代表远端最新。');
   if (repo.excludedPaths?.length) result.limitations.push('项目 ' + repo.path + ' 已在正文读取前排除 ' + repo.excludedPaths.length + ' 条 .git / .svn 内部路径记录；未读取其正文，不属于本报告分析覆盖。');
   repo.requestedA = requestedA;
   repo.requestedB = requestedB;
@@ -321,7 +337,7 @@ export async function collect(cwd, request, signal, onProgress = () => {}) {
  }
  for (const entry of request.versionContexts || []) {
   progress('读取版本源码：' + entry.repository + ' / ' + entry.side + ' / ' + entry.path);
-  result.context.push(await readVersionContext(cwd, entry, result.repositories, budget, checkpoint));
+  result.context.push(remoteContexts.get(entry)??await readVersionContext(cwd, entry, result.repositories, budget, checkpoint));
   checkpoint();
   completed++;
   progress('版本源码已采集：' + entry.path);

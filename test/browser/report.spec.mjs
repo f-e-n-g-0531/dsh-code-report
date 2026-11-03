@@ -22,6 +22,7 @@ async function open(page,options={}){
 async function selectGit(page){
  await expect(page.getByRole('checkbox',{name:'纳入项目 1',exact:true})).toBeVisible();
  await page.getByRole('checkbox',{name:'纳入项目 1',exact:true}).check();
+ await page.getByRole('combobox',{name:'GIT 分支 A 1',exact:true}).fill('main');
  await page.getByRole('combobox',{name:'GIT 分支 B 1',exact:true}).fill('release');
  await expect(capture(page)).toBeEnabled();
 }
@@ -48,7 +49,7 @@ test('mixed Git and SVN requires explicit history authorization before capture',
 });
 
 test('local refs and automatic batch/context inputs retain authorization boundaries',async({page})=>{
- await open(page);await selectGit(page);await page.getByRole('button',{name:'读取本地分支/标签',exact:true}).click();
+ await open(page);await selectGit(page);await page.getByRole('combobox',{name:'Git 读取方式 1',exact:true}).selectOption('local');await page.getByRole('button',{name:/^读取(?:远端|本地)分支\/标签$/}).click();
  await expect(page.getByText('已载入 3 个本地引用，在 A/B 输入中选择；不会 fetch。')).toBeVisible();
  await expect(page.getByRole('checkbox',{name:/允许分批分析较大差异/})).toHaveCount(0);await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();
  await page.getByRole('textbox',{name:'源码上下文路径',exact:true}).fill('client/current.ts');
@@ -58,6 +59,35 @@ test('local refs and automatic batch/context inputs retain authorization boundar
  await consent(page).check();await page.getByRole('spinbutton',{name:'单片输入预算',exact:true}).fill('12000');await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();
  await page.getByRole('button',{name:'更新分析计划',exact:true}).click();await expect(consent(page)).toBeEnabled();expect((await stats(page)).modelCalls).toBe(0);
  expect((await stats(page)).calls.filter(x=>x.endpoint==='refs')).toHaveLength(1);expect((await stats(page)).calls.find(x=>x.endpoint==='analysis-plan').payload.inputBudget).toBe(12000);
+});
+
+test('Git defaults to explicit remote origin in refs and collection with visible source provenance',async({page})=>{
+ await open(page);await selectGit(page);await expect(page.getByRole('combobox',{name:'Git 读取方式 1',exact:true})).toHaveValue('remote');
+ await expect(page.getByRole('textbox',{name:'Git 远端名 1',exact:true})).toHaveValue('origin');await expect(page.getByText('选择远端方式即允许访问该配置远端。查询和采集会联网并可能要求身份验证；采集在隔离临时目录完整抓取，不创建业务本地分支、不修改业务 refs 或工作区。失败不会回退本地。',{exact:true})).toBeVisible();
+ await page.getByRole('button',{name:'读取远端分支/标签',exact:true}).click();await expect.poll(async()=>(await stats(page)).calls.filter(call=>call.endpoint==='refs').length).toBe(1);
+ const refs=(await stats(page)).calls.find(call=>call.endpoint==='refs').payload;expect(refs).toMatchObject({sessionId:'a',repositoryPath:'client',gitMode:'remote',gitRemote:'origin'});
+ await collect(page);const row=(await stats(page)).calls.find(call=>call.endpoint==='preview').payload.request.repositories[0];expect(row).toMatchObject({gitMode:'remote',gitRemote:'origin'});
+ await expect(page.getByRole('group',{name:'3. 确认分析范围',exact:true})).toContainText('origin');await expect(page.getByRole('group',{name:'3. 确认分析范围',exact:true})).toContainText('2026-11-03T10:00:00.000Z');expect((await stats(page)).modelCalls).toBe(0);
+});
+
+test('Git local offline mode is explicit and stays local for refs and collection',async({page})=>{
+ await open(page);await selectGit(page);await page.getByRole('combobox',{name:'Git 读取方式 1',exact:true}).selectOption('local');
+ await page.getByRole('button',{name:'读取本地分支/标签',exact:true}).click();await expect(page.getByText('已载入 3 个本地引用，在 A/B 输入中选择；不会 fetch。')).toBeVisible();
+ const refs=(await stats(page)).calls.find(call=>call.endpoint==='refs').payload;expect(refs).toMatchObject({sessionId:'a',repositoryPath:'client',gitMode:'local',gitRemote:'origin'});
+ await collect(page);expect((await stats(page)).calls.find(call=>call.endpoint==='preview').payload.request.repositories[0].gitMode).toBe('local');
+ await expect(page.getByRole('group',{name:'3. 确认分析范围',exact:true})).toContainText('本地');expect((await stats(page)).modelCalls).toBe(0);
+});
+
+test('Git mode and remote edits invalidate preview and consent without changing user A B selections',async({page})=>{
+ await open(page);await selectGit(page);const branchA=page.getByRole('combobox',{name:'GIT 分支 A 1',exact:true}),branchB=page.getByRole('combobox',{name:'GIT 分支 B 1',exact:true});
+ await branchA.fill('custom-baseline');await branchB.fill('origin/develop');await page.getByRole('button',{name:'读取远端分支/标签',exact:true}).click();await expect(page.locator('#cr-refs-0 option')).toHaveCount(3);
+ await collect(page);await route(page);await consent(page).check();await page.getByRole('textbox',{name:'Git 远端名 1',exact:true}).fill('upstream');
+ await expect(page.locator('#cr-refs-0 option')).toHaveCount(0);await expect(consent(page)).toHaveCount(0);await expect(branchA).toHaveValue('custom-baseline');await expect(branchB).toHaveValue('origin/develop');
+ await page.getByRole('button',{name:'读取远端分支/标签',exact:true}).click();await expect(page.locator('#cr-refs-0 option')).toHaveCount(3);
+ expect((await stats(page)).calls.filter(call=>call.endpoint==='refs').at(-1).payload).toMatchObject({gitMode:'remote',gitRemote:'upstream'});
+ await collect(page);await route(page);await consent(page).check();expect((await stats(page)).calls.filter(call=>call.endpoint==='preview').at(-1).payload.request.repositories[0].gitRemote).toBe('upstream');
+ await page.getByRole('combobox',{name:'Git 读取方式 1',exact:true}).selectOption('local');await expect(page.locator('#cr-refs-0 option')).toHaveCount(0);await expect(consent(page)).toHaveCount(0);await expect(branchA).toHaveValue('custom-baseline');await expect(branchB).toHaveValue('origin/develop');
+ expect((await stats(page)).modelCalls).toBe(0);expect((await stats(page)).calls.filter(call=>call.endpoint==='generate')).toHaveLength(0);
 });
 
 test('folder input preserves original request and expanded preview is visible before model authorization (contract mock)',async({page})=>{
@@ -281,7 +311,7 @@ test('unknown paid work in A blocks installation and refs in B while downloads r
  await page.evaluate(()=>window.fixture.configure({holdGenerate:true}));await consent(page).check();await generate(page).click();await expect.poll(async()=>(await stats(page)).modelCalls).toBe(2);
  await page.getByRole('button',{name:'取消模型任务',exact:true}).click();await expect(page.getByRole('button',{name:'恢复已完成报告',exact:true})).toBeVisible();
  await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await expect(report(page)).toContainText('本地证据 b');await expect(capture(page)).toBeDisabled();
- await expect(page.getByRole('button',{name:'读取本地分支/标签',exact:true})).toBeDisabled();
+ await expect(page.getByRole('button',{name:/^读取(?:远端|本地)分支\/标签$/})).toBeDisabled();
  await page.getByText(/插件版本与更新 ·/).click();const update=page.getByRole('button',{name:'检查更新',exact:true});if(await update.isEnabled())await update.click();
  const install=page.getByRole('button',{name:'更新到 99.0.0',exact:true});if(await install.count())await expect(install).toBeDisabled();
  const before=await stats(page);expect(await downloadCurrent(page)).toContain('本地证据 b');expect((await stats(page)).calls).toEqual(before.calls);
@@ -294,15 +324,15 @@ test('native installation lease blocks cross-session refs and collection but pre
  await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await selectGit(page);await collect(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
  await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await page.getByText(/插件版本与更新 ·/).click();await page.getByRole('button',{name:'检查更新',exact:true}).click();await page.getByRole('checkbox',{name:/我确认将此插件更新到/}).check();await page.getByRole('button',{name:'更新到 99.0.0',exact:true}).click();
  await expect.poll(async()=>(await stats(page)).installCalls).toBe(1);await page.getByRole('button',{name:'测试会话 B',exact:true}).click();
- await expect(capture(page)).toBeDisabled();await expect(page.getByRole('button',{name:'读取本地分支/标签',exact:true})).toBeDisabled();const before=await stats(page);expect(await downloadCurrent(page)).toContain('本地证据 b');expect((await stats(page)).calls).toEqual(before.calls);
+ await expect(capture(page)).toBeDisabled();await expect(page.getByRole('button',{name:/^读取(?:远端|本地)分支\/标签$/})).toBeDisabled();const before=await stats(page);expect(await downloadCurrent(page)).toContain('本地证据 b');expect((await stats(page)).calls).toEqual(before.calls);
  await page.evaluate(()=>window.fixture.releaseInstall());await expect(page.getByRole('alert').filter({hasText:/重启/}).first()).toBeVisible();await assertPaidProof(page,{dispatches:0,installs:1});
 });
 
 test('a held refs request owns the business lease and prevents concurrent native installation',async({page})=>{
  await open(page,{holdRefs:true});await selectGit(page);await page.getByText(/插件版本与更新 ·/).click();await page.getByRole('button',{name:'检查更新',exact:true}).click();await page.getByRole('checkbox',{name:/我确认将此插件更新到/}).check();
- await page.getByRole('button',{name:'读取本地分支/标签',exact:true}).click();await expect.poll(async()=>(await stats(page)).calls.filter(call=>call.endpoint==='refs').length).toBe(1);
+ await page.getByRole('button',{name:/^读取(?:远端|本地)分支\/标签$/}).click();await expect.poll(async()=>(await stats(page)).calls.filter(call=>call.endpoint==='refs').length).toBe(1);
  await expect(page.getByRole('button',{name:'更新到 99.0.0',exact:true})).toBeDisabled();await expect(capture(page)).toBeDisabled();await assertPaidProof(page,{dispatches:0});
- await page.evaluate(()=>window.fixture.releaseRefs());await expect(page.getByText('已载入 3 个本地引用，在 A/B 输入中选择；不会 fetch。')).toBeVisible();await expect(page.getByRole('button',{name:'更新到 99.0.0',exact:true})).toBeEnabled();
+ await page.evaluate(()=>window.fixture.releaseRefs());await expect(page.getByText('已载入 3 个远端引用，在 A/B 输入中选择；此次查询观察值，采集时会重新获取。')).toBeVisible();await expect(page.getByRole('button',{name:'更新到 99.0.0',exact:true})).toBeEnabled();
 });
 
 for(const width of [320,680,1280])test('viewport '+width+' supports long paths, 500 rows and keyboard selection',async({page},testInfo)=>{
@@ -310,6 +340,7 @@ for(const width of [320,680,1280])test('viewport '+width+' supports long paths, 
  await expect(page.getByRole('checkbox',{name:/^纳入项目 [0-9]+$/})).toHaveCount(500);
  const search=page.getByRole('textbox',{name:'搜索项目路径',exact:true});await search.fill('project-499');
  const only=page.getByRole('checkbox',{name:'纳入项目 500',exact:true});await only.focus();await page.keyboard.press('Space');await expect(only).toBeChecked();
+ await page.getByRole('combobox',{name:'GIT 分支 A 500',exact:true}).fill('main');await page.getByRole('combobox',{name:'GIT 分支 B 500',exact:true}).fill('release');
  const path=page.getByRole('textbox',{name:'项目路径 500',exact:true});await path.focus();await expect(path).toBeFocused();expect(await path.inputValue()).toContain('very-long-path');
  await expect(page.getByRole('button',{name:'开始执行 · 采集差异',exact:true})).toBeEnabled();
  const dimensions=await page.evaluate(()=>({scroll:document.documentElement.scrollWidth,viewport:innerWidth}));expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.viewport+2);

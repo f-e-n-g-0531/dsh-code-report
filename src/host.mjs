@@ -121,7 +121,7 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
   const assertSession=async(payload,cwd,signal)=>{if(await sessionCwd(ctx,payload.sessionId,signal)!==cwd)throw problem('session-changed','会话目录已变更');};
   const endpoints={
     discover:({payload,cwd,signal,update})=>scan(cwd,signal,payload.scan,update),
-    refs:async({payload,cwd,signal})=>({refs:await refs(cwd,payload.repositoryPath,signal)}),
+    refs:async({payload,cwd,signal})=>({refs:await refs(cwd,payload.repositoryPath,signal,{gitMode:payload.gitMode,gitRemote:payload.gitRemote})}),
     preview:async({payload,cwd,signal,update})=>{
       const snapshot=await capture(cwd,payload.request,signal,update);
       await assertSession(payload,cwd,signal);signal.throwIfAborted();
