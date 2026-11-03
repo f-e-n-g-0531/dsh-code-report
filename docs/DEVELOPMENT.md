@@ -32,7 +32,7 @@ npm run test:install
 
 - [宿主入口](<../index.mjs>)：注册 DSH 服务。
 - [宿主编排](<../src/host.mjs>)：会话目录、预览生命周期、进度、限流、确认与分片重试。测试依赖注入仅为进程内接口，不接受 RPC 覆盖。
-- [共享协议](<../src/protocol.mjs>)：通道和协议版本，不能依赖 Node 或 DSH 服务。v0.8.0 候选版沿用协议版本 3，包含结构化执行恢复状态；v0.7.0 的协议 2 界面不能绕过版本门禁，升级后需重载前后台。
+- [共享协议](<../src/protocol.mjs>)：通道和协议版本，不能依赖 Node 或 DSH 服务。v0.8.1 候选版沿用协议版本 3，包含结构化执行恢复状态；v0.7.0 的协议 2 界面不能绕过版本门禁，升级后需重载前后台。
 - [采集](<../src/collect.mjs>)、[预算](<../src/budget.mjs>)、[路径](<../src/paths.mjs>)、[进程](<../src/process.mjs>)：只读固定版本、来源、增量资源控制及取消。
 - [证据索引](<../src/evidence.mjs>)：格式版本 2；统一解析文件清单与差异块/源码单元，ID 绑定快照和准确文本，不重写差异正文。SVN property 头和值分开；路径只精确匹配 included 列表，不能按块序号猜测。无可归属文本的 included 文件/目录（含空字符串根路径）生成独立 scope 范围证据，计入片数及输入预算，不当作正文覆盖。SVN 在排除内部路径后逐 entry 读取时可附 diffParts:{path,start,end}，以完整 diff 的 UTF-16 连续区间绑定采集路径，不改原始正文；整仓 diff 或外部旧快照没有此元数据时不能假定同等定位能力。
 - [结构化分析](<../src/analysis.mjs>)：保守输入预算、顺序分片、输出与引用校验、确定性 Markdown。旧 analyze API 保留供直接调用兼容，宿主新生成流程不回退自由 Markdown。
@@ -49,9 +49,17 @@ npm run test:install
 
 Git 版本可留空，使用指定本地分支最新提交，再固定 SHA；也可填本地分支、SHA、标签。SVN 两侧必须指定仓库相对分支路径；版本可留空取各分支最新一次提交，显式历史版本仅接受数字或 r 前缀。固定两侧 peg/operative 端点并验证 UUID 和仓库根一致，不允许任意 URL。Git refs、发现、差异及版本源码读取均走 runGitRead：清除继承的 GIT_*，设置 GIT_NO_LAZY_FETCH=1、空 GIT_ALLOW_PROTOCOL 和 protocol.allow=never，拒绝按需补取对象。该策略约束 Git 命令，不是操作系统级网络沙箱；真实 HTTP/SSH 等远程组合仍需独立验证。所需对象缺失直接失败，不自动修复 partial clone 或联网。普通 run 供测试建仓等用途，不代替报告读取的限制。Git patch 显式固定前缀、行标记、word diff、算法与 hunk 相关选项，仍不宣称隔离所有仓库配置。
 
-contextPaths 为显式工作区文件或目录路径列表，允许根目录 `.`；目录递归展开为实际文件。展开跳过点前缀隐藏、敏感、依赖、构建和缓存路径、链接及非普通文件，limitations 记录排除计数；显式敏感路径仍拒绝。隐藏判断只基于点前缀，不读取 Windows Hidden 属性。目录展开不设固定条目、目录和深度上限；任一待附带文件含 NUL、为二进制、非法 UTF-8 或无法读取都使整次采集失败，不静默跳过或截断。
+contextPaths 为显式工作区文件或目录路径列表，允许根目录 `.`；目录递归展开为实际文件。展开跳过点前缀隐藏、敏感、依赖、构建和缓存路径、链接及非普通文件，limitations 记录排除计数；显式敏感路径仍拒绝。隐藏判断只基于点前缀，不读取 Windows Hidden 属性。目录展开不设固定条目、目录和深度上限；任一待附带文件含 NUL、UTF-8 与 GB18030 均无法解码或无法读取都使整次采集失败，不静默跳过或截断。
 
-versionContexts 为 {repository,path,side:A或B} 列表，repository 必须是已选项目，仍仅支持文件、不支持目录；内容只能从固定版本读取，不存在/非普通文件/符号链接/二进制/非法 UTF-8 时失败，不回退磁盘。context 条目记录 provenance、repository、revision 和哈希。当前工作区源码不作为历史版本证据。预览展示展开后的实际文件清单与 limitations，操作者核对后才明确授权模型；不改变付费任务生命周期。
+versionContexts 为 {repository,path,side:A或B} 列表，repository 必须是已选项目，仍仅支持文件、不支持目录；内容只能从固定版本读取，不存在/非普通文件/符号链接/含 NUL/不支持的编码时失败，不回退磁盘。context 条目记录 provenance、repository、revision 和哈希。当前工作区源码不作为历史版本证据。预览展示展开后的实际文件清单与 limitations，操作者核对后才明确授权模型；不改变付费任务生命周期。
+
+## 正文解码与原字节追溯
+
+[正文解码器](<../src/text-encoding.mjs>) 对完整源码先使用 fatal UTF-8，失败后使用 fatal GB18030（兼容 GBK）；差异先按原始 LF 字节分行，每行执行同样顺序，保留 CRLF、孤立 CR、BOM 与末尾换行状态。不按整份 diff 回退，以免把 UTF-8 路径头与 GBK 代码分别占行的内容一起错误解码。编码标签为 `utf-8`、`gb18030` 或差异中的 `utf-8+gb18030`，ASCII 不单独证明某种编码。
+
+此规则不是完整编码检测器，不保证同一行混合编码或同时合法的 UTF-8/GBK 字节的作者意图；不修复已有乱码或 U+FFFD，不修改源文件。含 NUL 先拒绝（不自动解码 UTF-16）；两种 fatal 解码都失败时拒绝，不制造替换字符。默认命令文本输出仍严格 UTF-8，用于路径名单、refs、SVN XML 等元数据；仅正文读取请求 raw 字节并调用解码器。
+
+context 条目的 `encoding` 记录所用编码，`hash` 与 `rawHash` 都校验原始文件字节。仓库 `diffEncoding` 记录差异解码路径，`rawDiffHash` 校验原始 diff 字节，`diffHash` 校验解码后 UTF-8 文本。SVN 排除内部路径后的逐 entry 读取以读取顺序拼接原字节计算 rawDiffHash，不是全仓未过滤 diff 的哈希。报告分别展示原字节与文本哈希；证据索引和片预算使用解码文本，不把文本哈希冒充原字节身份。
 
 ## 分析与资源契约
 

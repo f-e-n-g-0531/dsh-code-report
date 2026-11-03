@@ -184,9 +184,9 @@ test('selected directory replaced by a junction after expansion cannot expose a 
  await assert.rejects(resolveContextFile(cwd, expanded.paths[0], createCollectionBudget()), /普通文件/);
 });
 
-test('binary and invalid UTF-8 directory files fail whole collection with the actual path', async t => {
+test('binary and invalid text encoding directory files fail whole collection with the actual path', async t => {
  const cwd = await workspace(t), row = await repo(cwd);
- for (const [name, bytes, pattern] of [['binary', Buffer.from([0,1]), /二进制/],['legacy', Buffer.from([0xff]), /UTF-8/],['binary-tail', Buffer.concat([Buffer.alloc(256*1024,65), Buffer.from([0])]), /二进制/],['legacy-tail', Buffer.concat([Buffer.alloc(256*1024,65), Buffer.from([0xff])]), /UTF-8/]]) {
+ for (const [name, bytes, pattern] of [['binary', Buffer.from([0,1]), /二进制/],['legacy', Buffer.from([0x81]), /UTF-8/],['binary-tail', Buffer.concat([Buffer.alloc(256*1024,65), Buffer.from([0])]), /二进制/],['legacy-tail', Buffer.concat([Buffer.alloc(256*1024,65), Buffer.from([0x81])]), /UTF-8/]]) {
   await file(cwd, name + '/bad.data', bytes);
   await file(cwd, name + '/a-good', 'good');
   await assert.rejects(collect(cwd, {repositories:[row],contextPaths:[name]}), error => pattern.test(error.message) && error.message.includes(name + '/bad.data'));

@@ -29,6 +29,29 @@ test('directory source documentation states expansion, refusal and authorization
  assert.ok(acceptance.includes('超过旧路径数量和分析片数门槛'));assert.ok(acceptance.includes('不证明真实大仓库性能'));
 });
 
+test('GBK documentation distinguishes decoding, hashes and unverified history',async()=>{
+ const readme=await readFile('README.md','utf8');
+ const development=await readFile('docs/DEVELOPMENT.md','utf8');
+ const acceptance=await readFile('docs/ACCEPTANCE.md','utf8');
+ const notes=await readFile('RELEASE-NOTES.md','utf8');
+ for(const source of [readme,development,notes.split('## v0.8.0 历史记录')[0]]){
+  for(const text of ['GB18030','GBK','UTF-8','同一行混合编码','U+FFFD','不修改源文件','rawDiffHash','diffHash'])assert.ok(source.includes(text),text);
+ }
+ assert.ok(readme.includes('源码按完整文件优先严格 UTF-8'));
+ assert.ok(readme.includes('按原始 LF 字节边界逐行'));
+ assert.ok(readme.includes('路径名单、SVN XML 等元数据仍严格要求 UTF-8'));
+ assert.ok(readme.includes('本版已完成 232 项本地回归、29 项浏览器验证'));
+ assert.doesNotMatch(readme,/仅支持无 NUL 的有效 UTF-8|GBK[/]GB18030 等非法字节会拒绝/);
+ for(const text of ['fatal UTF-8','fatal GB18030','ASCII','读取顺序拼接原字节','不是全仓未过滤 diff 的哈希','不改变付费任务生命周期'])assert.ok(development.includes(text),text);
+ assert.ok(acceptance.includes('v0.8.1 编码支持本地验收'));
+ assert.ok(acceptance.includes('模拟服务显示中文不证明真实 GBK 字节采集通过'));
+ const history=notes.split('## v0.8.0 历史记录')[1];
+ assert.ok(history.includes('215/215'));assert.ok(history.includes('29/29'));
+ const current=notes.split('## v0.8.0 历史记录')[0];
+ assert.ok(current.includes('232/232'));assert.ok(current.includes('29/29'));assert.ok(current.includes('正式发布以远端门禁'));
+ assert.doesNotMatch(current,/215[/]215/);
+});
+
 test('maintenance commands and release evidence boundaries stay explicit',async()=>{
  const pkg=JSON.parse(await readFile('package.json','utf8'));
  const releasing=await readFile('docs/RELEASING.md','utf8');

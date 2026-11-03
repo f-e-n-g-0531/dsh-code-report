@@ -129,7 +129,7 @@ test('source contexts above 20 files, 128 KiB each and 8 MiB total collect witho
  assert.ok(Buffer.byteLength(JSON.stringify(snapshot)) > 8 * MIB);
  const report = markdown(snapshot);
  for (const name of contextPaths) assert.ok(report.includes(name), name);
- assert.equal((report.match(/当前工作区快照；SHA-256/g) || []).length, 33);
+ assert.equal((report.match(/当前工作区快照；编码 utf-8；原始字节 SHA-256/g) || []).length, 33);
 });
 
 test('live command abort and remaining deadline stop active children before settling', async () => {

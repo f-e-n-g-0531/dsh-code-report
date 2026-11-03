@@ -11,11 +11,11 @@ export function interfaceSection(analysis){if(!analysis)return INTERFACE_NO_MODE
 const ANALYSIS_MISSING='未调用模型。本报告只包含差异证据；业务影响范围与 QA 测试计划尚待人工分析。';
 const LOCAL_ROUTE='模式：本地证据报告（未发送模型）';
 const releaseScopeLines=repositories=>repositories.map(r=>'- **'+inline(r.path)+'** ('+inline(r.type)+')：'+inline(r.type==='svn'?r.branchA+' @ r'+r.a:r.requestedA)+' → '+inline(r.type==='svn'?r.branchB+' @ r'+r.b:r.requestedB)+'；固定端点 '+inline(r.a)+' → '+inline(r.b)+'；'+r.files.length+' 个变更路径');
-const sourceLines=context=>context.map(c=>'- '+inline(c.path)+'；'+(c.provenance==='version-A'||c.provenance==='version-B'?inline(c.repository)+'；固定版本 '+inline(c.revision)+'（'+c.provenance+'）':'当前工作区快照')+'；SHA-256 '+inline(c.hash));
+const sourceLines=context=>context.map(c=>'- '+inline(c.path)+'；'+(c.provenance==='version-A'||c.provenance==='version-B'?inline(c.repository)+'；固定版本 '+inline(c.revision)+'（'+c.provenance+'）':'当前工作区快照')+'；编码 '+inline(c.encoding??'未记录')+'；原始字节 SHA-256 '+inline(c.rawHash??c.hash));
 const limitationLines=limitations=>[...limitations.map(x=>'- '+inline(x)),'- 模型输出为待人工复核的推断，不代表测试通过、缺陷证明或发布批准。'];
 const routeLine=route=>route?'模型：'+inline(route.provider)+' / '+inline(route.model):LOCAL_ROUTE;
 const excludedPathLines=r=>r.excludedPaths?.length?['','### 排除的内部路径 · '+inline(r.path),'','以下路径仅记录排除清单，正文未读取，不属于分析覆盖：',...r.excludedPaths.map(p=>'- '+inline(p))]:[];
-const evidenceLines=r=>['','### '+inline(r.path),'','差异 SHA-256：'+inline(r.diffHash),'',fence(r.summary,'text'),'',fence(r.diff,'diff')];
+const evidenceLines=r=>['','### '+inline(r.path),'','差异文本 SHA-256（解码后 UTF-8）：'+inline(r.diffHash),'','差异解码：'+inline(r.diffEncoding??'未记录')+'；原始字节 SHA-256：'+inline(r.rawDiffHash??'未记录'),'',fence(r.summary,'text'),'',fence(r.diff,'diff')];
 export function markdown(snapshot,analysis,route,{structured=false}={}){
  // Only callers holding program-generated, validated output may opt into structured markup.
  const renderedAnalysis=analysis?(structured?analysis:fence(analysis,'text')):ANALYSIS_MISSING;

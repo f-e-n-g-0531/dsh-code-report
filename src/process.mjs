@@ -21,7 +21,7 @@ export function runGitRead(args, options = {}) {
   return execute('git', ['-c', 'protocol.allow=never', ...args], options, env);
 }
 
-function execute(command, args, {cwd, signal, maxBytes, timeoutMs, onStdoutBytes} = {}, env) {
+function execute(command, args, {cwd, signal, maxBytes, timeoutMs, onStdoutBytes, raw = false} = {}, env) {
   return new Promise((resolve, reject) => {
     signal?.throwIfAborted();
     if ((timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) ||
@@ -66,8 +66,10 @@ function execute(command, args, {cwd, signal, maxBytes, timeoutMs, onStdoutBytes
       if (failure) return reject(failure);
       if (signal?.aborted) return reject(signal.reason);
       if (code !== 0) return reject(new Error(command + ' 读取失败: ' + Buffer.concat(err).toString('utf8').slice(0, 1200)));
-      try { resolve(decodeUtf8(Buffer.concat(out))); }
-      catch { reject(new Error(command + ' 输出不是有效 UTF-8，已停止采集；可能包含 GBK/GB18030 等编码，请转换或拆分范围后重试，未生成乱码报告')); }
+      const output = Buffer.concat(out);
+      if (raw === true) return resolve(output);
+      try { resolve(decodeUtf8(output)); }
+      catch { reject(new Error(command + ' 元数据输出不是有效 UTF-8，无法安全解析路径或协议，已停止采集')); }
     });
   });
 }

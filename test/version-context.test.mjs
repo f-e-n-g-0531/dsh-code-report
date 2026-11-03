@@ -60,11 +60,11 @@ test('version context rejects invalid selection, traversal and internals before 
  }
 });
 
-test('Git historical large text succeeds while binary, invalid UTF-8 and symlink objects fail closed', async t => {
+test('Git historical large text succeeds while binary, invalid text encoding and symlink objects fail closed', async t => {
  const cwd = await workspace(t);
  const repo = await repository(cwd, 'one');
  await writeFile(path.join(repo.root, 'binary.bin'), Buffer.from([0,1,2]));
- await writeFile(path.join(repo.root, 'legacy.txt'), Buffer.from([0xd6,0xd0]));
+ await writeFile(path.join(repo.root, 'legacy.txt'), Buffer.from([0x81]));
  const huge = 'x'.repeat(4 * 1024 * 1024 + 1);
  await writeFile(path.join(repo.root, 'huge.txt'), huge);
  await repo.git(['add', '.']);

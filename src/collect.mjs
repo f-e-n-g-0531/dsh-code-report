@@ -7,6 +7,7 @@ import {inside,relative,secretPath,internalPath} from './paths.mjs';
 import {expandContextPaths,resolveContextFile} from './context-paths.mjs';
 import {createCollectionBudget} from './budget.mjs';
 import {run,runGitRead} from './process.mjs';
+import {decodeSourceBytes,decodeDiffBytes} from './text-encoding.mjs';
 import {svnRevision,svnBranch,branchUrl} from './svn-endpoint.mjs';
 const MAX_REPOSITORIES=12,MAX_DISCOVERED_PROJECTS=500,SCAN_BUDGET_MS=120000,DIRECTORY_PROGRESS_INTERVAL=50;
 const SKIP_DIRECTORY=/^(\.|node_modules$|dist$|build$|Library$|Temp$|obj$|bin$)/i;
@@ -73,10 +74,16 @@ function versionContextPath(value) {
  return value;
 }
 function assertNoSecretPaths(repo){if(repo.files.some(secretPath))throw new Error('项目 '+repo.path+' 差异包含敏感路径：'+repo.files.filter(secretPath).join('、'));}
-function contextText(bytes, name) {
- if (bytes.includes(0)) throw new Error('源码文件为二进制：' + name + '；请缩小范围，未静默截断');
- try { return new TextDecoder('utf-8', {fatal:true, ignoreBOM:true}).decode(bytes); }
- catch { throw new Error('源码文件不是有效 UTF-8，已停止采集：' + name + '；请缩小范围'); }
+function contextContent(bytes, name) {
+ const decoded = decodeSourceBytes(bytes, {label:name});
+ const rawHash = hash(bytes);
+ return {...decoded, hash:rawHash, rawHash};
+}
+function setDiff(repo, bytes) {
+ const decoded = decodeDiffBytes(bytes, {label:'项目 ' + repo.path + ' 差异'});
+ repo.diff = decoded.text;
+ repo.diffEncoding = decoded.encoding;
+ repo.rawDiffHash = hash(bytes);
 }
 async function readContextFile(cwd, name, budget) {
  budget.check();
@@ -108,14 +115,14 @@ async function readContextFile(cwd, name, budget) {
   }
  }
  budget.check();
- return {path:name, provenance:'current-workspace', hash:hash(bytes), text:contextText(bytes, name)};
+ return {path:name, provenance:'current-workspace', ...contextContent(bytes, name)};
 }
 
 function boundedExec(root, budget, checkpoint = () => {}, options = {}) {
- return async (command, args) => {
+ return async (command, args, readOptions = {}) => {
   budget.check();
   checkpoint();
-  const commandOptions = {cwd:root, signal:budget.signal, timeoutMs:budget.commandTimeout(), ...options,
+  const commandOptions = {cwd:root, signal:budget.signal, timeoutMs:budget.commandTimeout(), ...options, ...readOptions,
    onStdoutBytes:bytes => budget.assertAdditional(bytes)};
   const value = command === 'git' ? await runGitRead(args, commandOptions) : await run(command, args, commandOptions);
   budget.check();
@@ -141,7 +148,8 @@ async function gitEvidence(exec,root,repo,a,b){
  repo.excludedPaths=repo.files.filter(internalPath);repo.files=repo.files.filter(p=>!internalPath(p));
  assertNoSecretPaths(repo);
  const exclusions=repo.excludedPaths.length?GIT_INTERNAL_EXCLUSIONS:[];
- repo.diff=await exec('git',['-c','core.quotePath=false','-c','diff.suppressBlankEmpty=false','diff',...GIT_DIFF_FLAGS,...GIT_PATCH_FLAGS,'--submodule=short','--unified=3',repo.a,repo.b,'--',...exclusions]);
+ const diffBytes=await exec('git',['-c','core.quotePath=false','-c','diff.suppressBlankEmpty=false','diff',...GIT_DIFF_FLAGS,...GIT_PATCH_FLAGS,'--submodule=short','--unified=3',repo.a,repo.b,'--',...exclusions],{raw:true});
+ setDiff(repo,diffBytes);
  repo.summary=await exec('git',['diff',...GIT_DIFF_FLAGS,'--stat',repo.a,repo.b,'--',...exclusions]);
 }
 async function svnResolveEndpoint(exec,info,url,rev){
@@ -168,7 +176,7 @@ function svnChange(entry, urlA, urlB) {
 async function svnEntryDiff(exec,repo,entry,urlA,urlB){
  if(!['file','dir'].includes(entry.kind))throw new Error('无法安全判断 SVN 变更类型');
  const suffix=entry.relative?'/'+entry.relative.split('/').map(encodeURIComponent).join('/'):'';
- return exec('svn',['diff','--internal-diff','--depth','empty','--old='+urlA+suffix+'@'+repo.a,'--new='+urlB+suffix+'@'+repo.b,...SVN_ACCESS_ARGS]);
+ return exec('svn',['diff','--internal-diff','--depth','empty','--old='+urlA+suffix+'@'+repo.a,'--new='+urlB+suffix+'@'+repo.b,...SVN_ACCESS_ARGS],{raw:true});
 }
 async function svnEvidence(exec,repo,root,row,request,a,b,checkpoint,onEntry){
  if(request.allowSvnNetwork!==true)throw new Error('SVN 历史读取需要勾选仓库访问授权');
@@ -185,20 +193,28 @@ async function svnEvidence(exec,repo,root,row,request,a,b,checkpoint,onEntry){
  const included=entries.filter(x=>!internalPath(x.relative));repo.files=included.map(x=>x.relative);
  repo.changes = included.map(({relative:path,kind,item,props}) => ({path,kind,item,props}));
  assertNoSecretPaths(repo);
- if(!repo.excludedPaths.length)repo.diff=await exec('svn',['diff','--internal-diff',...targets,...SVN_ACCESS_ARGS]);
+ if(!repo.excludedPaths.length)setDiff(repo,await exec('svn',['diff','--internal-diff',...targets,...SVN_ACCESS_ARGS],{raw:true}));
  else{
   // Never request a recursive parent diff after exclusions: deleted directories contain old bodies too.
   repo.diff='';
   repo.diffParts = [];
+  const rawHasher = createHash('sha256');
+  const encodings = new Set();
   for (const [index, entry] of included.entries()) {
    const start = repo.diff.length;
-   const text = await svnEntryDiff(exec, repo, entry, urlA, urlB);
+   const bytes = await svnEntryDiff(exec, repo, entry, urlA, urlB);
+   rawHasher.update(bytes);
+   const {text,encoding} = decodeDiffBytes(bytes,{label:'项目 ' + repo.path + ' / ' + entry.relative + ' 差异'});
+   if (encoding.includes('gb18030')) encodings.add('gb18030');
+   if (encoding === 'utf-8+gb18030' || (encoding === 'utf-8' && /[^\x00-\x7f]/.test(text))) encodings.add('utf-8');
    repo.diff += text;
    // Offsets refer to the exact original UTF-16 string, not re-encoded byte counts.
    if (text.length) repo.diffParts.push({path:entry.relative,start,end:repo.diff.length});
    checkpoint();
    onEntry?.(index + 1, included.length, entry.relative);
   }
+  repo.rawDiffHash = rawHasher.digest('hex');
+  repo.diffEncoding = encodings.has('gb18030') ? (encodings.has('utf-8') ? 'utf-8+gb18030' : 'gb18030') : 'utf-8';
  }
  repo.summary=repo.files.join('\n');
 }
@@ -229,7 +245,7 @@ async function readVersionContext(cwd, entry, repositories, budget, checkpoint) 
  const revision = entry.side === 'A' ? repo.a : repo.b;
  const root = await inside(cwd, repo.path, {root:true});
  const exec = boundedExec(root, budget, checkpoint);
- let text;
+ let bytes;
  if (repo.type === 'git') {
   // Literal pathspecs avoid wildcard/pathspec expansion; only ordinary tracked blobs qualify.
   const listing = await exec('git', ['--literal-pathspecs', 'ls-tree', '-z', '--full-tree', revision, '--', name]);
@@ -237,7 +253,7 @@ async function readVersionContext(cwd, entry, repositories, budget, checkpoint) 
   const match = entries.length === 1 && entries[0].match(/^(100644|100755) blob ([a-f0-9]{40}|[a-f0-9]{64})\t([\s\S]+)$/);
   if (!match || match[3] !== name) throw new Error('版本源码不存在或不是普通文件：' + name);
   const objectId = match[2];
-  text = await exec('git', ['cat-file', 'blob', objectId]);
+  bytes = await exec('git', ['cat-file', 'blob', objectId], {raw:true});
  } else {
   const base = repo.identity[entry.side === 'A' ? 'urlA' : 'urlB'];
   const url = base.replace(/\/$/, '') + '/' + name.split('/').map(encodeURIComponent).join('/');
@@ -249,12 +265,11 @@ async function readVersionContext(cwd, entry, repositories, budget, checkpoint) 
   // SVN omits target entirely for a file with no properties. The properties root is still mandatory.
   if (!Object.hasOwn(properties, 'properties') || targets.length > 1) throw new Error('无法验证版本源码属性');
   if (targets.some(target => list(target.property).some(property => property['@_name'] === 'svn:special'))) throw new Error('版本源码不能是符号链接');
-  text = await exec('svn', ['cat', '-r', revision, ...SVN_ACCESS_ARGS, '--', target]);
+  bytes = await exec('svn', ['cat', '-r', revision, ...SVN_ACCESS_ARGS, '--', target], {raw:true});
  }
- const bytes = Buffer.from(text, 'utf8');
- contextText(bytes, name);
+ const content = contextContent(bytes, name);
  budget.check();
- return {path:name, hash:hash(bytes), text, provenance:'version-' + entry.side, repository:repo.path, revision};
+ return {path:name, ...content, provenance:'version-' + entry.side, repository:repo.path, revision};
 }
 
 export async function collect(cwd, request, signal, onProgress = () => {}) {
@@ -268,6 +283,8 @@ export async function collect(cwd, request, signal, onProgress = () => {}) {
    '差异仅比较两个版本端点，不包含未提交修改；Git 子模块仅记录指针变化，不递归分析。',
    '源码上下文按来源分别标记：current-workspace 为当前磁盘内容，version-A/version-B 为固定版本内容；未执行测试。',
    '影响分析不是完整调用图；二进制、LFS 内容及未提供源码的行为需要人工验证。',
+   '正文自动优先严格 UTF-8，失败后尝试 GB18030（兼容 GBK）；差异逐行解码，自动识别有歧义，无法保证同一行混合编码或修复已乱码文本。元数据仍要求 UTF-8。',
+   '源码 hash/rawHash 与差异 rawDiffHash 校验原始字节；diffHash 校验解码后 UTF-8 文本，不是原始字节哈希。',
   ],
  };
  const checkpoint = () => budget.checkpoint(result);

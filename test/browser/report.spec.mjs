@@ -62,7 +62,7 @@ test('local refs and automatic batch/context inputs retain authorization boundar
 
 test('folder input preserves original request and expanded preview is visible before model authorization (contract mock)',async({page})=>{
  const directoryContextPreview={context:[
-  {path:'client/src/components/Button.tsx',provenance:'workspace',hash:'1'.repeat(64)},
+  {path:'client/src/components/Button.tsx',provenance:'workspace',encoding:'gb18030',rawHash:'1'.repeat(64),hash:'1'.repeat(64)},
   {path:'client/src/components/nested/Panel.tsx',provenance:'workspace',hash:'2'.repeat(64)},
   {path:'client/current.ts',provenance:'workspace',hash:'3'.repeat(64)},
   {repository:'client',path:'src/api.ts',provenance:'version-A',revision:'a'.repeat(40),hash:'4'.repeat(64)}
@@ -80,7 +80,7 @@ test('folder input preserves original request and expanded preview is visible be
  await expect(input).toHaveValue('client/src/components\nclient/current.ts');
  const files=page.getByRole('list',{name:'实际源码文件清单',exact:true});await expect(files).toBeVisible();await expect(files.getByRole('listitem')).toHaveCount(4);
  for(const item of directoryContextPreview.context){await expect(files).toContainText(item.path);await expect(files).toContainText(item.hash);}
- await expect(files).toContainText('当前工作区');await expect(files).toContainText('版本 A');
+ await expect(files).toContainText('当前工作区');await expect(files).toContainText('版本 A');await expect(files).toContainText('编码 gb18030');await expect(files).toContainText('原始字节 SHA-256');
  await expect(page.getByText('4 个实际源码文件（目录已展开）。',{exact:false})).toBeVisible();
  const limitations=page.getByRole('list',{name:'源码及采集限制',exact:true});await expect(limitations).toBeVisible();await expect(limitations).toContainText(directoryContextPreview.limitations[0]);
  await route(page);await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();
