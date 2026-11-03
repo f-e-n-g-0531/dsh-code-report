@@ -1,28 +1,27 @@
-const MIB = 1024 * 1024;
-export const COLLECTION_TIMEOUT_MS = 240000;
-
-/** A request-wide budget: commands never reset its monotonic deadline. */
-export function createCollectionBudget({allowBatches = false, signal, now = () => performance.now(), timeoutMs = COLLECTION_TIMEOUT_MS} = {}) {
-  const maxBytes = allowBatches === true ? 8 * MIB : MIB;
-  const deadline = now() + timeoutMs;
+/** Optional request-wide budgets. No default byte cap or deadline; cancellation always applies. */
+export function createCollectionBudget({maxBytes, signal, now = () => performance.now(), timeoutMs} = {}) {
+  if ((maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 1)) ||
+      (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0))) throw new Error('无效采集预算');
+  const deadline = timeoutMs === undefined ? undefined : now() + timeoutMs;
   let bytes = 0;
   function check() {
     signal?.throwIfAborted();
-    if (now() >= deadline) throw new Error('采集总时间超过安全预算，未生成不完整报告');
+    if (deadline !== undefined && now() >= deadline) throw new Error('采集总时间超过调用者预算，未生成不完整报告');
   }
   function assertBytes(size) {
     check();
-    if (size > maxBytes) throw new Error('报告证据超过 ' + (maxBytes / MIB) + ' MiB；请分批比较，未静默截断');
+    if (maxBytes !== undefined && size > maxBytes) throw new Error('报告证据超过调用者指定的 ' + maxBytes + ' bytes 上限，未静默截断');
   }
   return {
     signal, maxBytes, check,
     checkpoint(snapshot) {
+      check();
+      // Avoid serializing all previous source files after every append when no byte budget exists.
+      if (maxBytes === undefined) return;
       const size = Buffer.byteLength(JSON.stringify(snapshot));
-      assertBytes(size);
-      bytes = size;
-      return size;
+      assertBytes(size); bytes = size; return size;
     },
     assertAdditional(size) { assertBytes(bytes + size); },
-    commandTimeout() { check(); return Math.max(1, Math.min(60000, Math.ceil(deadline - now()))); },
+    commandTimeout() { check(); return deadline === undefined ? undefined : Math.max(1, Math.ceil(deadline - now())); },
   };
 }

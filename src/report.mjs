@@ -20,7 +20,7 @@ export function markdown(snapshot,analysis,route,{structured=false}={}){
  // Only callers holding program-generated, validated output may opt into structured markup.
  const renderedAnalysis=analysis?(structured?analysis:fence(analysis,'text')):ANALYSIS_MISSING;
  const out=['# '+inline(snapshot.title),'','生成时间：'+inline(snapshot.createdAt),'','## 发布范围','',...releaseScopeLines(snapshot.repositories),'','## 改动内容、对外接口、影响范围与 QA 测试建议','',renderedAnalysis,'',interfaceSection(analysis),'',routeLine(route),'','## 附带源码','',...sourceLines(snapshot.context),'','## 覆盖范围与限制','',...limitationLines(snapshot.limitations),'','## 差异证据'];
- for(const r of snapshot.repositories)out.push(...excludedPathLines(r));
+ for(const r of snapshot.repositories)for(const line of excludedPathLines(r))out.push(line);
  for(const r of snapshot.repositories)out.push(...evidenceLines(r));
  return out.join('\n')+'\n';
 }

@@ -41,7 +41,7 @@ export function apply(ctx){
   const [configNotice,setConfigNotice]=useState(initial.error?'配置未恢复：'+initial.error:saved?restoredNotice(saved.allowSvnNetwork):'');
   const [rows,setRows]=useState(saved?.rows||[]),[title,setTitle]=useState(saved?.title||'版本发布报告');
   const [context,setContext]=useState(saved?.context||''),[versionContext,setVersionContext]=useState(saved?.versionContext||'');
-  const [network,setNetwork]=useState(saved?.allowSvnNetwork===true),[allowBatches,setAllowBatches]=useState(saved?.allowBatches===true);
+  const [network,setNetwork]=useState(saved?.allowSvnNetwork===true);
   const [provider,setProvider]=useState(saved?.provider||''),[model,setModel]=useState(saved?.model||''),[consent,setConsent]=useState(false);
   const [preview,setPreview]=useState(null),[result,setResult]=useState(()=>results.get(session));
   const [latestAnalysis,setLatestAnalysis]=useState(()=>results.getAnalysis(session));
@@ -97,7 +97,7 @@ export function apply(ctx){
   };
   const change=(index,key,value)=>{invalidate();setRows(previous=>previous.map((row,i)=>i===index?{...row,[key]:value}:row));};
   const store=()=>{
-   try{saveConfiguration(globalThis.localStorage,session.cwd,{schema:1,rows,title,context,versionContext,allowBatches,provider,model,scan:scanSettings,allowSvnNetwork:network});setConfigNotice('已保存此工作区配置及 SVN 访问勾选状态；不保存密码、报告、源码内容或模型发送确认。');}
+   try{saveConfiguration(globalThis.localStorage,session.cwd,{schema:1,rows,title,context,versionContext,allowBatches:true,provider,model,scan:scanSettings,allowSvnNetwork:network});setConfigNotice('已保存此工作区配置及 SVN 访问勾选状态；不保存密码、报告、源码内容或模型发送确认。');}
    catch(error){setConfigNotice('保存失败：'+error.message);}
   };
   const restore=()=>{
@@ -105,7 +105,7 @@ export function apply(ctx){
     const value=loadConfiguration(globalThis.localStorage,session.cwd);
     if(!value){setConfigNotice('此工作区尚无已保存配置。');return;}
     invalidate();setRows(value.rows);setTitle(value.title);setContext(value.context);setVersionContext(value.versionContext||'');
-    setAllowBatches(value.allowBatches===true);setProvider(value.provider);setModel(value.model);setNetwork(value.allowSvnNetwork===true);
+    setProvider(value.provider);setModel(value.model);setNetwork(value.allowSvnNetwork===true);
     setScanState('idle');setScanWarnings([]);setScanError('');setConfigNotice(restoredNotice(value.allowSvnNetwork));
    }catch(error){setConfigNotice('恢复失败：'+error.message);}
   };
@@ -158,14 +158,13 @@ export function apply(ctx){
   let versionContexts=[],contextIssue='';
   try{
    versionContexts=parseVersionContexts(versionContext,rows);
-   if(versionContexts.length+context.split(/\r?\n/).filter(line=>line.trim()).length>20)contextIssue='当前工作区与版本源码合计最多 20 个文件。';
   }catch(error){contextIssue=error.message;}
   const issues=repositoryIssues(rows),captureReason=globalBusy?'当前插件实例有任务或更新尚未确认，请先完成或恢复。':captureBlocker(rows,network,busy,compatibility,issues,contextIssue);
   const capture=()=>{
    if(captureReason)return;
    return perform('采集版本差异',async signal=>{
     setPreview(null);setConsent(false);setPlanDirty(false);
-    const value=await tracked('preview',{sessionId:session.id,request:{title,repositories:rows.filter(row=>row.enabled).map(({enabled,...row})=>row),contextPaths:context.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),versionContexts,allowSvnNetwork:network,allowBatches}},signal);
+    const value=await tracked('preview',{sessionId:session.id,request:{title,repositories:rows.filter(row=>row.enabled).map(({enabled,...row})=>row),contextPaths:context.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),versionContexts,allowSvnNetwork:network,allowBatches:true}},signal);
     if(!signal.aborted&&mounted.current){setNow(Date.now());setPreview(value);setInputBudget(String(value.analysisPlan?.inputBudget||24000));keepResult({markdown:value.markdown,stale:false,kind:'local'});}
    });
   };
@@ -220,12 +219,12 @@ export function apply(ctx){
       <button disabled={rows.length>=500} onClick={()=>{invalidate();setRows([...rows,fresh()]);}}>＋ 添加项目</button>
       <p className="cr-hint">自动扫描当前工作区，保留已经填写的版本。路径相对于工作区，根目录填「.」。版本留空默认取对应 A/B 分支最新提交；两侧分支相同且版本均留空时无差异。Git 仅用本地已有分支，不自动 fetch；SVN 仍需历史读取授权。</p>
       <label className="cr-check"><input type="checkbox" checked={network} onChange={event=>{invalidate();setNetwork(event.target.checked);}}/> 允许通过 SVN 工作副本地址读取历史版本（可能访问网络；此勾选随工作区配置保存，不保存密码）</label>
-      <label className="cr-check"><input type="checkbox" checked={allowBatches} onChange={event=>{invalidate();setAllowBatches(event.target.checked);}}/> 允许分批分析较大差异（总证据最多 8 MiB；默认 1 MiB，多片可能多次计费，发送前再次确认）</label>
+      <p className="cr-hint">采集不设固定证据总量上限，分析按单片输入预算自动规划；发送前核对实际文件、字节和片数，多片可能多次计费，仍须再次确认。</p>
      </fieldset>
-     <details className="cr-optional"><summary>2. 附带项目源码（可选）{context.trim()||versionContext.trim()?' · 已填写':''}</summary><fieldset disabled={!!busy||globalBusy}><legend>源码文件</legend><p>每行填写一个工作区内的源码文件路径。仅附带明确选中的文件；不会自动打包整仓或扫描调用链。</p>
-      <textarea aria-label="源码上下文路径" rows={4} placeholder={'app/src/api.ts\napp/src/config.ts'} value={context} onChange={event=>{invalidate();setContext(event.target.value);}}/>
-      <label>固定版本源码（每行：仓库路径|A或B|仓库相对路径）<textarea aria-label="固定版本源码路径" rows={3} placeholder="app|A|src/api.ts" value={versionContext} onChange={event=>{invalidate();setVersionContext(event.target.value);}}/></label>
-      <p className="cr-hint">两种来源合计最多 20 个 UTF-8 文本文件，单文件 128 KiB；当前工作区内容与历史 A/B 版本分开标记。敏感路径被拦截，但仍须自行检查源码内的密钥。</p>{contextIssue&&<p role="alert" className="cr-error">{contextIssue}</p>}
+     <details className="cr-optional"><summary>2. 附带项目源码（可选）{context.trim()||versionContext.trim()?' · 已填写':''}</summary><fieldset disabled={!!busy||globalBusy}><legend>源码路径</legend><p>每行填写一个工作区内的文件或文件夹路径，根目录可填「.」。文件夹递归展开；不会自动附带未填写的目录或扫描调用链。</p>
+      <textarea aria-label="源码上下文路径" rows={4} placeholder={'app/src/api.ts\napp/src/components'} value={context} onChange={event=>{invalidate();setContext(event.target.value);}}/>
+      <label>固定版本源码（仅文件；每行：仓库路径|A或B|仓库相对路径）<textarea aria-label="固定版本源码路径" rows={3} placeholder="app|A|src/api.ts" value={versionContext} onChange={event=>{invalidate();setVersionContext(event.target.value);}}/></label>
+      <p className="cr-hint">工作区路径条目、展开文件数、单文件大小和总证据不设固定规模上限，仍受可用内存等系统资源约束。仅支持无 NUL 的有效 UTF-8 文本；二进制、非法编码或无法读取会使整次采集失败，不静默跳过或截断。当前工作区与历史 A/B 版本分开标记。</p><p className="cr-hint">目录展开跳过点前缀隐藏、敏感、依赖、构建和缓存路径、链接及非普通文件，排除计数见预览限制；显式填写敏感路径仍拒绝。不按 Windows Hidden 属性筛选。源码目录展开不设固定条目、目录或深度上限。发送前检查展开后的实际文件清单及限制，并自行检查源码内的密钥。</p>{contextIssue&&<p role="alert" className="cr-error">{contextIssue}</p>}
      </fieldset></details>
      <div className="cr-actions cr-execute"><button className="cr-primary" disabled={!!captureReason} aria-describedby={captureReason?'cr-capture-reason':undefined} onClick={capture}>开始执行 · 采集差异</button>{captureReason&&<span id="cr-capture-reason" role="status" aria-live="polite">{captureReason}</span>}{busy&&<><span role="status">{busy}…</span><button onClick={()=>controller.current?.abort()}>取消</button></>}</div>
      {lifecycleState.paid&&!ownTask&&<p className="cr-stale" role="status">其他会话有模型任务执行中或结果未知；本插件实例暂停新业务和安装。请回原会话恢复。此互斥不覆盖其他标签页或客户端。</p>}
@@ -250,10 +249,10 @@ function downloadMarkdown(markdown){const url=URL.createObjectURL(new Blob([mark
 function PreviewSection({preview,busy,expired,provider,model,consent,setProvider,setModel,setConsent,generateReason,onGenerate,onCapture,inputBudget,budgetValid,planDirty,onBudget,onReplan,compatibility,now}){
  const deadline=typeof preview.expiresAt==='number'?preview.expiresAt:Date.parse(preview.expiresAt);
  return <fieldset disabled={!!busy}><legend>3. 确认分析范围</legend>
-  <p>证据约 {(preview.bytes/1024).toFixed(1)} KiB；{preview.repositories.length} 个项目，{preview.context.length} 个源码上下文。{expired?'快照已过期。':'快照剩余约 '+Math.max(0,Math.ceil((deadline-now)/1000))+' 秒。'}</p>
+  <p>证据 {preview.bytes} 字节（约 {(preview.bytes/1024).toFixed(1)} KiB）；{preview.repositories.length} 个项目，{preview.repositories.reduce((total,row)=>total+(row.files?.length||0),0)} 条变更路径，{preview.context.length} 个实际源码文件（目录已展开）。{expired?'快照已过期。':'快照剩余约 '+Math.max(0,Math.ceil((deadline-now)/1000))+' 秒。'}</p>
   {expired&&<div className="cr-error" role="status">快照已过期，请重新采集并确认发送。<button disabled={!!compatibility} onClick={onCapture}>重新采集</button></div>}
   <ul>{preview.repositories.map((row,index)=><li key={index}><strong>{row.path}</strong> · {row.type} · {row.files.length} 个变更路径<br/><code>{sideLabel(row,'A')} → {sideLabel(row,'B')}</code></li>)}</ul>
-  <details><summary>查看源码上下文及限制</summary><ul>{preview.context.map((item,index)=><li key={index}>{item.repository?item.repository+' / ':''}{item.path} · {item.provenance==='version-A'?'版本 A':item.provenance==='version-B'?'版本 B':'当前工作区'} {item.revision||''} · {item.hash}</li>)}{preview.limitations.map((text,index)=><li key={index}>{text}</li>)}</ul></details>
+  <details open><summary>查看源码上下文及限制</summary><p className="cr-hint">以下为本次实际附带的文件清单（目录已展开）；请核对来源与排除限制后再授权模型。</p><ul aria-label="实际源码文件清单">{preview.context.map((item,index)=><li key={index}>{item.repository?item.repository+' / ':''}{item.path} · {item.provenance==='version-A'?'版本 A':item.provenance==='version-B'?'版本 B':'当前工作区'} {item.revision||''} · {item.hash}</li>)}</ul><ul aria-label="源码及采集限制">{preview.limitations.map((text,index)=><li key={index}>{text}</li>)}</ul></details>
   <label>单片输入预算（保守字节估算，非 token）<input aria-label="单片输入预算" type="number" min={4000} max={64000} value={inputBudget} onChange={event=>onBudget(event.target.value)}/></label>
   <button disabled={expired||!budgetValid||!!compatibility} onClick={onReplan}>更新分析计划</button>
   {!budgetValid&&<p role="alert">输入预算必须是 4000–64000 的整数。</p>}{planDirty&&<p role="status">预算已变更，请更新分析计划并重新确认。</p>}
@@ -272,7 +271,7 @@ function ProgressSection({progress}){
 function ReportSection({result,onDownload,onClear}){
  return <section><div className="cr-actions"><h2>Markdown 报告</h2><button onClick={onDownload}>下载 .md 文件</button><button onClick={onClear}>清除报告</button></div>
   {result.stale&&<p className="cr-stale" role="status">已有报告与当前草稿可能不同，旧结果已保留，可继续下载；重新采集后才用于当前范围分析。</p>}
-  <p className="cr-hint">以下以纯文本展示，不执行报告中的 HTML；模型建议需要人工复核，不代表测试已通过。结果仅在当前插件实例内按会话暂存当前报告及最近成功模型报告（最多 16 个会话 / 32 MiB），刷新或重载前请下载；不写入浏览器本地存储。</p>
+  <p className="cr-hint">以下以纯文本展示，不执行报告中的 HTML；模型建议需要人工复核，不代表测试已通过。结果仅在当前插件实例内按会话暂存当前报告及最近成功模型报告（最多 16 个会话，按会话数量淘汰；大报告更耗内存），刷新、重载或宿主重启前请下载；不写入浏览器本地存储。</p>
   {result.coverage&&<><p role="status">已处理证据 {result.coverage.processed??result.coverage.analyzed??0} / {result.coverage.total??0}；未处理 {result.coverage.remaining??0}；完成分片 {result.coverage.completedBatches??0} / {result.coverage.totalBatches??0}；被引用 {result.coverage.cited??0}。引用有效不代表结论正确，仍需人工复核。</p><details><summary>分析覆盖信息</summary><pre>{JSON.stringify(result.coverage,null,2)}</pre></details></>}<pre className="cr-report">{result.markdown}</pre>
  </section>;
 }

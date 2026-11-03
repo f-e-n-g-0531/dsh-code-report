@@ -127,11 +127,18 @@ test('giant hunk headers retain every original byte without repeated unbounded m
   assert.ok(plan.batches.every(batch => batch.inputBytes <= 8000));
 });
 
-test('adversarial tiny hunks and source bounds reject without silently dropping data', () => {
+test('more than 8192 hunks and trusted source ranges retain every unit and byte', () => {
   const tiny = '@@ -1 +1 @@\n-a\n+b\n'.repeat(8193);
-  assert.throws(() => createEvidenceIndex(snapshot(tiny)), /8192/);
-  assert.throws(() => createEvidenceIndex(snapshot('x'.repeat(8 * 1024 * 1024 + 1))), /8 MiB/);
-  assert.throws(() => createAnalysisPlan(snapshot('@@ -1 +1 @@\n-a\n+b\n'.repeat(5000)), {inputBudget: 8000}), /32 片/);
+  const index = createEvidenceIndex(snapshot(tiny));
+  const raw = index.items.filter(item => item.provenance === 'version-diff');
+  assert.equal(raw.length, 8193);
+  assert.equal(raw.map(item => item.text).join(''), tiny);
+  const source = snapshot('x'.repeat(8193)), repo = source.repositories[0];
+  repo.files = ['api.js'];
+  repo.diffParts = Array.from({length: 8193}, (_, i) => ({path: 'api.js', start: i, end: i + 1}));
+  const ranged = createEvidenceIndex(source);
+  assert.equal(ranged.items.length, 8193);
+  assert.ok(ranged.items.every(item => item.file === 'api.js'));
 });
 
 test('SVN property values cannot forge headers or paths; shared attribution retains raw bytes', () => {
@@ -191,13 +198,56 @@ test('legal SVN empty root property labels and quoted Git paths match by exact c
   assert.ok(createEvidenceIndex(quoted).items.every(item => item.file === 'a b.js'));
 });
 
-test('synthetic scopes consume shared byte, unit and plan budgets rather than free coverage', () => {
-  const source = snapshot('x'.repeat(8 * 1024 * 1024));
-  assert.throws(() => createEvidenceIndex(source), /合成范围超过 8 MiB/);
-  const many = snapshot(''); many.repositories[0].files = Array.from({length: 8193}, (_, i) => 'dir-' + i);
-  assert.throws(() => createEvidenceIndex(many), /8192/);
-  const scope = snapshot(''); scope.repositories[0].files = Array.from({length: 400}, (_, i) => '目录-' + i);
-  assert.throws(() => createAnalysisPlan(scope, {inputBudget: 8000}), /32 片/);
+test('more than 8 MiB source plus synthetic scopes is counted and planned without truncation', () => {
+  const source = snapshot('x'.repeat(8 * 1024 * 1024 + 1));
+  const index = createEvidenceIndex(source);
+  assert.ok(index.sourceBytes > 8 * 1024 * 1024 + 1, 'synthetic scope bytes are included');
+  assert.equal(index.items.filter(item => item.provenance === 'version-diff').map(item => item.text).join(''), source.repositories[0].diff);
+  assert.equal(index.items.filter(item => item.kind === 'scope').length, 2);
+  const plan = createAnalysisPlan(source, {inputBudget: 64000});
+  assert.ok(plan.batches.length > 32);
+  let offset = 0;
+  for (const batch of plan.batches) {
+    assert.equal(batch.inputBytes, estimatedInputBytes(batch.snapshot));
+    assert.ok(batch.inputBytes <= 64000);
+    for (const item of batch.snapshot.evidence) if (item.provenance === 'version-diff') {
+      assert.equal(item.start, offset);
+      assert.equal(item.text, source.repositories[0].diff.slice(item.start, item.end));
+      offset = item.end;
+    }
+  }
+  assert.equal(offset, source.repositories[0].diff.length);
+});
+
+test('8193 scopes retain complete coverage without repeating global manifests in batches', () => {
+  const source = snapshot('');
+  source.repositories[0].files = Array.from({length: 8193}, (_, i) => '目录-' + i);
+  let titleReads = 0;
+  Object.defineProperty(source, 'title', {enumerable: true, get() { titleReads++; return '证据测试'; }});
+  const plan = createAnalysisPlan(source, {inputBudget: 8000});
+  assert.ok(titleReads <= plan.batches.length + 3, 'shared metadata is not reserialized for each candidate evidence item');
+  assert.equal(plan.coverage.files.length, 8193);
+  const items = plan.batches.flatMap(batch => batch.snapshot.evidence);
+  assert.equal(plan.coverage.total, items.length);
+  assert.equal(new Set(items.map(item => item.file)).size, 8193);
+  assert.equal(new Set(items.map(item => item.id)).size, items.length);
+  assert.ok(plan.batches.length > 32);
+  for (const batch of plan.batches) {
+    assert.deepEqual(Object.keys(batch.snapshot), ['schema', 'evidenceVersion', 'title', 'limitations', 'evidence']);
+    assert.equal(batch.inputBytes, estimatedInputBytes(batch.snapshot));
+    assert.ok(batch.inputBytes <= 8000);
+  }
+});
+
+test('8193 header-only Git blocks use exact indexed attribution including quoted paths', () => {
+  const source = snapshot(''), repo = source.repositories[0];
+  repo.files = Array.from({length: 8193}, (_, i) => i % 2 ? 'dir/a b-' + i : 'file-' + i);
+  repo.diff = repo.files.map((path, i) => 'diff --git ' + (i % 2 ? JSON.stringify('a/' + path) + ' ' + JSON.stringify('b/' + path) : 'a/' + path + ' b/' + path) + '\nold mode 100644\nnew mode 100755\n').join('');
+  const index = createEvidenceIndex(source);
+  assert.equal(index.manifest.length, 8193);
+  assert.equal(index.items.length, 8193);
+  assert.deepEqual(index.items.map(item => item.file), repo.files);
+  assert.ok(index.manifest.every(file => file.content === 'text-or-properties'));
 });
 
 test('estimated budget includes escaped JSON, system and limitations; no silent overflow', () => {
@@ -206,5 +256,5 @@ test('estimated budget includes escaped JSON, system and limitations; no silent 
   assert.ok(plan.batches.every(batch => batch.inputBytes <= plan.inputBudget));
   assert.throws(() => createAnalysisPlan(source, {inputBudget: 3999}), /4000/);
   assert.throws(() => createAnalysisPlan({...source, limitations: ['x'.repeat(10000)]}, {inputBudget: 4000}), /元数据/);
-  assert.throws(() => createAnalysisPlan(snapshot('x'.repeat(400000)), {inputBudget: 8000}), /32 片/);
+  assert.throws(() => createAnalysisPlan(source, {inputBudget: 64001}), /64000/);
 });

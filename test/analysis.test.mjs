@@ -2,13 +2,66 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createAnalysisPlan, analyzeReport, analyze, markdown} from '../src/report.mjs';
-import {validateAnalysis, consumeStructuredAnalysis} from '../src/analysis.mjs';
+import {validateAnalysis, consumeStructuredAnalysis, estimatedInputBytes, ANALYSIS_SYSTEM} from '../src/analysis.mjs';
+import {createEvidenceIndex, evidenceHash} from '../src/evidence.mjs';
 
 const route = {provider: 'fixture', model: 'structured'};
 const snapshot = (text = '-old\n+new\n') => ({title: 'fixture', createdAt: 'fixed', limitations: [], context: [], repositories: [{path: 'app', type: 'git', a: 'a', b: 'b', requestedA: 'a', requestedB: 'b', files: ['api.js'], diff: 'diff --git a/api.js b/api.js\n--- a/api.js\n+++ b/api.js\n@@ -1 +1 @@\n' + text, summary: 'api.js', diffHash: 'hash'}]});
 const document = id => ({changes: [{text: '参数发生变化', evidenceIds: [id]}], interfaces: [], impacts: [], qa: [{text: 'P1 前置：旧调用方；步骤：调用新接口；预期：核对返回值', evidenceIds: [id]}], unknowns: [{text: '调用方未提供，间接影响待确认', evidenceIds: []}]});
 async function* stream(value, reason = 'stop') { yield {type: 'text-delta', text: typeof value === 'string' ? value : JSON.stringify(value)}; yield {type: 'finish', reason: {kind: reason}}; }
 const model = callback => ({stream(input) { assert.deepEqual(input.tools, []); const payload = JSON.parse(input.messages[0].content[0].text); return callback(payload, input); }});
+
+test('linear packing matches reference JSON packing and preserves payload and plan hashes', () => {
+  const source = snapshot(('@@ -1 +1 @@\n-\\\t\u0001😀\n+新\n').repeat(120));
+  source.title = '"quoted"\t😀'; source.limitations = ['slashes \\ and controls \t \u0001 \ud800'];
+  for (const inputBudget of [8000, 24000, 64000]) {
+    const payloadFor = evidence => ({schema: 2, evidenceVersion: 2, title: source.title, limitations: source.limitations, evidence});
+    const overhead = estimatedInputBytes(payloadFor([]));
+    const index = createEvidenceIndex(source, {maxTextBytes: Math.max(64, Math.floor((inputBudget - overhead - 512) / 8))});
+    const groups = []; let group = [];
+    for (const item of index.items) {
+      if (group.length && estimatedInputBytes(payloadFor([...group, item])) > inputBudget) { groups.push(group); group = []; }
+      group.push(item);
+    }
+    if (group.length) groups.push(group);
+    const payloadHashes = groups.map(items => evidenceHash(JSON.stringify(payloadFor(items))));
+    const id = 'plan-' + evidenceHash(JSON.stringify([2, 2, index.snapshotHash, inputBudget, ANALYSIS_SYSTEM, payloadHashes]));
+    const plan = createAnalysisPlan(source, {inputBudget});
+    assert.equal(plan.id, id);
+    assert.deepEqual(plan.batches.map(batch => batch.payloadHash), payloadHashes);
+    assert.deepEqual(plan.batches.map(batch => batch.evidenceIds), groups.map(items => items.map(item => item.id)));
+    for (const batch of plan.batches) assert.equal(batch.inputBytes, estimatedInputBytes(batch.snapshot));
+  }
+});
+
+test('over 32 batches cancel with exact complete coverage and explicitly resume without repeats', async () => {
+  const source = snapshot(''); source.repositories[0].files = Array.from({length: 400}, (_, i) => 'directory-' + i);
+  const plan = createAnalysisPlan(source, {inputBudget: 8000}), controller = new AbortController();
+  assert.ok(plan.batches.length > 33);
+  let calls = 0, partial;
+  const llm = model(payload => { calls++; return stream(document(payload.evidence[0].id)); });
+  await assert.rejects(analyzeReport(llm, route, source, {plan, signal: controller.signal, onProgress(value) { if (value.completed === 33) controller.abort(); }}), error => {
+    partial = error.completed;
+    const processed = plan.batches.slice(0, 33).reduce((sum, batch) => sum + batch.evidenceIds.length, 0);
+    assert.equal(error.coverage.processed, processed);
+    assert.equal(error.coverage.remaining, plan.coverage.total - processed);
+    assert.equal(error.coverage.total, plan.coverage.total);
+    assert.equal(error.coverage.files.length, 400);
+    assert.equal(error.coverage.cited, 33);
+    assert.equal(error.coverage.unreferencedIds.length, plan.coverage.total - 33);
+    assert.deepEqual(error.coverage.pendingBatchIds, plan.batches.slice(33).map(batch => batch.id));
+    return error.name === 'AbortError';
+  });
+  assert.equal(calls, 33); assert.equal(partial.size, 33);
+  const result = await analyzeReport(llm, route, source, {plan, completed: partial});
+  assert.equal(calls, plan.batches.length);
+  assert.equal(result.coverage.processed, plan.coverage.total);
+  assert.equal(result.coverage.remaining, 0);
+  assert.equal(result.coverage.cited, plan.batches.length);
+  assert.equal(result.coverage.files.length, 400);
+  assert.equal(result.completed.size, plan.batches.length);
+  for (const batch of plan.batches) assert.equal(result.completed.get(batch.id).payloadHash, batch.payloadHash);
+});
 
 test('strict schema rejects arbitrary objects, extras, invalid references and unsupported unknown claims', () => {
   const valid = document('e1');

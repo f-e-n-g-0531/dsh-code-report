@@ -1,6 +1,6 @@
 // Results are private to one plugin instance. No source, preview or consent is persisted.
 export function resultKey(session){return JSON.stringify([session?.id,session?.cwd]);}
-export function createResultStore({limit=16,maxBytes=32*1024*1024}={}){
+export function createResultStore({limit=16,maxBytes=Infinity}={}){
  const entries=new Map(),recoveries=new Map();
  const size=value=>new TextEncoder().encode(value.markdown).length;
  const entrySize=entry=>size(entry.current)+(entry.analysis&&entry.analysis.markdown!==entry.current.markdown?size(entry.analysis):0);
@@ -21,8 +21,9 @@ export function createResultStore({limit=16,maxBytes=32*1024*1024}={}){
    // Keep only current output and latest successful AI output, not an unbounded history.
    const entry={current,analysis:value.kind==='analysis'?current:previous?.analysis};
    entries.delete(resultKey(session));entries.set(resultKey(session),entry);
-   let bytes=[...entries.values()].reduce((sum,item)=>sum+entrySize(item),0);
-   while(entries.size>limit||bytes>maxBytes){const key=entries.keys().next().value;bytes-=entrySize(entries.get(key));entries.delete(key);}
+   // Default retention is count-based; do not repeatedly encode every large report.
+   let bytes=Number.isFinite(maxBytes)?[...entries.values()].reduce((sum,item)=>sum+entrySize(item),0):0;
+   while(entries.size>limit||bytes>maxBytes){const key=entries.keys().next().value;if(Number.isFinite(maxBytes))bytes-=entrySize(entries.get(key));entries.delete(key);}
   },
   delete(session){entries.delete(resultKey(session));}
  };

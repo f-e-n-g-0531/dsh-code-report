@@ -3,8 +3,8 @@ import {runtimeInfo,checkUpdate} from './updates.mjs';
 import {collect,discover,listRefs} from './collect.mjs';
 import {createAnalysisPlan,analyzeReport,markdown} from './report.mjs';
 
-const REQUEST_TIMEOUT=240000,PREVIEW_TTL=10*60*1000,PROGRESS_TTL=10*60*1000;
-const PREVIEW_LIMIT=16,PREVIEW_BYTES=32*1024*1024,PROGRESS_LIMIT=64,ACTIVE_LIMIT=2;
+const PREVIEW_TTL=10*60*1000,PROGRESS_TTL=10*60*1000;
+const PREVIEW_LIMIT=16,PROGRESS_LIMIT=64,ACTIVE_LIMIT=2;
 const TERMINAL_PHASES=['completed','stopped'];
 const PAID_ID_LIMIT=1024;
 const endpointNames=['discover','preview','generate','analysis-plan','refs'];
@@ -41,8 +41,8 @@ function createPreviewStore(ctx,now){
     return {released:!!p};
   };
   const add=(id,entry)=>{
-    const size=()=>[...items.values()].reduce((sum,p)=>sum+p.bytes,0);
-    while(items.size>=PREVIEW_LIMIT||size()+entry.bytes>PREVIEW_BYTES){
+    // Bound retained snapshots by count, not by the size of one legitimate release.
+    while(items.size>=PREVIEW_LIMIT){
       const oldest=[...items].find(([,p])=>!p.used);
       if(!oldest)throw problem('busy','预览缓存已满，请稍后重试');
       items.delete(oldest[0]);
@@ -80,13 +80,9 @@ function createProgressStore(ctx,now,backendInstanceId){
   const update=(item,value)=>{if(item&&!terminal(item)){item.value=value;item.updatedAt=now();if(Number.isInteger(value.completed))item.completedBatches=value.completed;if(Number.isInteger(value.total))item.totalBatches=value.total;}};
   const finish=(item,result)=>{
     if(!item)return;
-    const bytes=Buffer.byteLength(JSON.stringify(result));
-    const retained=()=>[...items.values()].reduce((sum,value)=>sum+(value.resultBytes||0),0);
-    for(const value of items.values()){
-      if(retained()+bytes<=PREVIEW_BYTES)break;
-      if(value.result){delete value.result;delete value.resultBytes;}
-    }
-    if(bytes<=PREVIEW_BYTES){item.result=result;item.resultBytes=bytes;}
+    // Result lifetime follows terminal metadata TTL/count. Large reports must remain
+    // recoverable too; do not silently drop a paid result at a fixed byte threshold.
+    item.result=result;
     item.value={phase:'completed',completed:item.completedBatches,total:item.totalBatches,label:'报告完成，可只读恢复'};item.updatedAt=now();
   };
   const stop=(item,error)=>{
@@ -182,7 +178,9 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
     if(endpoint==='result')return respond(()=>progress.result(payload,signal));
     active++;let operation;
     try{
-      signal=AbortSignal.any([...(signal?[signal]:[]),AbortSignal.timeout(REQUEST_TIMEOUT)]);signal.throwIfAborted();previews.prune();
+      // Large collections and many model batches have no arbitrary request deadline.
+      // Caller cancellation remains authoritative (except validated delivery completion).
+      signal=signal||new AbortController().signal;signal.throwIfAborted();previews.prune();
       if(!endpointNames.includes(endpoint)||!payload||typeof payload!=='object')throw problem('input','无效请求');
       const cwd=await sessionCwd(ctx,payload.sessionId,signal);signal.throwIfAborted();
       if(payload.operationId!==undefined||endpoint==='generate'){

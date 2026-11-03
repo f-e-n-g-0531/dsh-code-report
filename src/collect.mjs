@@ -3,11 +3,12 @@ import {scanOptions} from './configuration.mjs';
 import {realpath,open} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {XMLParser,XMLValidator} from 'fast-xml-parser';
-import {inside,regular,relative,secretPath,internalPath} from './paths.mjs';
+import {inside,relative,secretPath,internalPath} from './paths.mjs';
+import {expandContextPaths,resolveContextFile} from './context-paths.mjs';
 import {createCollectionBudget} from './budget.mjs';
 import {run,runGitRead} from './process.mjs';
 import {svnRevision,svnBranch,branchUrl} from './svn-endpoint.mjs';
-const MAX_REPOSITORIES=12,MAX_CONTEXT_FILES=20,MAX_CONTEXT_FILE_BYTES=128*1024,MAX_DISCOVERED_PROJECTS=500,SCAN_BUDGET_MS=120000,DIRECTORY_PROGRESS_INTERVAL=50;
+const MAX_REPOSITORIES=12,MAX_DISCOVERED_PROJECTS=500,SCAN_BUDGET_MS=120000,DIRECTORY_PROGRESS_INTERVAL=50;
 const SKIP_DIRECTORY=/^(\.|node_modules$|dist$|build$|Library$|Temp$|obj$|bin$)/i;
 // Explicit grammar: repository config must not rename prefixes, drop blank context,
 // enable word diffs, change path relativity, or merge distant hunks.
@@ -52,7 +53,6 @@ export async function discover(cwd,signal,options={},onProgress=()=>{}){
 function validateRequest(request) {
  if (!request || !Array.isArray(request.repositories) || !request.repositories.length || request.repositories.length > MAX_REPOSITORIES) throw new Error('请选择 1–12 个项目');
  for (const key of ['contextPaths', 'versionContexts']) if (request[key] !== undefined && !Array.isArray(request[key])) throw new Error('源码上下文必须为列表');
- if ((request.contextPaths?.length || 0) + (request.versionContexts?.length || 0) > MAX_CONTEXT_FILES) throw new Error('最多附带 20 个源码文件');
  const repositories = new Set();
  for (const row of request.repositories) {
   if (!row || !['git', 'svn'].includes(row.type)) throw new Error('仅支持 Git / SVN');
@@ -73,35 +73,42 @@ function versionContextPath(value) {
  return value;
 }
 function assertNoSecretPaths(repo){if(repo.files.some(secretPath))throw new Error('项目 '+repo.path+' 差异包含敏感路径：'+repo.files.filter(secretPath).join('、'));}
-function contextText(bytes) {
- if (bytes.length > MAX_CONTEXT_FILE_BYTES) throw new Error('单个源码文件不能超过 128 KiB');
- if (bytes.includes(0)) throw new Error('源码文件为二进制');
+function contextText(bytes, name) {
+ if (bytes.includes(0)) throw new Error('源码文件为二进制：' + name + '；请缩小范围，未静默截断');
  try { return new TextDecoder('utf-8', {fatal:true, ignoreBOM:true}).decode(bytes); }
- catch { throw new Error('源码文件不是有效 UTF-8，已停止采集'); }
+ catch { throw new Error('源码文件不是有效 UTF-8，已停止采集：' + name + '；请缩小范围'); }
 }
 async function readContextFile(cwd, name, budget) {
  budget.check();
- const file = await regular(cwd, name);
+ const file = await resolveContextFile(cwd, name, budget);
  budget.check();
  const handle = await open(file, 'r');
  let bytes;
  try {
   budget.check();
-  if ((await handle.stat()).size > MAX_CONTEXT_FILE_BYTES) throw new Error('单个源码文件不能超过 128 KiB');
-  const buffer = Buffer.alloc(MAX_CONTEXT_FILE_BYTES + 1);
-  let offset = 0;
-  while (offset < buffer.length) {
+  const stat = await handle.stat();
+  budget.check();
+  if (!stat.isFile()) throw new Error('源码上下文必须是普通文件：' + name);
+  const chunks = [];
+  let size = 0;
+  while (true) {
    budget.check();
-   const {bytesRead} = await handle.read(buffer, offset, Math.min(16384, buffer.length - offset), null);
+   const buffer = Buffer.allocUnsafe(64 * 1024);
+   const {bytesRead} = await handle.read(buffer, 0, buffer.length, null);
    budget.check();
    if (!bytesRead) break;
-   offset += bytesRead;
-   budget.assertAdditional(offset);
+   size += bytesRead;
+   budget.assertAdditional(size);
+   chunks.push(buffer.subarray(0, bytesRead));
   }
-  bytes = buffer.subarray(0, offset);
- } finally { await handle.close(); }
+  bytes = Buffer.concat(chunks, size);
+ } finally {
+  try { budget.check(); } finally {
+   try { await handle.close(); } finally { budget.check(); }
+  }
+ }
  budget.check();
- return {path:name, provenance:'current-workspace', hash:hash(bytes), text:contextText(bytes)};
+ return {path:name, provenance:'current-workspace', hash:hash(bytes), text:contextText(bytes, name)};
 }
 
 function boundedExec(root, budget, checkpoint = () => {}, options = {}) {
@@ -230,9 +237,7 @@ async function readVersionContext(cwd, entry, repositories, budget, checkpoint) 
   const match = entries.length === 1 && entries[0].match(/^(100644|100755) blob ([a-f0-9]{40}|[a-f0-9]{64})\t([\s\S]+)$/);
   if (!match || match[3] !== name) throw new Error('版本源码不存在或不是普通文件：' + name);
   const objectId = match[2];
-  const size = Number((await exec('git', ['cat-file', '-s', objectId])).trim());
-  if (!Number.isSafeInteger(size) || size < 0 || size > MAX_CONTEXT_FILE_BYTES) throw new Error('单个源码文件不能超过 128 KiB');
-  text = await boundedExec(root, budget, checkpoint, {maxBytes:MAX_CONTEXT_FILE_BYTES + 1})('git', ['cat-file', 'blob', objectId]);
+  text = await exec('git', ['cat-file', 'blob', objectId]);
  } else {
   const base = repo.identity[entry.side === 'A' ? 'urlA' : 'urlB'];
   const url = base.replace(/\/$/, '') + '/' + name.split('/').map(encodeURIComponent).join('/');
@@ -244,17 +249,17 @@ async function readVersionContext(cwd, entry, repositories, budget, checkpoint) 
   // SVN omits target entirely for a file with no properties. The properties root is still mandatory.
   if (!Object.hasOwn(properties, 'properties') || targets.length > 1) throw new Error('无法验证版本源码属性');
   if (targets.some(target => list(target.property).some(property => property['@_name'] === 'svn:special'))) throw new Error('版本源码不能是符号链接');
-  text = await boundedExec(root, budget, checkpoint, {maxBytes:MAX_CONTEXT_FILE_BYTES + 1})('svn', ['cat', '-r', revision, ...SVN_ACCESS_ARGS, '--', target]);
+  text = await exec('svn', ['cat', '-r', revision, ...SVN_ACCESS_ARGS, '--', target]);
  }
  const bytes = Buffer.from(text, 'utf8');
- contextText(bytes);
+ contextText(bytes, name);
  budget.check();
  return {path:name, hash:hash(bytes), text, provenance:'version-' + entry.side, repository:repo.path, revision};
 }
 
 export async function collect(cwd, request, signal, onProgress = () => {}) {
  validateRequest(request);
- const budget = createCollectionBudget({allowBatches:request.allowBatches, signal});
+ const budget = createCollectionBudget({signal});
  budget.check();
  const result = {
   title:typeof request.title === 'string' ? request.title.slice(0,160) : '版本发布报告',
@@ -266,7 +271,11 @@ export async function collect(cwd, request, signal, onProgress = () => {}) {
   ],
  };
  const checkpoint = () => budget.checkpoint(result);
- const total = request.repositories.length + (request.contextPaths?.length || 0) + (request.versionContexts?.length || 0);
+ budget.check();
+ const expanded = await expandContextPaths(cwd, request.contextPaths || [], budget, {onProgress});
+ budget.check();
+ result.limitations.push(...expanded.limitations);
+ const total = request.repositories.length + expanded.paths.length + (request.versionContexts?.length || 0);
  let completed = 0;
  const progress = label => {
   onProgress({phase:'collecting', completed, total, label});
@@ -286,7 +295,7 @@ export async function collect(cwd, request, signal, onProgress = () => {}) {
   completed++;
   progress('项目差异已采集：' + row.path);
  }
- for (const name of request.contextPaths || []) {
+ for (const name of expanded.paths) {
   progress('读取源码：' + name);
   result.context.push(await readContextFile(cwd, name, budget));
   checkpoint();

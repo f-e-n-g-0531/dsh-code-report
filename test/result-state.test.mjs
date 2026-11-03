@@ -24,6 +24,11 @@ test('in-place completion is fresh only for the submitted operation and unchange
  assert.equal(terminalAnalysisProgress(completion).phase,'completed');
  assert.equal(terminalAnalysisProgress(null,{message:'stopped'}).phase,'failed');
 });
+test('default result store retains reports larger than the former 32 MiB threshold',()=>{
+ const store=createResultStore(),markdown='x'.repeat(33*1024*1024);store.set(one,{markdown,kind:'analysis'});
+ assert.equal(store.get(one).markdown.length,markdown.length);assert.equal(store.getAnalysis(one).markdown,markdown);
+ store.set(two,{markdown:'other report'});assert.equal(store.get(one).markdown,markdown);
+});
 test('draft invalidation retains old report but never mutates its evidence',()=>{
  const original={markdown:'fixed evidence',stale:false,coverage:{total:2}};
  assert.deepEqual(staleResult(original),{...original,stale:true});assert.equal(original.stale,false);assert.equal(staleResult(null),null);

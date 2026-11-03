@@ -9,10 +9,10 @@ const calls=[],previews=new Map(),results=new Map(),gates=new Map();
 let previewSequence=0,modelCalls=0,installCalls=0,settledPreviews=0,settledGenerations=0,generateAborts=0,switchSession;
 const sessions={a:{id:'a',cwd:'G:/fixture/a',retainedBy:{mainView:1}},b:{id:'b',cwd:'G:/fixture/b',retainedBy:{mainView:1}}};
 const ok=value=>({ok:true,value});
-const execution=(phase,{dispatched=true,available=false}={})=>({backendInstanceId:'fixture-backend',dispatch:dispatched?'dispatched':'not-dispatched',dispatchCount:dispatched?1:0,completedBatches:available?1:0,totalBatches:1,resultAvailability:available?'available':'unavailable',phase});
+const execution=(phase,{dispatched=true,available=false}={})=>({backendInstanceId:'fixture-backend',dispatch:dispatched?'dispatched':'not-dispatched',dispatchCount:dispatched?1:0,completedBatches:available?(settings.analysisBatches||1):0,totalBatches:settings.analysisBatches||1,resultAvailability:available?'available':'unavailable',phase});
 const fail=(message,code='code-report/input',extra={})=>({ok:false,error:{code,message,details:{fixture:true,...extra}}});
 const info=()=>({packageName:PACKAGE_NAME,protocol:PROTOCOL_VERSION,runningVersion:settings.runtimeMismatch?'0.0.0':version});
-const plan=()=>({id:'plan-fixture',inputBudget:24000,estimated:true,batches:[{id:'batch-1',evidenceIds:['e-1'],inputBytes:100}],coverage:{total:1,excluded:0}});
+const plan=()=>({id:'plan-fixture',inputBudget:24000,estimated:true,batches:Array.from({length:settings.analysisBatches||1},(_,index)=>({id:'batch-'+(index+1),evidenceIds:['e-'+(index+1)],inputBytes:100})),coverage:{total:settings.analysisBatches||1,excluded:0}});
 function gate(name){return new Promise(resolve=>{gates.set(name,resolve);});}
 function release(name){const resolve=gates.get(name);if(resolve){gates.delete(name);resolve();}}
 const wait=(ms,signal)=>new Promise((resolve,reject)=>{
@@ -47,7 +47,7 @@ async function rpc(channel,endpoint,payload,signal){
   const task=results.get(payload.operationId);
   if(task&&task.sessionId===payload.sessionId){
    const phase=task.status==='pending'?'analyzing':task.status;
-   return ok({phase,completed:phase==='completed'?1:0,total:1,label:'fixture '+phase});
+   return ok({phase,completed:phase==='completed'?(settings.analysisBatches||1):0,total:settings.analysisBatches||1,label:'fixture '+phase});
   }
   return ok({phase:'collecting',completed:0,total:1,label:'fixture 正在处理'});
  }
@@ -58,7 +58,11 @@ async function rpc(channel,endpoint,payload,signal){
   await wait(settings.delayPreview,signal);settledPreviews++;
   if(settings.failPreview)return fail('fixture 采集失败');
   const previewId='preview-'+(++previewSequence);
-  const value={previewId,expiresAt:Date.now()+settings.ttl,bytes:100,repositories:request.repositories.map(row=>({...row,a:'a'.repeat(40),b:'b'.repeat(40),files:['api.ts']})),context:[],limitations:['模拟服务，不读取真实仓库'],analysisPlan:plan(),markdown:'# 本地证据 '+payload.sessionId+' '+request.title+'\n未调用模型\n<script>window.fixtureInjected=true</script>'};
+  // Contract-only fixture data: no filesystem traversal or real exclusion checks occur here.
+  const expanded=settings.directoryContextPreview;
+  const context=expanded?structuredClone(expanded.context):[];
+  const limitations=['模拟服务，不读取真实仓库',...(expanded?.limitations||[])];
+  const value={previewId,expiresAt:Date.now()+settings.ttl,bytes:expanded?.bytes??100,repositories:request.repositories.map(row=>({...row,a:'a'.repeat(40),b:'b'.repeat(40),files:['api.ts']})),context,limitations,analysisPlan:plan(),markdown:'# 本地证据 '+payload.sessionId+' '+request.title+'\n未调用模型\n<script>window.fixtureInjected=true</script>'};
   previews.set(previewId,{sessionId:payload.sessionId,value});return ok(value);
  }
  if(endpoint==='generate'){
@@ -71,7 +75,7 @@ async function rpc(channel,endpoint,payload,signal){
    await wait(settings.delayGenerate);
    settledGenerations++;
    if(settings.failGenerate){const proof=execution('stopped');results.set(payload.operationId,{sessionId:payload.sessionId,status:'stopped',execution:proof});return fail('fixture 模型失败','code-report/analysis-failed',{execution:proof});}
-   const value={markdown:'# 模型报告 '+payload.sessionId+'\n## 对外接口变更\n待确认\n<script>window.fixtureInjected=true</script>',coverage:{total:1,completed:1,excluded:0}};
+   const value={markdown:'# 模型报告 '+payload.sessionId+'\n## 对外接口变更\n待确认\n<script>window.fixtureInjected=true</script>',coverage:{total:settings.analysisBatches||1,completed:settings.analysisBatches||1,excluded:0}};
    results.set(payload.operationId,{sessionId:payload.sessionId,status:'completed',value});
    if(settings.failGenerateResponse)throw new Error('fixture response lost after generation');
    return ok(value);

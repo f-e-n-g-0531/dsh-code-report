@@ -53,20 +53,20 @@ test('Git A/B contexts use pinned objects, distinguish repositories, and never u
  await assert.rejects(collect(cwd, {repositories:[one.row], versionContexts:[context('one','B','removed.txt')]}), /不存在或不是普通文件/);
 });
 
-test('version context rejects invalid selection, traversal, internals, and combined count overflow before I/O', async () => {
+test('version context rejects invalid selection, traversal and internals before I/O', async () => {
  const row = {path:'.', type:'git', a:'main', b:'main'};
  for (const entry of [context('other','A'), context('.','C'), context('.','A','../file'), context('.','A','.env'), context('.','A','.git/config'), context('.','A','dir/../file'), context('.','A','dir\\file'), context('.','A','/absolute')]) {
   await assert.rejects(collect('missing-workspace', {repositories:[row], versionContexts:[entry]}));
  }
- await assert.rejects(collect('missing-workspace', {repositories:[row], contextPaths:Array(20).fill('a.txt'), versionContexts:[context('.','A')]}), /20/);
 });
 
-test('Git historical binary, oversize, invalid UTF-8, and symlink objects fail closed', async t => {
+test('Git historical large text succeeds while binary, invalid UTF-8 and symlink objects fail closed', async t => {
  const cwd = await workspace(t);
  const repo = await repository(cwd, 'one');
  await writeFile(path.join(repo.root, 'binary.bin'), Buffer.from([0,1,2]));
  await writeFile(path.join(repo.root, 'legacy.txt'), Buffer.from([0xd6,0xd0]));
- await writeFile(path.join(repo.root, 'huge.txt'), 'x'.repeat(128 * 1024 + 1));
+ const huge = 'x'.repeat(4 * 1024 * 1024 + 1);
+ await writeFile(path.join(repo.root, 'huge.txt'), huge);
  await repo.git(['add', '.']);
  // Construct a tracked symlink independently of Windows symlink privileges.
  const target = (await repo.git(['hash-object', 'api.txt'])).trim();
@@ -74,7 +74,12 @@ test('Git historical binary, oversize, invalid UTF-8, and symlink objects fail c
  await repo.git(['commit', '-m', 'unsafe contexts']);
  const b = (await repo.git(['rev-parse', 'HEAD'])).trim();
  const row = {...repo.row, a:b, b};
- for (const [name, pattern] of [['binary.bin',/二进制/], ['legacy.txt',/UTF-8/], ['huge.txt',/128 KiB/], ['link.txt',/普通文件/]]) {
+ const snapshot = await collect(cwd, {repositories:[row], versionContexts:[context('one','B','huge.txt')]});
+ assert.equal(snapshot.context[0].text, huge);
+ assert.equal(snapshot.context[0].hash, createHash('sha256').update(huge).digest('hex'));
+ const many = await collect(cwd, {repositories:[row], versionContexts:Array.from({length:21}, () => context('one','B'))});
+ assert.equal(many.context.length, 21);
+ for (const [name, pattern] of [['binary.bin',/二进制/], ['legacy.txt',/UTF-8/], ['link.txt',/普通文件/]]) {
   await assert.rejects(collect(cwd, {repositories:[row], versionContexts:[context('one','B',name)]}), pattern);
  }
 });
@@ -108,6 +113,9 @@ test('SVN version contexts use fixed URL/revision, preserve deleted history, and
  const svn = args => run('svn', args, {cwd:root}).catch(error => { error.message = 'fixture ' + args[0] + ': ' + error.message; throw error; });
  await writeFile(path.join(root, 'api.txt'), 'svn-old\n');
  await writeFile(path.join(root, 'removed.txt'), 'svn-deleted\n');
+ const large = 'source 文本\n'.repeat(20000);
+ await writeFile(path.join(root, 'large.txt'), large);
+ await svn(['add','--quiet','large.txt']);
  await writeFile(path.join(root, 'api @.txt'), 'svn-unicode\n');
  await svn(['add','--quiet','api.txt','removed.txt','--','api @.txt@']);
  await svn(['commit','-m','baseline','--non-interactive']);
@@ -121,6 +129,8 @@ test('SVN version contexts use fixed URL/revision, preserve deleted history, and
  const snapshot = await collect(cwd, {...request,allowSvnNetwork:true});
  assert.deepEqual(snapshot.context.map(item => item.text), ['svn-old\n','svn-new\n','svn-deleted\n','svn-unicode\n']);
  assert.deepEqual(snapshot.context.map(item => item.revision), ['1','2','1','2']);
+ const largeSnapshot = await collect(cwd, {repositories:[row],allowSvnNetwork:true,versionContexts:[context('wc','B','large.txt')]});
+ assert.equal(largeSnapshot.context[0].text, large);
  await assert.rejects(collect(cwd, {...request,allowSvnNetwork:true,versionContexts:[context('wc','B','removed.txt')]}));
  // Unix SVN reads special files through readlink; Windows stores their link representation.
  if (process.platform === 'win32') await writeFile(path.join(root, 'link.txt'), 'link api.txt');

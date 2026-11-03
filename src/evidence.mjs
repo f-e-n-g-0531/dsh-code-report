@@ -3,21 +3,6 @@ import {createHash} from 'node:crypto';
 export const EVIDENCE_FORMAT_VERSION = 2;
 export const evidenceHash = value => createHash('sha256').update(value).digest('hex');
 const bytes = value => Buffer.byteLength(value, 'utf8');
-const MAX_EVIDENCE_ITEMS = 8192;
-const MAX_SOURCE_BYTES = 8 * 1024 * 1024;
-
-function evidenceLimit(message) {
-  return Object.assign(new Error(message + '；未截断证据，请缩小范围'), {code: 'code-report/analysis-plan'});
-}
-
-function boundedMatches(text, pattern) {
-  const matches = [];
-  for (const match of text.matchAll(pattern)) {
-    if (matches.length >= MAX_EVIDENCE_ITEMS) throw evidenceLimit('证据结构超过 8192 项');
-    matches.push(match);
-  }
-  return matches;
-}
 
 /** Partition exact Unicode text, keeping CRLF and every original code point. */
 function* textParts(text, maxBytes) {
@@ -46,7 +31,6 @@ function includedPaths(repository) {
     if (!change || typeof change.path !== 'string') throw new Error('可信变更路径无效');
     paths.add(change.path);
   }
-  if (paths.size > MAX_EVIDENCE_ITEMS) throw evidenceLimit('文件清单超过 8192 项');
   return paths;
 }
 
@@ -86,7 +70,7 @@ function blockHeader(block) {
   return end < 0 ? block : block.slice(0, end);
 }
 
-function blockPath(repository, block, included) {
+function blockPath(repository, block, included, gitLabels) {
   const header = blockHeader(block);
   const index = header.match(/^Index: (.*)\r?$/m);
   const property = block.match(/^Property changes on: (.*)\r?$/m);
@@ -99,10 +83,10 @@ function blockPath(repository, block, included) {
   if (!candidates.length && repository.type === 'git') {
     const git = header.match(/^diff --git (.*)\r?$/m);
     if (git) {
-      // A delimiter inside a quoted/path-with-spaces label is ambiguous: never guess by order.
-      for (const path of included) {
-        if ([['a/' + path, 'b/' + path], [JSON.stringify('a/' + path), JSON.stringify('b/' + path)]].some(([a, b]) => git[1].replace(/\r$/, '') === a + ' ' + b)) candidates.push('a/' + path);
-      }
+      // Labels are matched against exact collector names, never guessed by order.
+      const path = gitLabels.get(git[1].replace(/\r$/, ''));
+      if (typeof path === 'string') return path;
+      return null;
     }
   }
   return matchPath(repository, candidates, included);
@@ -112,7 +96,7 @@ function blockPath(repository, block, included) {
 function sourceRanges(repository, included) {
   const parts = repository.diffParts;
   if (parts === undefined) return [{start: 0, end: repository.diff.length, path: null, assigned: false}];
-  if (!Array.isArray(parts) || parts.length > MAX_EVIDENCE_ITEMS) throw new Error('差异来源范围无效');
+  if (!Array.isArray(parts)) throw new Error('差异来源范围无效');
   let offset = 0;
   for (const part of parts) {
     if (!part || typeof part.path !== 'string' || !included.has(part.path) || !Number.isInteger(part.start) || !Number.isInteger(part.end) || part.start !== offset || part.end <= part.start || part.end > repository.diff.length) throw new Error('差异来源范围必须连续覆盖原文且路径属于 included');
@@ -124,18 +108,27 @@ function sourceRanges(repository, included) {
 
 function parseRepository(repository) {
   const diff = repository.diff, included = includedPaths(repository);
+  // Header-only mode/binary changes lack ---/+++ labels. Index their exact Git
+  // spellings once rather than scanning every included path for every block.
+  const gitLabels = new Map();
+  if (repository.type === 'git') for (const path of included) {
+    for (const label of ['a/' + path + ' b/' + path, JSON.stringify('a/' + path) + ' ' + JSON.stringify('b/' + path)]) {
+      if (!gitLabels.has(label)) gitLabels.set(label, path);
+      else if (gitLabels.get(label) !== path) gitLabels.set(label, null);
+    }
+  }
   const pattern = repository.type === 'svn' ? /^(?:Index: |Property changes on: )/gm : /^diff --git /gm;
   const blocks = [];
   for (const range of sourceRanges(repository, included)) {
     const part = diff.slice(range.start, range.end);
-    const starts = boundedMatches(part, pattern).map(match => range.start + match.index);
+    const starts = Array.from(part.matchAll(pattern), match => range.start + match.index);
     if (!starts.length || starts[0] !== range.start) starts.unshift(range.start);
     for (let index = 0; index < starts.length; index++) {
     const start = starts[index], end = starts[index + 1] ?? range.end;
     const text = diff.slice(start, end);
     if (!text) continue;
     const header = blockHeader(text);
-    const file = range.assigned ? range.path : blockPath(repository, text, included);
+    const file = range.assigned ? range.path : blockPath(repository, text, included, gitLabels);
     const property = text.startsWith('Property changes on: ');
     const metadataEnd = header.search(/^(?:--- |\+\+\+ )/m);
     const gitMetadata = metadataEnd < 0 ? header : header.slice(0, metadataEnd);
@@ -145,7 +138,6 @@ function parseRepository(repository) {
     if (/^(?:new file mode |--- \/dev\/null)|^--- [^\r\n]*\(nonexistent\)/m.test(header)) status = 'add';
     else if (/^(?:deleted file mode |\+\+\+ \/dev\/null)|^\+\+\+ [^\r\n]*\(nonexistent\)/m.test(header)) status = 'delete';
     else if (/^diff --git |^Index: /m.test(header) || property || text.startsWith('@@')) status = 'modify';
-    if (blocks.length >= MAX_EVIDENCE_ITEMS) throw evidenceLimit('证据结构超过 8192 项');
     blocks.push({start, end, text, file, header, property, binary, submodule, status});
     }
   }
@@ -172,8 +164,8 @@ function parseRepository(repository) {
 }
 
 function* sections(block) {
-  const hunks = boundedMatches(block.text, block.property ? /^##[^\r\n]*/gm : /^@@[^\r\n]*/gm);
-  const cuts = [0, ...hunks.map(match => match.index).filter(offset => offset > 0)];
+  const cuts = [0];
+  for (const match of block.text.matchAll(block.property ? /^##[^\r\n]*/gm : /^@@[^\r\n]*/gm)) if (match.index > 0) cuts.push(match.index);
   for (let index = 0; index < cuts.length; index++) {
     const from = cuts[index], to = cuts[index + 1] ?? block.text.length;
     const text = block.text.slice(from, to);
@@ -184,7 +176,7 @@ function* sections(block) {
 
 export function snapshotHash(snapshot) { return evidenceHash(JSON.stringify(snapshot)); }
 
-/** Raw sources and synthetic summaries have independent coordinate systems and budgets. */
+/** Raw sources and synthetic summaries have independent coordinates; every byte is counted. */
 export function createEvidenceIndex(snapshot, {maxTextBytes = 12000} = {}) {
   if (!snapshot || !Array.isArray(snapshot.repositories) || !Array.isArray(snapshot.context)) throw new Error('无效证据快照');
   if (!Number.isInteger(maxTextBytes) || maxTextBytes < 64) throw new Error('证据分片预算无效');
@@ -193,11 +185,9 @@ export function createEvidenceIndex(snapshot, {maxTextBytes = 12000} = {}) {
   const account = text => {
     if (typeof text !== 'string') throw new Error('证据正文必须是文本');
     sourceBytes += bytes(text);
-    if (sourceBytes > MAX_SOURCE_BYTES) throw evidenceLimit('证据正文和合成范围超过 8 MiB');
   };
   const append = (metadata, text, sourceStart = 0) => {
     for (const part of textParts(text, maxTextBytes)) {
-      if (items.length >= MAX_EVIDENCE_ITEMS) throw evidenceLimit('证据单元超过 8192 项');
       const item = {...metadata, start: sourceStart + part.start, end: sourceStart + part.end, text: part.text};
       item.id = 'e-' + evidenceHash(JSON.stringify([EVIDENCE_FORMAT_VERSION, fingerprint, item])).slice(0, 32);
       items.push(item);
@@ -207,8 +197,7 @@ export function createEvidenceIndex(snapshot, {maxTextBytes = 12000} = {}) {
   snapshot.repositories.forEach((repository, index) => {
     account(repository.diff);
     const {blocks, manifest: files, assignedPaths} = parseRepository(repository);
-    manifest.push(...files.map(file => ({...file, repositoryIndex: index})));
-    if (manifest.length > MAX_EVIDENCE_ITEMS) throw evidenceLimit('文件清单超过 8192 项');
+    for (const file of files) manifest.push({...file, repositoryIndex: index});
     for (const path of repository.excludedPaths ?? []) excluded.push({repository: repository.path, path, reason: 'internal-path'});
     const metadata = {repository: repository.path, repositoryType: repository.type, identity: repository.identity ?? null, a: repository.a, b: repository.b};
     for (const block of blocks) for (const section of sections(block)) append({...metadata, source: 'repository:' + index, provenance: 'version-diff', kind: section.kind, file: section.file, hunk: section.hunk}, section.text, section.start);

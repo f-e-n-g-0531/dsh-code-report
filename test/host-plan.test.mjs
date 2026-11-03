@@ -72,6 +72,12 @@ test('pre-cancelled requests and invalid routes do not dispatch',async()=>{
   const f=fixture(),p=await preview(f),ac=new AbortController();ac.abort();assert.equal((await f.handler('generate',send(p),ac.signal)).error.code,'code-report/cancelled');
   assert.equal((await f.handler('generate',send(p,{route:{provider:'',model:'x'}}))).error.code,'code-report/input');assert.equal(f.calls(),0);
 });
+test('preview larger than 32 MiB is retained without a cache-full rejection',async()=>{
+  const source=snapshot();source.repositories[0].diff='x'.repeat(33*1024*1024);
+  const f=fixture({capture:async()=>source});const p=await preview(f);
+  assert.ok(p.bytes>32*1024*1024);assert.ok(p.markdown.includes(source.repositories[0].diff));assert.equal(f.calls(),0);
+  const released=await f.handler('release-preview',{sessionId:'s',previewId:p.previewId});assert.equal(released.ok,true);assert.equal(released.value.released,true);
+});
 test('local evidence remains available when default analysis plan exceeds limits',async()=>{
   const f=fixture({plan:()=>{throw new Error('需要更大预算');}}),p=await preview(f);assert.equal(p.analysisPlan,null);assert.match(p.planError.message,/预算/);assert.match(p.markdown,/差异证据/);assert.equal(f.calls(),0);
 });
@@ -86,11 +92,11 @@ test('completed paid report is recoverable by read-only operation id and isolate
   f.sessions.set('s',{header:{cwd:'/changed'}});assert.equal((await f.handler('result',{sessionId:'s',operationId:'paid-result'})).ok,false);
   f.sessions.set('s',{header:{cwd:'/workspace'}});f.setClock(601001);assert.equal((await f.handler('result',{sessionId:'s',operationId:'paid-result'})).error.code,'code-report/result-unavailable');
 });
-test('evicted completed result body is unknown, never reported as a failed model call',async()=>{
+test('large completed reports remain recoverable without the former aggregate byte ceiling',async()=>{
   const f=fixture({analyze:async()=>({markdown:'x'.repeat(17*1024*1024),coverage:{}})});
   for(const operationId of ['large-first','large-second']){const p=await preview(f);assert.equal((await f.handler('generate',send(p,{operationId}))).ok,true);}
   const recovered=await f.handler('result',{sessionId:'s',operationId:'large-first'});
-  assert.equal(recovered.ok,true);assert.equal(recovered.value.status,'unavailable');assert.equal(recovered.value.execution.phase,'completed');assert.equal(recovered.value.execution.resultAvailability,'unavailable');
+  assert.equal(recovered.ok,true);assert.equal(recovered.value.status,'completed');assert.equal(recovered.value.execution.phase,'completed');assert.equal(recovered.value.execution.resultAvailability,'available');assert.ok(recovered.value.result.markdown.length>17*1024*1024);
   assert.equal((await f.handler('result',{sessionId:'s',operationId:'large-second'})).value.status,'completed');
 });
 test('read-only recovery reports a pending operation without starting another analysis',async()=>{

@@ -47,10 +47,10 @@ test('mixed Git and SVN requires explicit history authorization before capture',
  const request=(await stats(page)).calls.find(x=>x.endpoint==='preview').payload.request;expect(request.allowSvnNetwork).toBe(true);expect(request.repositories.map(x=>x.type)).toEqual(['git','svn']);expect((await stats(page)).modelCalls).toBe(0);
 });
 
-test('local refs and explicit batch/context inputs retain authorization boundaries',async({page})=>{
+test('local refs and automatic batch/context inputs retain authorization boundaries',async({page})=>{
  await open(page);await selectGit(page);await page.getByRole('button',{name:'读取本地分支/标签',exact:true}).click();
  await expect(page.getByText('已载入 3 个本地引用，在 A/B 输入中选择；不会 fetch。')).toBeVisible();
- await page.getByRole('checkbox',{name:/允许分批分析较大差异/}).check();await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();
+ await expect(page.getByRole('checkbox',{name:/允许分批分析较大差异/})).toHaveCount(0);await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();
  await page.getByRole('textbox',{name:'源码上下文路径',exact:true}).fill('client/current.ts');
  await page.getByRole('textbox',{name:'固定版本源码路径',exact:true}).fill('client|A|src/api.ts');await collect(page);
  const request=(await stats(page)).calls.find(x=>x.endpoint==='preview').payload.request;expect(request.allowBatches).toBe(true);expect(request.contextPaths).toEqual(['client/current.ts']);expect(request.versionContexts).toEqual([{repository:'client',side:'A',path:'src/api.ts'}]);
@@ -58,6 +58,52 @@ test('local refs and explicit batch/context inputs retain authorization boundari
  await consent(page).check();await page.getByRole('spinbutton',{name:'单片输入预算',exact:true}).fill('12000');await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();
  await page.getByRole('button',{name:'更新分析计划',exact:true}).click();await expect(consent(page)).toBeEnabled();expect((await stats(page)).modelCalls).toBe(0);
  expect((await stats(page)).calls.filter(x=>x.endpoint==='refs')).toHaveLength(1);expect((await stats(page)).calls.find(x=>x.endpoint==='analysis-plan').payload.inputBudget).toBe(12000);
+});
+
+test('folder input preserves original request and expanded preview is visible before model authorization (contract mock)',async({page})=>{
+ const directoryContextPreview={context:[
+  {path:'client/src/components/Button.tsx',provenance:'workspace',hash:'1'.repeat(64)},
+  {path:'client/src/components/nested/Panel.tsx',provenance:'workspace',hash:'2'.repeat(64)},
+  {path:'client/current.ts',provenance:'workspace',hash:'3'.repeat(64)},
+  {repository:'client',path:'src/api.ts',provenance:'version-A',revision:'a'.repeat(40),hash:'4'.repeat(64)}
+ ],limitations:['目录展开排除计数（契约模拟）：hidden=1、sensitive=1、dependency/build/cache=2、links=1、nonregular=1；未读取真实文件系统']};
+ await open(page,{directoryContextPreview});await selectGit(page);
+ await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();
+ const input=page.getByRole('textbox',{name:'源码上下文路径',exact:true});
+ await expect(input).toHaveAttribute('placeholder',/app\/src\/components/);
+ await input.fill('client/src/components\nclient/current.ts');
+ await page.getByRole('textbox',{name:'固定版本源码路径',exact:true}).fill('client|A|src/api.ts');
+ await collect(page);
+ const calls=(await stats(page)).calls;const requests=calls.filter(call=>call.endpoint==='preview');expect(requests).toHaveLength(1);
+ expect(requests[0].payload.request.contextPaths).toEqual(['client/src/components','client/current.ts']);
+ expect(requests[0].payload.request.versionContexts).toEqual([{repository:'client',side:'A',path:'src/api.ts'}]);
+ await expect(input).toHaveValue('client/src/components\nclient/current.ts');
+ const files=page.getByRole('list',{name:'实际源码文件清单',exact:true});await expect(files).toBeVisible();await expect(files.getByRole('listitem')).toHaveCount(4);
+ for(const item of directoryContextPreview.context){await expect(files).toContainText(item.path);await expect(files).toContainText(item.hash);}
+ await expect(files).toContainText('当前工作区');await expect(files).toContainText('版本 A');
+ await expect(page.getByText('4 个实际源码文件（目录已展开）。',{exact:false})).toBeVisible();
+ const limitations=page.getByRole('list',{name:'源码及采集限制',exact:true});await expect(limitations).toBeVisible();await expect(limitations).toContainText(directoryContextPreview.limitations[0]);
+ await route(page);await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();
+ expect((await stats(page)).modelCalls).toBe(0);expect((await stats(page)).calls.filter(call=>call.endpoint==='generate')).toHaveLength(0);
+});
+
+test('large context lists and over 32 batches remain bound to explicit preview authorization (contract mock)',async({page})=>{
+ const contextPaths=Array.from({length:25},(_,index)=>'client/src/dir-'+index);
+ const versionContexts=Array.from({length:25},(_,index)=>({repository:'client',side:'A',path:'src/old-'+index+'.ts'}));
+ const directoryContextPreview={bytes:9*1024*1024,context:[...contextPaths.map((path,index)=>({path:path+'/file.ts',provenance:'workspace',hash:String(index).padStart(64,'0')})),...versionContexts.map((item,index)=>({...item,provenance:'version-A',revision:'a'.repeat(40),hash:String(index+25).padStart(64,'0')}))],limitations:['大范围契约模拟；未读取真实大仓库，不代表性能验收']};
+ await open(page,{directoryContextPreview,analysisBatches:40});await selectGit(page);
+ await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();
+ await page.getByRole('textbox',{name:'源码上下文路径',exact:true}).fill(contextPaths.join('\n'));
+ await page.getByRole('textbox',{name:'固定版本源码路径',exact:true}).fill(versionContexts.map(item=>item.repository+'|'+item.side+'|'+item.path).join('\n'));
+ await expect(capture(page)).toBeEnabled();await collect(page);
+ const previewCall=(await stats(page)).calls.find(call=>call.endpoint==='preview');expect(previewCall.payload.request.contextPaths).toEqual(contextPaths);expect(previewCall.payload.request.versionContexts).toEqual(versionContexts);expect(previewCall.payload.request.allowBatches).toBe(true);
+ const files=page.getByRole('list',{name:'实际源码文件清单',exact:true});await expect(files.getByRole('listitem')).toHaveCount(50);await expect(files).toContainText('client/src/dir-24/file.ts');await expect(files).toContainText('src/old-24.ts');
+ await expect(page.getByText('证据 9437184 字节（约 9216.0 KiB）；',{exact:false})).toBeVisible();
+ await expect(page.getByText('本计划 40 片，按顺序调用模型，可能产生多次费用；',{exact:false})).toBeVisible();
+ await route(page);await expect(generate(page)).toBeDisabled();expect((await stats(page)).modelCalls).toBe(0);
+ await consent(page).check();await expect(generate(page)).toBeEnabled();await generate(page).click();await expect(report(page)).toContainText('模型报告');
+ const generated=(await stats(page)).calls.filter(call=>call.endpoint==='generate');expect(generated).toHaveLength(1);expect(generated[0].payload).toMatchObject({previewId:'preview-1',planId:'plan-fixture',sendToModel:true,route:{provider:'fixture',model:'mock'}});
+ await expect(consent(page)).toHaveCount(0);
 });
 
 test('progress connection loss is visible without redispatching a pending operation',async({page})=>{
