@@ -78,6 +78,8 @@ export function apply(ctx){
    return()=>{if(id&&session?.id&&!lifecycle.hasPaid(session))void rpc('release-preview',{sessionId:session.id,previewId:id}).catch(()=>{});};
   },[preview?.previewId,session?.id]);
   const expired=preview?previewExpired(preview,now):false;
+  const hasCurrentReport=result?.kind==='analysis'&&!result.stale;
+  const workflow=ownTask?['complete','complete','active']:preview&&!expired?['complete','active','pending']:hasCurrentReport?['complete','complete','complete']:['active','pending','pending'];
   useEffect(()=>{if(expired)setConsent(false);},[expired]);
   useEffect(()=>{
    if(!ownTask)return;
@@ -204,20 +206,21 @@ export function apply(ctx){
    try{return (await rpc('refs',{sessionId:session.id,repositoryPath,gitMode,gitRemote},signal)).refs;}finally{lease.release();}
   };
   return <section className="cr-root"><style>{css}</style>
-   <header><div><small>DSH CODE REPORT · {version}</small><h1>发布报告配置</h1><p>版本差异 · 对外接口变更 · 影响范围 · QA 测试建议</p></div><div className="cr-actions"><button disabled={!session||!!busy||updating} onClick={store}>保存配置</button><button disabled={!session||!!busy||updating||!!pendingRecovery} onClick={restore}>恢复已保存</button></div></header>
+   <header className="cr-hero"><div className="cr-hero-title"><span className="cr-hero-mark" aria-hidden="true">▤</span><div><small>RELEASE WORKSPACE <span>· v{version}</span></small><h1>发布报告配置</h1><p>从版本差异到发布决策，让每一次交付都有据可依。</p></div></div><div className="cr-actions cr-header-actions"><button disabled={!session||!!busy||updating} onClick={store}>保存配置</button><button disabled={!session||!!busy||updating||!!pendingRecovery} onClick={restore}>恢复已保存</button></div></header>
+   <nav className="cr-stage-nav" aria-label="报告工作流程"><div className="cr-stage" data-state={workflow[0]} aria-current={workflow[0]==='active'?'step':undefined}><span className="cr-stage-number">01</span><div><strong>配置发布范围</strong><span>项目与版本端点</span></div></div><div className="cr-stage" data-state={workflow[1]} aria-current={workflow[1]==='active'?'step':undefined}><span className="cr-stage-number">02</span><div><strong>核对差异证据</strong><span>固定快照 · 确认发送</span></div></div><div className="cr-stage" data-state={workflow[2]} aria-current={workflow[2]==='active'?'step':undefined}><span className="cr-stage-number">03</span><div><strong>生成与导出</strong><span>{ownTask?(ownTask.status==='running'?'模型分析进行中':'任务状态待核对'):hasCurrentReport&&!preview?'报告已生成，可下载':'影响分析与 QA 建议'}</span></div></div></nav>
    <details className="cr-update-details"><summary>插件版本与更新 · {version}</summary><UpdatePanel rpc={rpc} manager={ctx.remote?.pluginManager} reportBusy={!!busy||!!lifecycleState.paid||lifecycleState.lease?.kind==='business'} controller={updateController} updateState={updateState}/></details>
    {configNotice&&<p className="cr-hint" role="status">{configNotice}</p>}
    {compatibility&&<div className="cr-error" role="alert">{compatibility}<button disabled={!!busy||updating||!!updateBarrier} onClick={()=>setRuntimeAttempt(value=>value+1)}>重新验证后台</button></div>}
    <fieldset className="cr-report-form">
     {!session?<p role="status">请先打开一个带工作目录的会话。</p>:<>
-     <p className="cr-workspace">当前工作区：{session.cwd} · 仅读取，不修改版本库</p>
+     <div className="cr-workspace-bar"><div className="cr-workspace"><span className="cr-workspace-label">当前工作区</span><code>{session.cwd}</code></div><span className="cr-readonly-badge">仅读取，不修改版本库</span></div>
      <div className="cr-scan-settings"><button disabled={!!busy||!!compatibility||globalBusy} onClick={scan}>扫描 / 重新发现</button>{busy==='扫描项目'&&<button onClick={()=>controller.current?.abort()}>取消扫描</button>}<span className="cr-hint">只检查工作区根目录及一级子文件夹，不递归。{visited!==null?'上次检查 '+visited+' 个目录。':''}嵌套项目可手动添加；已保存的项目不会自动删除。</span></div>
-     <fieldset disabled={!!busy||globalBusy}><legend>1. 发布范围</legend><label className="cr-wide">报告标题<input value={title} onChange={event=>{invalidate();setTitle(event.target.value);}} maxLength={160}/></label>
-      <div className="cr-section-intro"><div><h2>工作区项目</h2><p>{scanStateLabel(scanState)}当前列表 {rows.length} 个项目 · 已纳入 {rows.filter(row=>row.enabled).length} / 12。勾选需要生成报告的项目。</p></div><div className="cr-actions"><button onClick={()=>{invalidate();setRows(rows.map(row=>({...row,enabled:false})));}}>全部取消</button><button onClick={()=>{invalidate();setRows(rows.map((row,index)=>({...row,enabled:index<12})));}}>纳入前 12 项</button></div></div>
+     <fieldset className="cr-panel cr-scope" disabled={!!busy||globalBusy}><legend>1. 发布范围</legend><label className="cr-wide">报告标题<input value={title} onChange={event=>{invalidate();setTitle(event.target.value);}} maxLength={160}/></label>
+      <div className="cr-section-intro"><div className="cr-section-heading"><h2>工作区项目</h2><p>{scanStateLabel(scanState)}当前列表 {rows.length} 个项目 · 已纳入 {rows.filter(row=>row.enabled).length} / 12。勾选需要生成报告的项目。</p></div><div className="cr-actions"><button onClick={()=>{invalidate();setRows(rows.map(row=>({...row,enabled:false})));}}>全部取消</button><button onClick={()=>{invalidate();setRows(rows.map((row,index)=>({...row,enabled:index<12})));}}>纳入前 12 项</button></div></div>
       {scanError&&<p className="cr-error" role="alert">{scanError}</p>}{scanWarnings.length>0&&<ul className="cr-scan-warnings">{scanWarnings.map((warning,index)=><li key={index}>{warning}</li>)}</ul>}
       <RepositoryCards replace={next=>{invalidate();setRows(next);}} scanState={scanState} rows={rows} change={change} remove={index=>{invalidate();setRows(rows.filter((_,i)=>i!==index));}} loadRefs={loadRefs} refsDisabled={!!compatibility||globalBusy}/>
       <button disabled={rows.length>=500} onClick={()=>{invalidate();setRows([...rows,fresh()]);}}>＋ 添加项目</button>
-      <p className="cr-hint">自动扫描当前工作区，保留已经填写的版本。路径相对于工作区，根目录填「.」。版本留空默认取对应 A/B 分支最新提交；两侧分支相同且版本均留空时无差异。Git 默认远端实时读取，可填 main / develop / origin/develop 等；会联网并可能要求身份验证，在隔离临时目录完整抓取，不创建业务本地分支、不修改业务 refs 或工作区。显式选择“本地离线”才仅用本地对象、不自动 fetch；远端失败不回退本地。SVN 仍需历史读取授权。</p>
+      <details className="cr-guide"><summary>版本填写与远端读取说明</summary><p className="cr-hint">自动扫描当前工作区，保留已经填写的版本。路径相对于工作区，根目录填「.」。版本留空默认取对应 A/B 分支最新提交；两侧分支相同且版本均留空时无差异。Git 默认远端实时读取，可填 main / develop / origin/develop 等；会联网并可能要求身份验证，在隔离临时目录完整抓取，不创建业务本地分支、不修改业务 refs 或工作区。显式选择“本地离线”才仅用本地对象、不自动 fetch；远端失败不回退本地。SVN 仍需历史读取授权。</p></details>
       <label className="cr-check"><input type="checkbox" checked={network} onChange={event=>{invalidate();setNetwork(event.target.checked);}}/> 允许通过 SVN 工作副本地址读取历史版本（可能访问网络；此勾选随工作区配置保存，不保存密码）</label>
       <p className="cr-hint">采集不设固定证据总量上限，分析按单片输入预算自动规划；发送前核对实际文件、字节和片数，多片可能多次计费，仍须再次确认。</p>
      </fieldset>
@@ -248,19 +251,20 @@ function sideLabel(row,side){return row.type==='svn'?row['branch'+side]+' @ r'+r
 function downloadMarkdown(markdown){const url=URL.createObjectURL(new Blob([markdown],{type:'text/markdown;charset=utf-8'}));const anchor=document.createElement('a');anchor.href=url;anchor.download='release-report-'+new Date().toISOString().slice(0,10)+'.md';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function PreviewSection({preview,busy,expired,provider,model,consent,setProvider,setModel,setConsent,generateReason,onGenerate,onCapture,inputBudget,budgetValid,planDirty,onBudget,onReplan,compatibility,now}){
  const deadline=typeof preview.expiresAt==='number'?preview.expiresAt:Date.parse(preview.expiresAt);
- return <fieldset disabled={!!busy}><legend>3. 确认分析范围</legend>
+ return <fieldset className="cr-panel cr-preview" disabled={!!busy}><legend>3. 确认分析范围</legend>
+  <div className="cr-preview-metrics"><div className="cr-metric"><span>固定项目</span><strong>{preview.repositories.length}</strong></div><div className="cr-metric"><span>变更路径</span><strong>{preview.repositories.reduce((sum,row)=>sum+row.files.length,0)}</strong></div><div className="cr-metric"><span>源码文件</span><strong>{preview.context.length}</strong></div><div className="cr-metric"><span>模型分片</span><strong>{preview.analysisPlan?.batches?.length??'—'}</strong></div></div>
   <p>证据 {preview.bytes} 字节（约 {(preview.bytes/1024).toFixed(1)} KiB）；{preview.repositories.length} 个项目，{preview.repositories.reduce((total,row)=>total+(row.files?.length||0),0)} 条变更路径，{preview.context.length} 个实际源码文件（目录已展开）。{expired?'快照已过期。':'快照剩余约 '+Math.max(0,Math.ceil((deadline-now)/1000))+' 秒。'}</p>
   {expired&&<div className="cr-error" role="status">快照已过期，请重新采集并确认发送。<button disabled={!!compatibility} onClick={onCapture}>重新采集</button></div>}
-  <ul>{preview.repositories.map((row,index)=><li key={index}><strong>{row.path}</strong> · {row.type} · {row.files.length} 个变更路径<br/><code>{sideLabel(row,'A')} → {sideLabel(row,'B')}</code>{row.type==='git'&&<p>{row.gitSource==='remote'?'远端实时读取 · '+(row.remote||'origin')+' · 观察时间 '+(row.observedAt||'未记录')+'（本次快照，之后不自动更新）':row.gitSource==='local'?'本地离线读取':'Git 来源未记录'}</p>}<br/>差异解码 {row.diffEncoding||'未记录'} · 原始字节 SHA-256 {row.rawDiffHash||'未记录'}</li>)}</ul>
+  <ul className="cr-preview-repos">{preview.repositories.map((row,index)=><li key={index}><strong>{row.path}</strong> · {row.type} · {row.files.length} 个变更路径<br/><code>{sideLabel(row,'A')} → {sideLabel(row,'B')}</code>{row.type==='git'&&<p>{row.gitSource==='remote'?'远端实时读取 · '+(row.remote||'origin')+' · 观察时间 '+(row.observedAt||'未记录')+'（本次快照，之后不自动更新）':row.gitSource==='local'?'本地离线读取':'Git 来源未记录'}</p>}<br/>差异解码 {row.diffEncoding||'未记录'} · 原始字节 SHA-256 {row.rawDiffHash||'未记录'}</li>)}</ul>
   <details open><summary>查看源码上下文及限制</summary><p className="cr-hint">以下为本次实际附带的文件清单（目录已展开）；请核对来源与排除限制后再授权模型。</p><ul aria-label="实际源码文件清单">{preview.context.map((item,index)=><li key={index}>{item.repository?item.repository+' / ':''}{item.path} · {item.provenance==='version-A'?'版本 A':item.provenance==='version-B'?'版本 B':'当前工作区'} {item.revision||''} · 编码 {item.encoding||'未记录'} · 原始字节 SHA-256 {item.rawHash||item.hash}</li>)}</ul><ul aria-label="源码及采集限制">{preview.limitations.map((text,index)=><li key={index}>{text}</li>)}</ul></details>
-  <label>单片输入预算（保守字节估算，非 token）<input aria-label="单片输入预算" type="number" min={4000} max={64000} value={inputBudget} onChange={event=>onBudget(event.target.value)}/></label>
-  <button disabled={expired||!budgetValid||!!compatibility} onClick={onReplan}>更新分析计划</button>
+  <div className="cr-budget-row"><label>单片输入预算（保守字节估算，非 token）<input aria-label="单片输入预算" type="number" min={4000} max={64000} value={inputBudget} onChange={event=>onBudget(event.target.value)}/></label>
+  <button disabled={expired||!budgetValid||!!compatibility} onClick={onReplan}>更新分析计划</button></div>
   {!budgetValid&&<p role="alert">输入预算必须是 4000–64000 的整数。</p>}{planDirty&&<p role="status">预算已变更，请更新分析计划并重新确认。</p>}
   {preview.planError&&<p className="cr-error" role="alert">分析计划尚不可用：{preview.planError.message}。可调整预算重新规划；本地证据报告仍可下载。</p>}
   <p className="cr-hint">本计划 {preview.analysisPlan?.batches?.length??0} 片，按顺序调用模型，可能产生多次费用；失败重试仅复用宿主保留的同计划、同路由已完成分片，每次仍须确认。更换模型路由或更新分析计划将重跑全部分片，可能再次计费。4000–64000 仅为合法输入范围，不保证一定可规划；4000 等较小预算可能连系统提示和元数据都容不下，此时请提高预算或缩小范围。字节估算也不能保证适配所有模型。</p>
   <div className="cr-route"><label>DSH 提供方 ID<input value={provider} placeholder="已在 DSH 配置的 provider ID" onChange={event=>{setProvider(event.target.value);setConsent(false);}}/></label><label>模型 ID<input value={model} placeholder="该提供方支持的 model ID" onChange={event=>{setModel(event.target.value);setConsent(false);}}/></label></div>
   <p className="cr-hint">本插件暂未接入模型列表发现，请手填已在 DSH 配置的提供方和模型路由 ID；不会自动沿用聊天模型。</p>
-  <label className="cr-check"><input type="checkbox" checked={consent} disabled={expired||planDirty||!preview.analysisPlan} onChange={event=>setConsent(event.target.checked)}/> 我确认向上方指定模型发送本次差异及所选源码（含文件名、路径与内容），并确认分批调用可能多次计费</label>
+  <label className="cr-check cr-consent"><input type="checkbox" checked={consent} disabled={expired||planDirty||!preview.analysisPlan} onChange={event=>setConsent(event.target.checked)}/> 我确认向上方指定模型发送本次差异及所选源码（含文件名、路径与内容），并确认分批调用可能多次计费</label>
   <div className="cr-actions"><button className="cr-primary" disabled={!!generateReason} onClick={onGenerate}>开始执行 · 生成报告</button><span>{generateReason||'也可直接导出下方本地证据报告，不调用模型；对外接口尚未分析。'}</span></div>
  </fieldset>;
 }
@@ -269,7 +273,7 @@ function ProgressSection({progress}){
  return <section className="cr-progress" aria-label="执行进度"><div role="status" aria-live="polite">{progress.label}{counted?'（'+progress.completed+' / '+progress.total+'）':''}</div><progress aria-label="执行进度" max={progress.total||1} value={counted?progress.completed:undefined}/><p className="cr-hint">按实际完成的项目、文件或分片计数，不代表耗时比例；单次模型内部进度不可量化。</p></section>;
 }
 function ReportSection({result,onDownload,onClear}){
- return <section><div className="cr-actions"><h2>Markdown 报告</h2><button onClick={onDownload}>下载 .md 文件</button><button onClick={onClear}>清除报告</button></div>
+ return <section className="cr-result"><div className="cr-actions"><h2>Markdown 报告</h2><button onClick={onDownload}>下载 .md 文件</button><button onClick={onClear}>清除报告</button></div>
   {result.stale&&<p className="cr-stale" role="status">已有报告与当前草稿可能不同，旧结果已保留，可继续下载；重新采集后才用于当前范围分析。</p>}
   <p className="cr-hint">以下以纯文本展示，不执行报告中的 HTML；模型建议需要人工复核，不代表测试已通过。结果仅在当前插件实例内按会话暂存当前报告及最近成功模型报告（最多 16 个会话，按会话数量淘汰；大报告更耗内存），刷新、重载或宿主重启前请下载；不写入浏览器本地存储。</p>
   {result.coverage&&<><p role="status">已处理证据 {result.coverage.processed??result.coverage.analyzed??0} / {result.coverage.total??0}；未处理 {result.coverage.remaining??0}；完成分片 {result.coverage.completedBatches??0} / {result.coverage.totalBatches??0}；被引用 {result.coverage.cited??0}。引用有效不代表结论正确，仍需人工复核。</p><details><summary>分析覆盖信息</summary><pre>{JSON.stringify(result.coverage,null,2)}</pre></details></>}<pre className="cr-report">{result.markdown}</pre>

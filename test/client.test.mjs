@@ -90,6 +90,17 @@ test('client submits explicit remote capture and refs options and retains offlin
  await all.find(node=>node.type==='button'&&node.props.children==='开始执行 · 采集差异').props.onClick();
  assert.equal(calls.filter(call=>call.endpoint==='preview').at(-1).payload.request.repositories[0].gitMode,'local');
 });
+test('workspace groups workflow stages without changing initial approval state',()=>{
+ const all=nodes(harness().render());
+ const navigation=all.find(node=>node.type==='nav'&&node.props['aria-label']==='报告工作流程');
+ assert.ok(navigation);
+ const stages=nodes(navigation).filter(node=>node.props?.className==='cr-stage');
+ assert.deepEqual(stages.map(node=>node.props['data-state']),['active','pending','pending']);
+ assert.ok(all.some(node=>node.props?.className==='cr-hero'));
+ assert.ok(all.some(node=>node.props?.className==='cr-guide'&&node.type==='details'&&!node.props.open));
+ assert.equal(all.some(node=>node.props?.onGenerate),false);
+});
+
 test('client registers matching main/sidebar slots and uses active session identity',()=>{
  const instance=harness(),registrations=instance.registrations;
  assert.equal(registrations.length,2);assert.equal(registrations[0].options.key,registrations[1].options.id);

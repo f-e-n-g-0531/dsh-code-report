@@ -26,16 +26,17 @@ async function selectGit(page){
  await page.getByRole('combobox',{name:'GIT 分支 B 1',exact:true}).fill('release');
  await expect(capture(page)).toBeEnabled();
 }
+async function workflow(page,states){await expect(page.locator('.cr-stage')).toHaveCount(3);for(const [index,state]of states.entries())await expect(page.locator('.cr-stage').nth(index)).toHaveAttribute('data-state',state);await expect(page.locator('.cr-stage[aria-current=step]')).toHaveCount(states.filter(state=>state==='active').length);}
 async function collect(page){await capture(page).click();await expect(report(page)).toContainText('本地证据');}
 async function route(page){await page.getByRole('textbox',{name:'DSH 提供方 ID',exact:true}).fill('fixture');await page.getByRole('textbox',{name:'模型 ID',exact:true}).fill('mock');}
 async function analyze(page){await route(page);await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告');}
 
 test('real DOM scan → select → local evidence → explicit consent → safe download',async({page})=>{
- const errors=await open(page);await selectGit(page);await collect(page);
+ const errors=await open(page);await selectGit(page);await workflow(page,['active','pending','pending']);await collect(page);await workflow(page,['complete','active','pending']);
  expect((await stats(page)).modelCalls).toBe(0);await route(page);await expect(generate(page)).toBeDisabled();
  expect((await stats(page)).calls.filter(x=>x.endpoint==='generate')).toHaveLength(0);
  await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告 a');
- expect((await stats(page)).modelCalls).toBe(1);expect(await page.evaluate(()=>window.fixtureInjected)).toBeUndefined();
+ await workflow(page,['complete','complete','complete']);expect((await stats(page)).modelCalls).toBe(1);expect(await page.evaluate(()=>window.fixtureInjected)).toBeUndefined();
  const pending=page.waitForEvent('download');await page.getByRole('button',{name:'下载 .md 文件'}).click();const download=await pending;
  expect(download.suggestedFilename()).toMatch(/^release-report-.*[.]md$/);
  expect(await readFile(await download.path(),'utf8')).toContain('模型报告 a');expect(errors).toEqual([]);
@@ -63,7 +64,7 @@ test('local refs and automatic batch/context inputs retain authorization boundar
 
 test('Git defaults to explicit remote origin in refs and collection with visible source provenance',async({page})=>{
  await open(page);await selectGit(page);await expect(page.getByRole('combobox',{name:'Git 读取方式 1',exact:true})).toHaveValue('remote');
- await expect(page.getByRole('textbox',{name:'Git 远端名 1',exact:true})).toHaveValue('origin');await expect(page.getByText('选择远端方式即允许访问该配置远端。查询和采集会联网并可能要求身份验证；采集在隔离临时目录完整抓取，不创建业务本地分支、不修改业务 refs 或工作区。失败不会回退本地。',{exact:true})).toBeVisible();
+ await expect(page.getByRole('textbox',{name:'Git 远端名 1',exact:true})).toHaveValue('origin');await expect(page.getByText(/远端.*(联网|访问)|联网.*远端/).first()).toBeVisible();const safety=page.locator('#cr-row-0 details');if(await safety.count())await safety.locator('summary').click();await expect(page.locator('#cr-row-0')).toContainText('不修改');await expect(page.locator('#cr-row-0')).toContainText(/不(?:会)?回退/);
  await page.getByRole('button',{name:'读取远端分支/标签',exact:true}).click();await expect.poll(async()=>(await stats(page)).calls.filter(call=>call.endpoint==='refs').length).toBe(1);
  const refs=(await stats(page)).calls.find(call=>call.endpoint==='refs').payload;expect(refs).toMatchObject({sessionId:'a',repositoryPath:'client',gitMode:'remote',gitRemote:'origin'});
  await collect(page);const row=(await stats(page)).calls.find(call=>call.endpoint==='preview').payload.request.repositories[0];expect(row).toMatchObject({gitMode:'remote',gitRemote:'origin'});
@@ -200,7 +201,7 @@ test('successful local recapture and subsequent analysis failure retain prior AI
 
 test('expired snapshot disables generation and allows recollection with consent reset',async({page})=>{
  await page.clock.install();await open(page,{ttl:60000});await selectGit(page);await collect(page);await route(page);await consent(page).check();await page.clock.fastForward(61000);
- await expect(page.getByText(/预览已过期|快照已过期/).first()).toBeVisible({timeout:6000});await expect(generate(page)).toBeDisabled();
+ await expect(page.getByText(/预览已过期|快照已过期/).first()).toBeVisible({timeout:6000});await expect(generate(page)).toBeDisabled();await workflow(page,['active','pending','pending']);
  expect((await stats(page)).modelCalls).toBe(0);await page.evaluate(()=>window.fixture.configure({ttl:600000}));
  await page.getByRole('button',{name:'重新采集',exact:true}).click();await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();
 });
@@ -247,7 +248,7 @@ test('native update restart barrier survives session remount and prevents repeat
 
 async function startHeldAnalysis(page,options={}){
  await open(page,{holdGenerate:true,...options});await selectGit(page);await collect(page);await route(page);await consent(page).check();await generate(page).click();
- await expect.poll(async()=>(await stats(page)).modelCalls).toBe(1);
+ await expect.poll(async()=>(await stats(page)).modelCalls).toBe(1);await workflow(page,['complete','complete','active']);
 }
 async function assertPaidProof(page,{dispatches=1,installs=0}={}){
  const value=await stats(page);expect(value.modelCalls).toBe(dispatches);expect(value.calls.filter(call=>call.endpoint==='generate')).toHaveLength(dispatches);expect(value.installCalls).toBe(installs);

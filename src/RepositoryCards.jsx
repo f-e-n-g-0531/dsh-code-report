@@ -32,17 +32,26 @@ function RepositoryRow({row,index,issues,warning,change,remove,loadRefs,refsDisa
   finally{if(!ac.signal.aborted&&mounted.current)setLoading(false);}
  };
  const listId='cr-refs-'+index,issueId='cr-issues-'+index,remote=(row.gitMode??'remote')==='remote';
- return <tr id={'cr-row-'+index} data-selected={row.enabled}>
-  <td><input type="checkbox" checked={row.enabled} aria-label={'纳入项目 '+(index+1)} onChange={event=>change(index,'enabled',event.target.checked)}/></td>
-  <td><input value={row.path} aria-label={'项目路径 '+(index+1)} aria-invalid={issues.length>0} aria-describedby={issues.length?issueId:undefined} placeholder="相对于工作区" onChange={event=>change(index,'path',event.target.value)}/><select value={row.type} aria-label={'VCS '+(index+1)} onChange={event=>change(index,'type',event.target.value)}><option value="git">Git</option><option value="svn">SVN</option></select>
+ return <tr id={'cr-row-'+index} className="cr-project-card" data-selected={row.enabled}>
+  <td className="cr-project-select"><label className="cr-selection"><input type="checkbox" checked={row.enabled} aria-label={'纳入项目 '+(index+1)} onChange={event=>change(index,'enabled',event.target.checked)}/><span>项目 {String(index+1).padStart(2,'0')}</span></label><span className={'cr-vcs-badge cr-'+row.type}>{row.type.toUpperCase()}</span></td>
+  <td className="cr-project-config">
+   <div className="cr-project-fields"><label className="cr-project-path">项目路径<input value={row.path} aria-label={'项目路径 '+(index+1)} aria-invalid={issues.length>0} aria-describedby={issues.length?issueId:undefined} placeholder="相对于工作区" onChange={event=>change(index,'path',event.target.value)}/></label><label>版本控制<select value={row.type} aria-label={'VCS '+(index+1)} onChange={event=>change(index,'type',event.target.value)}><option value="git">Git</option><option value="svn">SVN</option></select></label>
+   {row.type==='git'&&<><label>读取方式<select aria-label={'Git 读取方式 '+(index+1)} value={row.gitMode??'remote'} onChange={event=>change(index,'gitMode',event.target.value)}><option value="remote">远端实时读取</option><option value="local">本地离线</option></select></label>{remote&&<label>远端配置名<input aria-label={'Git 远端名 '+(index+1)} value={row.gitRemote??'origin'} placeholder="origin（非 URL）" onChange={event=>change(index,'gitRemote',event.target.value)}/></label>}</>}
+   </div>
    {!!issues.length&&<ul className="cr-row-issues" id={issueId}>{issues.map((text,i)=><li key={i}>{text}</li>)}</ul>}
-   {warning&&<p className="cr-hint">{warning}</p>}
-   {row.type==='git'&&<><label>Git 读取方式<select aria-label={'Git 读取方式 '+(index+1)} value={row.gitMode??'remote'} onChange={event=>change(index,'gitMode',event.target.value)}><option value="remote">远端实时读取</option><option value="local">本地离线</option></select></label>{remote&&<label>远端配置名<input aria-label={'Git 远端名 '+(index+1)} value={row.gitRemote??'origin'} placeholder="origin（非 URL）" onChange={event=>change(index,'gitRemote',event.target.value)}/></label>}<p className="cr-hint">{remote?'选择远端方式即允许访问该配置远端。查询和采集会联网并可能要求身份验证；采集在隔离临时目录完整抓取，不创建业务本地分支、不修改业务 refs 或工作区。失败不会回退本地。':'仅使用本地已有引用和对象，离线读取，不自动 fetch。'}</p><button disabled={refsDisabled||loading||!row.path.trim()} onClick={refreshRefs}>{loading?(remote?'读取远端 refs…':'读取本地 refs…'):(remote?'读取远端分支/标签':'读取本地分支/标签')}</button><datalist id={listId}>{refs.map(ref=><option key={ref} value={ref}/>)}</datalist>{refs.length>0&&<p className="cr-hint">已载入 {refs.length} 个{remote?'远端':'本地'}引用，在 A/B 输入中选择；{remote?'此次查询观察值，采集时会重新获取。':'不会 fetch。'}</p>}{error&&<p className="cr-row-issues" role="alert">{error}</p>}</>}
+   {warning&&<p className="cr-card-hint">{warning}</p>}
+   {row.type==='git'&&<div className="cr-source-notice" data-remote={remote}>
+    <p>{remote?'选择远端方式即允许访问该配置远端。查询和采集会联网并可能要求身份验证；失败不会回退本地。':'仅使用本地已有引用和对象，离线读取，不自动 fetch。'}</p>
+    {remote&&<details><summary>隔离读取说明</summary><p>采集在隔离临时目录完整抓取，不创建业务本地分支、不修改业务 refs 或工作区。失败不会回退本地。</p></details>}
+    <div className="cr-ref-actions"><button disabled={refsDisabled||loading||!row.path.trim()} onClick={refreshRefs}>{loading?(remote?'读取远端 refs…':'读取本地 refs…'):(remote?'读取远端分支/标签':'读取本地分支/标签')}</button><datalist id={listId}>{refs.map(ref=><option key={ref} value={ref}/>)}</datalist>{refs.length>0&&<p className="cr-hint">已载入 {refs.length} 个{remote?'远端':'本地'}引用，在 A/B 输入中选择；{remote?'此次查询观察值，采集时会重新获取。':'不会 fetch。'}</p>}</div>
+    {error&&<p className="cr-row-issues" role="alert">{error}</p>}
+   </div>}
   </td>
-  {['a','b'].map((side,i)=><td key={side} data-label={i?'B · 发布目标':'A · 比较基线'}>
-   <input aria-label={row.type.toUpperCase()+' 分支 '+side.toUpperCase()+' '+(index+1)} value={row[i?'branchB':'branchA']} list={row.type==='git'?listId:undefined} placeholder={row.type==='git'?'分支，如 main / release':'仓库分支路径'} onChange={event=>change(index,i?'branchB':'branchA',event.target.value)}/>
-   <input aria-label={'版本 '+side.toUpperCase()+' '+(index+1)} value={row[side]} list={row.type==='git'?listId:undefined} placeholder={row.type==='git'?'留空：此分支最新提交；或 SHA / 标签':'留空：此分支最新提交；或 r 版本'} onChange={event=>change(index,side,event.target.value)}/>
+  {['a','b'].map((side,i)=><td className="cr-project-endpoint" key={side} data-label={i?'B · 发布目标':'A · 比较基线'}>
+   <div className="cr-endpoint-title"><span aria-hidden="true">{side.toUpperCase()}</span><strong>{i?'发布目标':'比较基线'}</strong><small>{i?'TARGET':'BASELINE'}</small></div>
+   <label>分支<input aria-label={row.type.toUpperCase()+' 分支 '+side.toUpperCase()+' '+(index+1)} value={row[i?'branchB':'branchA']} list={row.type==='git'?listId:undefined} placeholder={row.type==='git'?'分支，如 main / release':'仓库分支路径'} onChange={event=>change(index,i?'branchB':'branchA',event.target.value)}/></label>
+   <label>版本 <span className="cr-field-optional">可选</span><input aria-label={'版本 '+side.toUpperCase()+' '+(index+1)} value={row[side]} list={row.type==='git'?listId:undefined} placeholder={row.type==='git'?'留空：此分支最新提交；或 SHA / 标签':'留空：此分支最新提交；或 r 版本'} onChange={event=>change(index,side,event.target.value)}/></label>
   </td>)}
-  <td><button onClick={()=>remove(index)} aria-label={'移除项目 '+(index+1)}>移除</button></td>
+  <td className="cr-project-remove"><button className="cr-danger-ghost" onClick={()=>remove(index)} aria-label={'移除项目 '+(index+1)}>移除</button></td>
  </tr>;
 }

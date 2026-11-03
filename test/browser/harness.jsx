@@ -11,7 +11,7 @@ const sessions={a:{id:'a',cwd:'G:/fixture/a',retainedBy:{mainView:1}},b:{id:'b',
 const ok=value=>({ok:true,value});
 const execution=(phase,{dispatched=true,available=false}={})=>({backendInstanceId:'fixture-backend',dispatch:dispatched?'dispatched':'not-dispatched',dispatchCount:dispatched?1:0,completedBatches:available?(settings.analysisBatches||1):0,totalBatches:settings.analysisBatches||1,resultAvailability:available?'available':'unavailable',phase});
 const fail=(message,code='code-report/input',extra={})=>({ok:false,error:{code,message,details:{fixture:true,...extra}}});
-const info=()=>({packageName:PACKAGE_NAME,protocol:PROTOCOL_VERSION,runningVersion:settings.runtimeMismatch?'0.0.0':version});
+const info=()=>({packageName:PACKAGE_NAME,protocol:PROTOCOL_VERSION,runningVersion:settings.runtimeMismatch?'0.0.0':(settings.runningVersion||version)});
 const plan=()=>({id:'plan-fixture',inputBudget:24000,estimated:true,batches:Array.from({length:settings.analysisBatches||1},(_,index)=>({id:'batch-'+(index+1),evidenceIds:['e-'+(index+1)],inputBytes:100})),coverage:{total:settings.analysisBatches||1,excluded:0}});
 function gate(name){return new Promise(resolve=>{gates.set(name,resolve);});}
 function release(name){const resolve=gates.get(name);if(resolve){gates.delete(name);resolve();}}
@@ -85,6 +85,14 @@ async function rpc(channel,endpoint,payload,signal){
  return fail('未知模拟端点 '+endpoint);
 }
 window.fixture={configure(value){Object.assign(settings,value);},releaseGenerate:()=>release('generate'),releaseInstall:()=>release('install'),releaseRefs:()=>release('refs'),getStats:()=>({calls:structuredClone(calls),modelCalls,installCalls,settledPreviews,settledGenerations,generateAborts}),switchSession:id=>switchSession(id),settings};
+// Explicit host-theme simulation. This is not a screenshot of the live DSH GUI.
+if(settings.theme){
+ const dark=settings.theme==='dark',root=document.documentElement;
+ root.dataset.theme=settings.theme;root.style.colorScheme=settings.theme;
+ const colors=dark?{canvas:'#10141c',surface:'#171e29',raised:'#202938',text:'#edf2fa',secondary:'#b5c0d0',muted:'#a3aec0',border:'#3c495d'}:{canvas:'#f3f6fb',surface:'#ffffff',raised:'#edf2f9',text:'#172338',secondary:'#46566d',muted:'#52627a',border:'#c4cfdf'};
+ document.body.style.background=colors.canvas;document.body.style.color=colors.text;
+ for(const [token,key]of Object.entries({'bg-layer-1':'surface','bg-layer-2':'raised','bg-layer-3':'canvas','label-primary':'text','label-secondary':'secondary','label-tertiary':'muted','border-l3':'border'}))root.style.setProperty('--dsw-alias-'+token,colors[key]);
+}
 let entry;window.__ModuleLoader__={load(value){entry=value;}};
 await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='/client.js';script.onload=resolve;script.onerror=reject;document.head.append(script);});
 const plugin=entry.factory(id=>{if(id!=='react')throw new Error('Unexpected external '+id);return React;});

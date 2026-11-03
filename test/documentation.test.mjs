@@ -58,7 +58,17 @@ test('remote-default documentation exposes network, migration and isolation boun
  assert.doesNotMatch(readme,/Git 读取 \| 严格本地|Git 分支 A\/B \|[^\n]*使用本地已有分支|Git 可点击对应项目的“读取本地 refs”/);
  for(const text of ['旧 RPC 未提供 gitMode','remote/origin','runGitRemote','runGitRead','GIT_CONFIG_COUNT','credential.*','http.*','core.sshCommand','URL rewrite','helper','OS 网络/进程沙箱','observedAt','不承诺所有远端引用或跨项目原子一致','不重新访问 Git 远端'])assert.ok(development.includes(text),text);
  for(const text of ['Git 配置迁移与模式切换','公网 HTTP/HTTPS/SSH','v0.9.0 远端默认','v0.8.1 编码支持本地验收'])assert.ok(acceptance.includes(text),text);
- const current=notes.split('## v0.8.1 历史记录')[0];assert.ok(current.includes('不沿用'));assert.ok(current.includes('正式发布以远端门禁'));assert.doesNotMatch(current,/232[/]232|29[/]29/);
+ const remoteHistory=notes.split('## v0.9.0 历史记录')[1]?.split('## v0.8.1 历史记录')[0];assert.ok(remoteHistory?.includes('254/254'));assert.ok(remoteHistory?.includes('32/32'));assert.ok(remoteHistory?.includes('不沿用'));assert.ok(remoteHistory?.includes('正式发布以远端门禁'));assert.doesNotMatch(remoteHistory,/232[/]232|29[/]29/);
+});
+
+test('visual refresh documentation keeps workflow and business boundaries separate',async()=>{
+ const readme=await readFile('README.md','utf8'),notes=await readFile('RELEASE-NOTES.md','utf8'),acceptance=await readFile('docs/ACCEPTANCE.md','utf8'),client=await readFile('src/client.jsx','utf8'),cards=await readFile('src/RepositoryCards.jsx','utf8');
+ for(const label of ['配置发布范围','核对差异证据','生成与导出']){assert.ok(readme.includes(label),label);assert.ok(client.includes(label),label);}
+ for(const label of ['A · 比较基线','B · 发布目标']){assert.ok(readme.includes(label),label);assert.ok(cards.includes(label),label);}
+ for(const text of ['发布工作台','项目卡片','帮助说明可折叠','深浅主题','窄屏','不代替采集或模型发送确认'])assert.ok(readme.includes(text),text);
+ const current=notes.split('## v0.9.0 历史记录')[0];for(const text of ['仅界面','不更改后端','remote/origin','模型发送确认','不表示当前 DSH 已更新','正式发布以远端门禁'])assert.ok(current.includes(text),text);
+ assert.ok(acceptance.includes('v0.9.1 视觉升级'));assert.ok(acceptance.includes('截图检查不等于完整无障碍认证'));
+ const history=notes.split('## v0.9.0 历史记录')[1]?.split('## v0.8.1 历史记录')[0];assert.ok(history?.includes('254/254'));assert.ok(history?.includes('32/32'));
 });
 
 test('maintenance commands and release evidence boundaries stay explicit',async()=>{
