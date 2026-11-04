@@ -1,6 +1,6 @@
 {
   "name": "@feng0531/dsh-code-report",
-  "version": "0.10.4",
+  "version": "0.10.5",
   "private": false,
   "type": "module",
   "description": "Multi-repository Git/SVN release reports for DeepSeek Harness",

@@ -74,7 +74,7 @@ async function rpc(channel,endpoint,payload,signal){
   const expanded=settings.directoryContextPreview;
   const context=expanded?structuredClone(expanded.context):[];
   const limitations=['模拟服务，不读取真实仓库',...(expanded?.limitations||[])];
-  const value={previewId,expiresAt:Date.now()+settings.ttl,bytes:expanded?.bytes??100,repositories:request.repositories.map(row=>({...row,...(row.type==='git'?{gitSource:row.gitMode==='local'?'local':'remote',...(row.gitMode!=='local'?{remote:row.gitRemote||'origin',observedAt:'2026-11-03T10:00:00.000Z'}:{})}:{}),a:'a'.repeat(40),b:'b'.repeat(40),files:['api.ts']})),context,limitations,analysisPlan:plan(),markdown:'# 本地证据 '+payload.sessionId+' '+request.title+'\n未调用模型\n<script>window.fixtureInjected=true</script>'};
+  const value={defaultRoute:settings.noDefaultModel?null:{provider:'default-fixture',model:'default-mock'},previewId,expiresAt:Date.now()+settings.ttl,bytes:expanded?.bytes??100,repositories:request.repositories.map(row=>({...row,...(row.type==='git'?{gitSource:row.gitMode==='local'?'local':'remote',...(row.gitMode!=='local'?{remote:row.gitRemote||'origin',observedAt:'2026-11-03T10:00:00.000Z'}:{})}:{}),a:'a'.repeat(40),b:'b'.repeat(40),files:['api.ts']})),context,limitations,analysisPlan:plan(),markdown:'# 本地证据 '+payload.sessionId+' '+request.title+'\n未调用模型\n<script>window.fixtureInjected=true</script>'};
   previews.set(previewId,{sessionId:payload.sessionId,value});task.value=value;task.status='completed';})();
   if(settings.failPreviewStartResponse)throw new Error('fixture capture start response lost');return ok({operationId:payload.operationId,status:'pending'});
  }

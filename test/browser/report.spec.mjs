@@ -30,8 +30,15 @@ async function selectGit(page){
 }
 async function workflow(page,states){await expect(page.locator('.cr-stage')).toHaveCount(3);for(const [index,state]of states.entries())await expect(page.locator('.cr-stage').nth(index)).toHaveAttribute('data-state',state);await expect(page.locator('.cr-stage[aria-current=step]')).toHaveCount(states.filter(state=>state==='active').length);}
 async function collect(page){await capture(page).click();await expect(report(page)).toContainText('本地证据');}
-async function route(page){await page.getByRole('textbox',{name:'DSH 提供方 ID',exact:true}).fill('fixture');await page.getByRole('textbox',{name:'模型 ID',exact:true}).fill('mock');}
+async function route(page){await page.getByRole('checkbox',{name:'使用 DSH 默认模型',exact:true}).uncheck();await page.getByRole('textbox',{name:'DSH 提供方 ID',exact:true}).fill('fixture');await page.getByRole('textbox',{name:'模型 ID',exact:true}).fill('mock');}
 async function analyze(page){await route(page);await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告');}
+
+test('DSH default model needs no manual IDs and remains pinned until recapture',async({page})=>{
+ await open(page);await selectGit(page);await collect(page);await expect(page.getByRole('checkbox',{name:'使用 DSH 默认模型',exact:true})).toBeChecked();await expect(page.getByRole('textbox',{name:'DSH 提供方 ID',exact:true})).toHaveCount(0);await expect(page.getByText('default-fixture / default-mock',{exact:true})).toBeVisible();await expect(generate(page)).toBeDisabled();expect((await stats(page)).modelCalls).toBe(0);await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告');const calls=(await stats(page)).calls.filter(c=>c.endpoint==='generate');expect(calls).toHaveLength(1);expect(calls[0].payload.route).toEqual({mode:'default',provider:'default-fixture',model:'default-mock'});
+});
+test('missing DSH default fails closed and manual override clears approval',async({page})=>{
+ await open(page,{noDefaultModel:true});await selectGit(page);await collect(page);await consent(page).check();await expect(generate(page)).toBeDisabled();await expect(page.getByText(/未能读取 DSH 默认模型/)).toBeVisible();await route(page);await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告');expect((await stats(page)).modelCalls).toBe(1);
+});
 
 test('lost short capture start and result responses recover one detached task without recapture or model dispatch',async({page})=>{
  await open(page,{holdPreview:true,failPreviewStartResponse:true,failCaptureResultOnce:true});await selectGit(page);await capture(page).click();await expect(page.getByText(/采集连接暂时失联/).first()).toBeVisible();await expect(capture(page)).toBeDisabled();

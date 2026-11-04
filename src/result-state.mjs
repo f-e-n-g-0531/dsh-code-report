@@ -42,13 +42,14 @@ export function previewExpired(preview,now=Date.now()){
  const deadline=typeof preview?.expiresAt==='number'?preview.expiresAt:Date.parse(preview?.expiresAt);
  return !Number.isFinite(deadline)||now>=deadline;
 }
-export function generationBlocker({preview,now,compatibility,busy,consent,provider,model,pendingRecovery}){
+export function generationBlocker({preview,now,compatibility,busy,consent,provider,model,useDefaultModel=false,pendingRecovery}){
  if(pendingRecovery)return '上次分析结果尚未确认，请先只读恢复，勿重复生成。';
  if(busy)return '正在执行任务，请等待完成或取消。';
  if(compatibility)return compatibility;
  if(!preview||previewExpired(preview,now))return '快照已过期，请重新采集并确认发送。';
  if(!preview.analysisPlan?.id)return '分析计划不可用，请重新采集。';
- if(!provider.trim()||!model.trim())return '请填写 DSH 已配置的提供方与模型 ID。';
+ if(useDefaultModel){if(!preview.defaultRoute?.provider?.trim()||!preview.defaultRoute?.model?.trim())return 'DSH 默认模型不可用，请配置后重新采集，或手动指定模型。';}
+ else if(!provider.trim()||!model.trim())return '请填写 DSH 已配置的提供方与模型 ID。';
  if(!consent)return '请确认本次发送范围和分批调用费用。';
  return '';
 }

@@ -41,6 +41,10 @@ test('snapshot expiry fails closed and generation requires exact current approva
  assert.equal(generationBlocker(input),'');
  for(const change of [{now:1000},{consent:false},{provider:''},{model:''},{busy:'collecting'},{compatibility:'mismatch'},{preview:{expiresAt:1000}}])assert.ok(generationBlocker({...input,...change}));
 });
+test('default route requires a pinned preview destination and consent, not manual IDs',()=>{
+ const input={preview:{expiresAt:1000,analysisPlan:{id:'plan'},defaultRoute:{provider:'default',model:'model'}},now:1,consent:true,provider:'',model:'',useDefaultModel:true};
+ assert.equal(generationBlocker(input),'');assert.ok(generationBlocker({...input,consent:false}));assert.ok(generationBlocker({...input,preview:{...input.preview,defaultRoute:null}}));assert.ok(generationBlocker({...input,useDefaultModel:false}));
+});
 test('fixed version context parser accepts only explicit selected repository sides',()=>{
  const rows=[{...fresh(),path:'app'}];
  assert.deepEqual(parseVersionContexts('app|A|src/api.ts\n app | B | src/api.ts ',rows),[{repository:'app',side:'A',path:'src/api.ts'},{repository:'app',side:'B',path:'src/api.ts'}]);

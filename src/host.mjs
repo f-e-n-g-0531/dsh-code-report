@@ -121,6 +121,28 @@ function publicPlan(plan){
   if(!plan)return null;
   return {id:plan.id,strategy:plan.strategy,mode:plan.mode,formatVersion:plan.formatVersion,evidenceVersion:plan.evidenceVersion,inputBudget:plan.inputBudget,estimated:plan.estimated,batches:plan.batches.map(({id,evidenceIds,inputBytes})=>({id,evidenceIds,inputBytes})),coverage:plan.coverage};
 }
+// ctx.get is an optional Cordis lookup: unlike required injection it keeps old hosts usable.
+function defaultModelRoute(ctx){
+  try{
+    const service=typeof ctx.get==='function'?ctx.get('agentDefaultModel'):ctx.agentDefaultModel;
+    if(typeof service?.currentSelection!=='function')throw new Error('unavailable');
+    const selection=service.currentSelection();
+    routeKey(selection);
+    return {defaultRoute:{provider:selection.provider,model:selection.model},defaultRouteError:null};
+  }catch{
+    return {defaultRoute:null,defaultRouteError:{code:'code-report/default-unavailable',message:'DSH 默认模型不可用：宿主未提供默认模型服务或提供方/模型配置无效；请手动填写已配置的提供方与模型 ID。'}};
+  }
+}
+function generationRoute(route,preview){
+  if(route?.mode!==undefined&&route.mode!=='default'&&route.mode!=='explicit')throw problem('input','无效模型路由模式');
+  if(route?.mode==='default'){
+    if(!preview.defaultRoute)throw problem('default-unavailable',preview.defaultRouteError.message);
+    if(route.provider!==preview.defaultRoute.provider||route.model!==preview.defaultRoute.model)throw problem('default-route-mismatch','默认模型与预览不一致，请重新预览并确认模型');
+    return {...preview.defaultRoute};
+  }
+  routeKey(route);
+  return route;
+}
 function routeKey(route){
   if(!route||typeof route.provider!=='string'||!route.provider.trim()||route.provider.length>200||typeof route.model!=='string'||!route.model.trim()||route.model.length>200)throw problem('input','请填写 DSH 已配置的提供方与模型 ID');
   return JSON.stringify([route.provider,route.model]);
@@ -177,21 +199,22 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
       await assertSession(payload,cwd,signal);signal.throwIfAborted();
       const previewId=randomUUID(),time=now(),bytes=snapshotJsonBytes(snapshot);let analysisPlan=null,planError=null;
       try{analysisPlan=plan(snapshot);}catch(error){planError={code:'code-report/plan-invalid',message:error.message};}
-      previews.add(previewId,{snapshot,cwd,sessionId:payload.sessionId,time,bytes,used:false,plan:analysisPlan,completed:new Map(),routeKey:null});
-      return {previewId,expiresAt:time+PREVIEW_TTL,bytes,repositories:snapshot.repositories.map(({diff,...r})=>r),context:snapshot.context.map(({text,...c})=>c),limitations:snapshot.limitations,markdown:markdown(snapshot,null,null,{evidenceManifest:analysisPlan?.strategy==='single-request'?analysisPlan.coverage:plan===defaultAnalysisPlan?localManifest(snapshot):null}),analysisPlan:publicPlan(analysisPlan),planError};
+      const defaults=defaultModelRoute(ctx);
+      previews.add(previewId,{snapshot,cwd,sessionId:payload.sessionId,time,bytes,used:false,plan:analysisPlan,completed:new Map(),routeKey:null,...structuredClone(defaults)});
+      return {...defaults,previewId,expiresAt:time+PREVIEW_TTL,bytes,repositories:snapshot.repositories.map(({diff,...r})=>r),context:snapshot.context.map(({text,...c})=>c),limitations:snapshot.limitations,markdown:markdown(snapshot,null,null,{evidenceManifest:analysisPlan?.strategy==='single-request'?analysisPlan.coverage:plan===defaultAnalysisPlan?localManifest(snapshot):null}),analysisPlan:publicPlan(analysisPlan),planError};
     },
     'analysis-plan':async({payload,cwd,signal})=>{
       const p=previews.claim(payload,cwd);signal.throwIfAborted();
       if(!Number.isInteger(payload.inputBudget)||payload.inputBudget<4000||payload.inputBudget>64000)throw problem('input','输入预算应为 4000–64000 字节；这是保守估算，不是 token 数');
       const next=plan(p.snapshot,{inputBudget:payload.inputBudget});
       p.plan=next;p.completed=new Map();p.routeKey=null;
-      return {analysisPlan:publicPlan(next),expiresAt:p.time+PREVIEW_TTL};
+      return {analysisPlan:publicPlan(next),expiresAt:p.time+PREVIEW_TTL,defaultRoute:p.defaultRoute?{...p.defaultRoute}:null,defaultRouteError:p.defaultRouteError?{...p.defaultRouteError}:null};
     },
     generate:async({payload,cwd,signal,update,operation})=>{
       const p=previews.claim(payload,cwd);
       if(payload.sendToModel!==true)throw problem('consent-required','需要明确确认向所选模型发送源码');
       if(!p.plan||payload.planId!==p.plan.id)throw problem('plan-mismatch','分析计划已变化或不可用，请重新确认发送范围');
-      const key=routeKey(payload.route);
+      const route=generationRoute(payload.route,p),key=routeKey(route);
       if(p.routeKey!==key){p.completed=new Map();p.routeKey=key;}
       signal.throwIfAborted();progress.authorize(operation);p.used=true;
       // Recheck authority before every model dispatch, not only before the first batch.
@@ -204,13 +227,13 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
       }};
       update({phase:'analyzing',label:'正在分析固定快照；分片内部进度不可量化',completed:p.completed.size,total:p.plan.batches.length});
       try{
-        const result=await analyze(llm,payload.route,p.snapshot,{signal,plan:p.plan,completed:p.completed,onProgress:update});
+        const result=await analyze(llm,route,p.snapshot,{signal,plan:p.plan,completed:p.completed,onProgress:update});
         if(result.completed instanceof Map)p.completed=result.completed;
         // Completed validated analysis is a server fact, separate from cancelled delivery.
         // Still recheck authoritative ownership without borrowing the delivery signal.
         await assertSession(payload,cwd,AbortSignal.timeout(15000));
         if(operation){operation.completedBatches=p.completed.size;operation.totalBatches=p.plan.batches.length;}
-        const value={markdown:markdown(p.snapshot,result.markdown,payload.route,{structured:true,evidenceManifest:p.plan.strategy==='single-request'?p.plan.coverage:null}),coverage:result.coverage};
+        const value={markdown:markdown(p.snapshot,result.markdown,route,{structured:true,evidenceManifest:p.plan.strategy==='single-request'?p.plan.coverage:null}),coverage:result.coverage};
         progress.finish(operation,value);previews.discard(payload.previewId);return value;
       }catch(error){
         if(error.completed instanceof Map)p.completed=error.completed;
@@ -237,7 +260,7 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
       if(!endpointNames.includes(endpoint)||!payload||typeof payload!=='object')throw problem('input','无效请求');
       const cwd=await sessionCwd(ctx,payload.sessionId,signal);signal.throwIfAborted();
       if(payload.operationId!==undefined||endpoint==='generate'){
-        const fingerprint=createHash('sha256').update(JSON.stringify([endpoint,payload.previewId,payload.planId,payload.route?.provider,payload.route?.model,payload.sendToModel])).digest('hex');
+        const fingerprint=createHash('sha256').update(JSON.stringify([endpoint,payload.previewId,payload.planId,payload.route?.mode??'explicit',payload.route?.provider,payload.route?.model,payload.sendToModel])).digest('hex');
         const started=progress.begin(payload.operationId,payload.sessionId,cwd,endpoint,fingerprint);
         if(started.replay)return {ok:true,value:started.replay};
         operation=started.operation;
