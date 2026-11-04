@@ -10,11 +10,22 @@ const sections = [
 
 const value = input => markdownText(input ?? '未知');
 
+const qaGroups = [
+  ['QA', 'QA 可执行测试'],
+  ['研发专项', '研发专项验证'],
+  ['待补充', '测试前待补充'],
+  [null, '未分类测试建议（需人工确认执行角色与入口）'],
+];
+
+function qaGroup(text) {
+  return /^(QA|研发专项|待补充)｜/.exec(text)?.[1] ?? null;
+}
+
 // Only split at explicit labels, retaining every character (including punctuation
 // and whitespace) in its original order. Never infer or rewrite a test contract.
 function qaParts(text) {
-  const boundaries = [...text.matchAll(/前置条件[：:]|步骤[：:]|预期(?:结果)?[：:]|回归边界[：:]/g)].map(match => match.index);
-  if (boundaries.length < 2) return [text];
+  const boundaries = [...text.matchAll(/测试功能[：:]|正常使用[：:]|重点观察[：:]|前置条件[：:]|操作步骤[：:]|步骤[：:]|预期(?:现象|结果)?[：:]|通过标准[：:]|回归边界[：:]|待补充[：:]/g)].map(match => match.index);
+  if (!boundaries.length) return [text];
   return [text.slice(0, boundaries[0]), ...boundaries.map((start, index) => text.slice(start, boundaries[index + 1] ?? text.length))];
 }
 
@@ -52,15 +63,23 @@ export function renderReadableAnalysis(plan, completed) {
   const lines = [scope];
   for (const [section, title] of sections) {
     lines.push('', '## ' + title, '');
-    for (const item of analysis[section]) {
-      const links = citations(item.evidenceIds);
-      const suffix = links ? ' ' + links : '';
-      const parts = section === 'qa' ? qaParts(item.text) : [item.text];
-      if (parts.length === 1) lines.push('- ' + markdownText(item.text) + suffix);
-      else {
-        lines.push('- ' + (parts[0] ? markdownText(parts[0]) : '测试建议') + suffix);
-        for (const part of parts.slice(1)) lines.push('  - ' + markdownText(part));
+    const groups = section === 'qa'
+      ? qaGroups.map(([key, heading]) => [heading, analysis.qa.filter(item => qaGroup(item.text) === key)])
+      : [[null, analysis[section]]];
+    for (const [heading, items] of groups) {
+      if (!items.length) continue;
+      if (heading) lines.push('### ' + heading, '');
+      for (const item of items) {
+        const links = citations(item.evidenceIds);
+        const suffix = links ? ' ' + links : '';
+        const parts = section === 'qa' ? qaParts(item.text) : [item.text];
+        if (parts.length === 1) lines.push('- ' + markdownText(item.text) + suffix);
+        else {
+          lines.push('- ' + (parts[0] ? markdownText(parts[0]) : '测试建议') + suffix);
+          for (const part of parts.slice(1)) lines.push('  - ' + markdownText(part));
+        }
       }
+      if (heading) lines.push('');
     }
     if (!analysis[section].length) {
       lines.push(section === 'interfaces'

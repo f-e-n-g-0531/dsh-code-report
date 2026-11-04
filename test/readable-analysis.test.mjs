@@ -62,7 +62,7 @@ test('QA label splitting is lossless including whitespace, punctuation and multi
   const text = 'P1  前置条件：旧调用方； \n步骤:调用\n检查；预期结果：尚待确认； 回归边界:未提供。  ';
   analysis.qa[0].text = text;
   const qa = bodyOf(renderReadableAnalysis(plan, completed)).split('## QA 测试范围\n\n')[1].split('\n\n## 未知和待确认')[0];
-  const parts = qa.split('\n').map(line => line.replace(/^(?:  )?- /, '').replace(/ \[1\]\(#evidence-1\)$/, ''));
+  const parts = qa.split('\n').filter(line => /^(?:  )?- /.test(line)).map(line => line.replace(/^(?:  )?- /, '').replace(/ \[1\]\(#evidence-1\)$/, ''));
   assert.equal(parts.join(''), markdownText(text));
   assert.equal(parts.length, 5);
   analysis.qa[0].text = '仅提及步骤但没有标签，不能推断前置条件';
@@ -145,4 +145,61 @@ test('renders the actual single-request plan shape without changing it', () => {
   assert.match(markdown, /已处理仅指结果返回/);
   assert.ok(appendixOf(markdown).includes('- payloadHash：' + markdownText(plan.batches[0].payloadHash)));
   assert.ok(appendixOf(markdown).includes('- snapshotHash：' + markdownText(plan.snapshotHash)));
+});
+
+const qaBody = markdown => bodyOf(markdown).split('## QA 测试范围\n\n')[1].split('\n\n## 未知和待确认')[0];
+const qaText = block => block.split('\n').filter(line => /^(?:  )?- /.test(line))
+  .map(line => line.replace(/^(?:  )?- /, '').replace(/(?: \[\d+\]\(#evidence-\d+\))+$/, '')).join('');
+
+test('QA groups only explicit leading category markers and retains original titles and citations', () => {
+  const {plan, analysis, completed} = fixture();
+  analysis.qa = [
+    {text: '旧建议：检查性能与界面 QA｜不能据此归类', evidenceIds: []},
+    {text: '待补充｜入口缺失', evidenceIds: [ids[2]]},
+    {text: '研发专项｜P1｜采样验证', evidenceIds: [ids[0]]},
+    {text: 'QA｜P1｜场景一', evidenceIds: [ids[1]]},
+    {text: 'QA｜P2｜场景二', evidenceIds: []},
+    ...[' QA｜前导空白', 'qa｜小写', 'QA|半角分隔', '说明\nQA｜内文标记'].map(text => ({text, evidenceIds: []})),
+  ];
+  const before = JSON.stringify(analysis);
+  const qa = qaBody(renderReadableAnalysis(plan, completed));
+  const headings = ['QA 可执行测试', '研发专项验证', '测试前待补充', '未分类测试建议（需人工确认执行角色与入口）'];
+  const groups = qa.split(/^### /m).slice(1);
+  assert.equal(groups.length, 4);
+  assert.deepEqual(groups.map(group => group.split('\n')[0]), headings);
+  const ordered = [[analysis.qa[3], analysis.qa[4]], [analysis.qa[2]], [analysis.qa[1]], [analysis.qa[0], ...analysis.qa.slice(5)]];
+  for (const [index, items] of ordered.entries()) {
+    assert.equal(qaText(groups[index]), markdownText(items.map(item => item.text).join('')));
+    for (const item of items) assert.equal(qa.split(markdownText(item.text)).length, 2);
+  }
+  assert.match(groups[0], /\[1\]\(#evidence-1\)/);
+  assert.match(groups[1], /\[2\]\(#evidence-2\)/);
+  assert.match(groups[2], /\[3\]\(#evidence-3\)/);
+  assert.equal(JSON.stringify(analysis), before);
+});
+
+test('all new and legacy QA labels split losslessly without partial label matches', () => {
+  const {plan, analysis, completed} = fixture();
+  const parts = ['QA｜P1｜测试已确认对象的加载显示功能  ', '测试功能：对象加载与显示；', '正常使用:通过已有入口打开；', '重点观察：是否缺失或残留；', '前置条件：已有账号；\n', '操作步骤:打开 <页面>； ', '预期现象：显示 [提示](url)；', '通过标准:与基线一致；', '回归边界：本次入口； ', '待补充:账号来源。 ', '步骤：旧格式；', '预期结果:人工核验；', '预期：旧简写。  '];
+  analysis.qa[0].text = parts.join('');
+  const qa = qaBody(renderReadableAnalysis(plan, completed));
+  assert.equal(qaText(qa), markdownText(parts.join('')));
+  assert.deepEqual(qa.split('\n').filter(line => /^(?:  )?- /.test(line)).map(line => line.replace(/^(?:  )?- /, '').replace(/ \[1\]\(#evidence-1\)$/, '')), parts.map(markdownText));
+  assert.doesNotMatch(qa, /<页面>|\[提示\]\(url\)/);
+});
+
+test('a single explicit label splits, while absent groups and empty QA stay absent', () => {
+  const {plan, analysis, completed} = fixture();
+  for (const label of ['测试功能', '正常使用', '重点观察', '前置条件', '操作步骤', '预期现象', '通过标准', '回归边界', '待补充', '步骤', '预期结果']) {
+    analysis.qa = [{text: '待补充｜标题 ' + label + '：未知；  ', evidenceIds: []}];
+    const qa = qaBody(renderReadableAnalysis(plan, completed));
+    assert.match(qa, /### 测试前待补充/);
+    assert.equal(qaText(qa), markdownText(analysis.qa[0].text));
+    assert.ok(qa.includes('\n  - ' + markdownText(label + '：未知；  ')));
+    assert.doesNotMatch(qa, /### QA 可执行测试|### 研发专项验证|### 未分类/);
+  }
+  analysis.qa = [];
+  const qa = qaBody(renderReadableAnalysis(plan, completed));
+  assert.doesNotMatch(qa, /### /);
+  assert.match(qa, /模型未列出本节条目/);
 });
