@@ -82,7 +82,13 @@
 .cr-root .cr-config-table tr.cr-project-card{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"selection remove" "config config" "base target";gap:0 18px;min-width:0;padding:18px;border:1px solid var(--cr-border);border-radius:10px;background:var(--cr-card);transition:border-color .15s,box-shadow .15s}
 .cr-root .cr-config-table tr[data-selected=true]{border-color:var(--cr-blue);box-shadow:inset 3px 0 0 var(--cr-blue)}
 .cr-root .cr-config-table td{display:block;min-width:0;padding:0;border:0}
-.cr-root .cr-project-select{grid-area:selection;display:flex!important;align-items:center;gap:10px}
+.cr-root .cr-config-table tr.cr-project-card[data-expanded=false]{grid-template-areas:"selection remove";grid-template-columns:minmax(0,1fr) auto}
+.cr-root .cr-config-table td[hidden]{display:none!important}
+.cr-root .cr-project-select{grid-area:selection;display:flex!important;align-items:center;flex-wrap:wrap;gap:10px}
+.cr-root .cr-project-toggle{flex:1 1 180px;justify-content:flex-start;min-width:0;text-align:left;background:transparent;border-color:transparent;padding:4px 6px}
+.cr-root .cr-project-name{min-width:0;overflow-wrap:anywhere;font-family:ui-monospace,"Cascadia Code",monospace}
+.cr-root .cr-project-toggle-hint{flex-shrink:0;font-size:11px;color:var(--cr-muted);margin-left:auto}
+.cr-root .cr-project-error{font-size:11px;color:var(--cr-danger)}
 .cr-root .cr-project-select .cr-selection{color:var(--cr-text);font-weight:650}
 .cr-root .cr-vcs-badge{padding:2px 7px;font-size:10px;line-height:1.5;letter-spacing:.6px;font-weight:700;border:1px solid var(--cr-border);border-radius:5px;color:var(--cr-muted);background:var(--cr-raised)}
 .cr-root .cr-project-remove{grid-area:remove;justify-self:end}

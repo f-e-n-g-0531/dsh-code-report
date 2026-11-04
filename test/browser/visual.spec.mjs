@@ -9,6 +9,7 @@ for(const theme of ['light','dark'])for(const width of [380,768,1280])test('visu
  await page.addInitScript(value=>window.__fixtureOptions=value,{theme,count:3,...(before?{runningVersion:'0.9.0'}:{})});await page.goto('/');
  await expect(page.getByRole('heading',{name:'发布报告配置',exact:true})).toBeVisible();
  await page.getByRole('checkbox',{name:'纳入项目 1',exact:true}).check();
+ if(!before){await expect(page.getByRole('button',{name:'展开项目 1',exact:true})).toHaveAttribute('aria-expanded','false');await expect(page.locator('#cr-row-0 [aria-label="项目路径 1"]')).not.toBeVisible();const collapsed=info.outputPath('collapsed-'+theme+'-'+width+'.png');await page.locator('.cr-repositories').screenshot({path:collapsed});await info.attach('collapsed-'+theme+'-'+width,{path:collapsed,contentType:'image/png'});await page.getByRole('button',{name:'展开项目 1',exact:true}).click();await expect(page.getByRole('button',{name:'收起项目 1',exact:true})).toHaveAttribute('aria-expanded','true');}
  await page.getByRole('combobox',{name:'GIT 分支 A 1',exact:true}).fill('main');await page.getByRole('combobox',{name:'GIT 分支 B 1',exact:true}).fill('release/2026.11');
  const path=page.getByRole('textbox',{name:'项目路径 1',exact:true});await path.fill('frontend/packages/release-workspace/very-long-project-name');await path.focus();await page.keyboard.press('Tab');
  if(!before){

@@ -19,9 +19,10 @@ async function open(page,options={}){
  await page.goto('/');await expect(page.getByRole('heading',{name:'发布报告配置'})).toBeVisible();
  return errors;
 }
+async function expandProject(page,index=1){const expand=page.getByRole('button',{name:'展开项目 '+index,exact:true});if(await expand.count())await expand.click();await expect(page.getByRole('button',{name:'收起项目 '+index,exact:true})).toHaveAttribute('aria-expanded','true');}
 async function selectGit(page){
  await expect(page.getByRole('checkbox',{name:'纳入项目 1',exact:true})).toBeVisible();
- await page.getByRole('checkbox',{name:'纳入项目 1',exact:true}).check();
+ await page.getByRole('checkbox',{name:'纳入项目 1',exact:true}).check();await expandProject(page);
  await page.getByRole('combobox',{name:'GIT 分支 A 1',exact:true}).fill('main');
  await page.getByRole('combobox',{name:'GIT 分支 B 1',exact:true}).fill('release');
  await expect(capture(page)).toBeEnabled();
@@ -30,6 +31,17 @@ async function workflow(page,states){await expect(page.locator('.cr-stage')).toH
 async function collect(page){await capture(page).click();await expect(report(page)).toContainText('本地证据');}
 async function route(page){await page.getByRole('textbox',{name:'DSH 提供方 ID',exact:true}).fill('fixture');await page.getByRole('textbox',{name:'模型 ID',exact:true}).fill('mock');}
 async function analyze(page){await route(page);await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告');}
+
+for(const width of [380,1280])test('projects default collapsed, toggle independently, preserve values and locate hidden errors '+width,async({page},info)=>{
+ await page.setViewportSize({width,height:1100});await open(page,{count:2,mixed:true});const row1=page.locator('#cr-row-0'),row2=page.locator('#cr-row-1');await expect(row1).toBeVisible();await expect(row2).toBeVisible();await expect(row1.locator(':scope > td')).toHaveCount(5);await expect(row2.locator(':scope > td')).toHaveCount(5);
+ const toggle=index=>page.getByRole('button',{name:new RegExp('^(?:展开|收起)项目 '+index+'$')});for(const index of [1,2]){await expect(toggle(index)).toHaveAttribute('aria-expanded','false');await expect(page.getByRole('button',{name:'移除项目 '+index,exact:true})).toBeVisible();}
+ await expect(row1.locator('[aria-label="项目路径 1"]')).toHaveCount(1);await expect(row1.locator('[aria-label="项目路径 1"]')).not.toBeVisible();await page.getByRole('checkbox',{name:'纳入项目 1',exact:true}).check();await page.getByRole('checkbox',{name:'纳入项目 2',exact:true}).check();await expect(toggle(1)).toHaveAttribute('aria-expanded','false');await expect(toggle(2)).toHaveAttribute('aria-expanded','false');
+ await toggle(1).focus();await page.keyboard.press('Enter');await expect(toggle(1)).toHaveAttribute('aria-expanded','true');await expect(toggle(2)).toHaveAttribute('aria-expanded','false');await page.getByRole('combobox',{name:'GIT 分支 A 1',exact:true}).fill('main');await page.getByRole('combobox',{name:'GIT 分支 B 1',exact:true}).fill('release');await page.getByRole('combobox',{name:'版本 A 1',exact:true}).fill('v1');await toggle(2).focus();await page.keyboard.press('Space');await expect(toggle(2)).toHaveAttribute('aria-expanded','true');await expect(page.getByRole('textbox',{name:'SVN 分支 A 2',exact:true})).toHaveValue('trunk');
+ await toggle(1).click();await expect(toggle(1)).toHaveAttribute('aria-expanded','false');await expect(toggle(2)).toHaveAttribute('aria-expanded','true');await expect(row1.locator('[aria-label="版本 A 1"]')).toHaveValue('v1');await expect(row1.locator('[aria-label="版本 A 1"]')).not.toBeVisible();await expect(page.getByRole('checkbox',{name:'纳入项目 1',exact:true})).toBeChecked();await toggle(2).click();await expandProject(page,2);
+ const search=page.getByRole('textbox',{name:'搜索项目路径',exact:true});await search.fill('project-1');await expect(row1).toHaveCount(0);await page.locator('.cr-bulk summary').click();await page.locator('.cr-bulk').getByRole('textbox',{name:'B 目标',exact:true}).fill('v2');await page.getByRole('button',{name:'应用到已选 GIT 项目',exact:true}).click();await search.fill('');await expect(row1.locator('[aria-label="版本 A 1"]')).toHaveValue('v1');await expect(row1.locator('[aria-label="版本 B 1"]')).toHaveValue('v2');await expect(toggle(1)).toHaveAttribute('aria-expanded','false');await expect(toggle(2)).toHaveAttribute('aria-expanded','true');
+ await expandProject(page);await expect(page.getByRole('combobox',{name:'GIT 分支 A 1',exact:true})).toHaveValue('main');await page.getByRole('textbox',{name:'项目路径 1',exact:true}).fill('');await toggle(1).click();await expect(row1.locator('.cr-project-error')).toBeVisible();await search.fill('project-1');await page.getByRole('button',{name:'定位首个错误项目',exact:true}).click();await expect(search).toHaveValue('');await expect(toggle(1)).toHaveAttribute('aria-expanded','true');await expect(page.getByRole('textbox',{name:'项目路径 1',exact:true})).toBeFocused();
+ const observed=await stats(page);expect(observed.calls.filter(call=>['refs','preview','generate'].includes(call.endpoint))).toHaveLength(0);expect(observed.modelCalls).toBe(0);expect(observed.installCalls).toBe(0);await expect(page.getByRole('checkbox',{name:'纳入项目 2',exact:true})).toBeChecked();const screenshot=info.outputPath('project-collapse-'+width+'.png');await page.locator('.cr-repositories').screenshot({path:screenshot});await info.attach('project-collapse-'+width,{path:screenshot,contentType:'image/png'});
+});
 
 test('reader report renders semantic headings tables decoded identifiers and inert source with collapsed appendices (contract mock)',async({page},info)=>{
  const markdown=['# 模型报告 · 可读发布摘要','','## 对外接口变更','','- 标识符 auth&#95;token 与 hex&#x5f;id','- 结论仍需人工复核','','| 接口 | 影响 |','| --- | --- |','| GET /api&#95;user | 待确认 |','','[证据 E1](#evidence-1)','','<details>','<summary>技术附录 · 证据索引</summary>','','<a id="evidence-1"></a>','','### 差异证据','','仅供复核的细节。','','</details>','','源文本：<script>window.fixtureInjected=true</script>','<img src="https://attacker.invalid/beacon" onerror="window.fixtureInjected=true">','[危险跳转](javascript:window.fixtureInjected=true)','![外部图片](https://attacker.invalid/image.png)','','~~~js','const literal = "auth&#95;token <script>not executable</script>";','~~~'].join('\n');
@@ -345,7 +357,7 @@ test('unknown paid work in A blocks installation and refs in B while downloads r
  await page.evaluate(()=>window.fixture.configure({holdGenerate:true}));await consent(page).check();await generate(page).click();await expect.poll(async()=>(await stats(page)).modelCalls).toBe(2);
  await page.getByRole('button',{name:'取消模型任务',exact:true}).click();await expect(page.getByRole('button',{name:'恢复已完成报告',exact:true})).toBeVisible();
  await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await expect(report(page)).toContainText('本地证据 b');await expect(capture(page)).toBeDisabled();
- await expect(page.getByRole('button',{name:/^读取(?:远端|本地)分支\/标签$/})).toBeDisabled();
+ await expect(page.getByRole('button',{name:/^读取(?:远端|本地)分支\/标签$/,includeHidden:true})).toBeDisabled();
  await page.getByText(/插件版本与更新 ·/).click();const update=page.getByRole('button',{name:'检查更新',exact:true});if(await update.isEnabled())await update.click();
  const install=page.getByRole('button',{name:'更新到 99.0.0',exact:true});if(await install.count())await expect(install).toBeDisabled();
  const before=await stats(page);expect(await downloadCurrent(page)).toContain('本地证据 b');expect((await stats(page)).calls).toEqual(before.calls);
@@ -358,7 +370,7 @@ test('native installation lease blocks cross-session refs and collection but pre
  await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await selectGit(page);await collect(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
  await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await page.getByText(/插件版本与更新 ·/).click();await page.getByRole('button',{name:'检查更新',exact:true}).click();await page.getByRole('checkbox',{name:/我确认将此插件更新到/}).check();await page.getByRole('button',{name:'更新到 99.0.0',exact:true}).click();
  await expect.poll(async()=>(await stats(page)).installCalls).toBe(1);await page.getByRole('button',{name:'测试会话 B',exact:true}).click();
- await expect(capture(page)).toBeDisabled();await expect(page.getByRole('button',{name:/^读取(?:远端|本地)分支\/标签$/})).toBeDisabled();const before=await stats(page);expect(await downloadCurrent(page)).toContain('本地证据 b');expect((await stats(page)).calls).toEqual(before.calls);
+ await expect(capture(page)).toBeDisabled();await expect(page.getByRole('button',{name:/^读取(?:远端|本地)分支\/标签$/,includeHidden:true})).toBeDisabled();const before=await stats(page);expect(await downloadCurrent(page)).toContain('本地证据 b');expect((await stats(page)).calls).toEqual(before.calls);
  await page.evaluate(()=>window.fixture.releaseInstall());await expect(page.getByRole('alert').filter({hasText:/重启/}).first()).toBeVisible();await assertPaidProof(page,{dispatches:0,installs:1});
 });
 
@@ -374,7 +386,7 @@ for(const width of [320,680,1280])test('viewport '+width+' supports long paths, 
  await expect(page.getByRole('checkbox',{name:/^纳入项目 [0-9]+$/})).toHaveCount(500);
  const search=page.getByRole('textbox',{name:'搜索项目路径',exact:true});await search.fill('project-499');
  const only=page.getByRole('checkbox',{name:'纳入项目 500',exact:true});await only.focus();await page.keyboard.press('Space');await expect(only).toBeChecked();
- await page.getByRole('combobox',{name:'GIT 分支 A 500',exact:true}).fill('main');await page.getByRole('combobox',{name:'GIT 分支 B 500',exact:true}).fill('release');
+ await expandProject(page,500);await page.getByRole('combobox',{name:'GIT 分支 A 500',exact:true}).fill('main');await page.getByRole('combobox',{name:'GIT 分支 B 500',exact:true}).fill('release');
  const path=page.getByRole('textbox',{name:'项目路径 500',exact:true});await path.focus();await expect(path).toBeFocused();expect(await path.inputValue()).toContain('very-long-path');
  await expect(page.getByRole('button',{name:'开始执行 · 采集差异',exact:true})).toBeEnabled();
  const dimensions=await page.evaluate(()=>({scroll:document.documentElement.scrollWidth,viewport:innerWidth}));expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.viewport+2);
