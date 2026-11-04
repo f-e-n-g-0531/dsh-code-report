@@ -98,6 +98,14 @@ test('single request preview distinguishes local coverage and budgeted excerpts,
  const observed=await stats(page);expect(observed.modelCalls).toBe(1);expect(observed.calls.filter(call=>call.endpoint==='generate')).toHaveLength(1);expect(paidReads(observed.calls).length).toBeGreaterThanOrEqual(2);expect(observed.installCalls).toBe(0);
 });
 
+test('local capture is evidence with no analysis claims and only explicit model approval produces release report export',async({page})=>{
+ await open(page);await selectGit(page);await collect(page);await expect(page.getByRole('heading',{name:'采集证据（尚未生成发布报告）',exact:true})).toBeVisible();await expect(page.getByRole('heading',{name:'Markdown 报告',exact:true})).toHaveCount(0);await expect(page.getByRole('status').filter({hasText:'仅采集完成，未调用模型；尚无改动解释、接口影响分析或测试建议。'})).toBeVisible();await workflow(page,['complete','active','pending']);expect((await stats(page)).modelCalls).toBe(0);
+ const before=await stats(page),pending=page.waitForEvent('download');await page.getByRole('button',{name:'下载证据清单 .md',exact:true}).click();const evidence=await pending;expect(evidence.suggestedFilename()).toMatch(/^captured-evidence-\d{4}-\d{2}-\d{2}[.]md$/);expect(await readFile(await evidence.path(),'utf8')).toContain('本地证据 a');expect((await stats(page)).calls).toEqual(before.calls);await expect(page.getByRole('button',{name:'下载 .md 文件',exact:true})).toHaveCount(0);
+ await route(page);await expect(generate(page)).toBeDisabled();expect((await stats(page)).modelCalls).toBe(0);await consent(page).check();await generate(page).click();await expect(page.getByRole('heading',{name:'Markdown 报告',exact:true})).toBeVisible();await expect(page.getByRole('heading',{name:'采集证据（尚未生成发布报告）',exact:true})).toHaveCount(0);await workflow(page,['complete','complete','complete']);
+ const generated=page.waitForEvent('download');await page.getByRole('button',{name:'下载 .md 文件',exact:true}).click();const analysis=await generated;expect(analysis.suggestedFilename()).toMatch(/^release-report-\d{4}-\d{2}-\d{2}[.]md$/);expect(await readFile(await analysis.path(),'utf8')).toContain('模型报告 a');expect((await stats(page)).modelCalls).toBe(1);expect((await stats(page)).calls.filter(call=>call.endpoint==='generate')).toHaveLength(1);
+ await page.getByRole('textbox',{name:'报告标题',exact:true}).fill('新采集范围');await collect(page);await expect(page.getByRole('heading',{name:'采集证据（尚未生成发布报告）',exact:true})).toBeVisible();const previous=page.waitForEvent('download');await page.getByRole('button',{name:'下载上一份模型报告',exact:true}).click();const prior=await previous;expect(prior.suggestedFilename()).toMatch(/^release-report-\d{4}-\d{2}-\d{2}[.]md$/);expect(await readFile(await prior.path(),'utf8')).toContain('模型报告 a');expect((await stats(page)).modelCalls).toBe(1);
+});
+
 test('real DOM scan → select → local evidence → explicit consent → safe download',async({page})=>{
  const errors=await open(page);await selectGit(page);await workflow(page,['active','pending','pending']);await collect(page);await workflow(page,['complete','active','pending']);
  expect((await stats(page)).modelCalls).toBe(0);await route(page);await expect(generate(page)).toBeDisabled();
@@ -334,7 +342,7 @@ async function assertPaidProof(page,{dispatches=1,installs=0}={}){
  const identifiers=value.calls.filter(call=>call.endpoint==='generate').map(call=>call.payload.operationId);expect(new Set(identifiers).size).toBe(identifiers.length);
  return value;
 }
-async function downloadCurrent(page){const pending=page.waitForEvent('download');await page.getByRole('button',{name:'下载 .md 文件',exact:true}).click();return readFile(await (await pending).path(),'utf8');}
+async function downloadCurrent(page){const pending=page.waitForEvent('download');await page.getByRole('button',{name:'下载证据清单 .md',exact:true}).click();const download=await pending;expect(download.suggestedFilename()).toMatch(/^captured-evidence-\d{4}-\d{2}-\d{2}[.]md$/);return readFile(await download.path(),'utf8');}
 
 test('terminal paid completion and stopped proof clear a previously polled analyzing state',async({page})=>{
  for(const failGenerate of [false,true]){

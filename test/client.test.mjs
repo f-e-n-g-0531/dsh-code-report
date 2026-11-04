@@ -102,6 +102,16 @@ test('workspace groups workflow stages without changing initial approval state',
  assert.equal(all.some(node=>node.props?.onGenerate),false);
 });
 
+test('captured evidence and strict analysis kinds have distinct UI without falsely completed workflow',async()=>{
+ const saved={schema:1,title:'capture',context:'',provider:'',model:'',rows:[{...fresh(),a:'main',b:'release'}]},calls=[];
+ const instance=harness(saved,{rpc:async(_channel,endpoint)=>{calls.push(endpoint);if(endpoint==='runtime-info')return {ok:true,value:{packageName:PACKAGE_NAME,runningVersion:version,protocol:PROTOCOL_VERSION}};if(endpoint==='preview-start')return {ok:true,value:{status:'pending'}};if(endpoint==='result')return {ok:true,value:{status:'completed',result:{previewId:'p',expiresAt:Date.now()+60000,markdown:'# evidence'}}};throw new Error('unexpected '+endpoint);}});
+ instance.render();instance.effects.find(item=>item.deps?.length===1&&item.deps[0]===0).fn();await new Promise(resolve=>setImmediate(resolve));await nodes(instance.render()).find(node=>node.type==='button'&&node.props.children==='开始执行 · 采集差异').props.onClick();
+ const tree=instance.render(),all=nodes(tree),section=all.find(node=>node.props?.result?.kind==='local');assert.ok(section);assert.equal(calls.includes('generate'),false);
+ const strings=tree=>nodes(tree).flatMap(node=>[node.props?.children]).flat(Infinity).filter(item=>typeof item==='string').join(' ');
+ for(const [kind,heading,button] of [['local','采集证据（尚未生成发布报告）','下载证据清单 .md'],['analysis','Markdown 报告','下载 .md 文件'],[undefined,'未分类结果（尚不能确认是发布报告）','下载未分类结果 .md']]){const rendered=section.type({...section.props,result:{...section.props.result,kind}}),elements=nodes(rendered);assert.ok(elements.some(node=>node.type==='h2'&&node.props.children===heading));assert.ok(elements.some(node=>node.type==='button'&&node.props.children===button));if(kind!=='analysis')assert.match(strings(rendered),/不会自动调用模型/);if(kind==='local')assert.match(strings(rendered),/仅采集完成，未调用模型.*尚无改动解释、接口影响分析或测试建议/);}
+ const title=all.find(node=>node.type==='input'&&node.props.value==='capture');title.props.onChange({target:{value:'edited'}});const navigation=nodes(instance.render()).find(node=>node.type==='nav');assert.deepEqual(nodes(navigation).filter(node=>node.props?.className==='cr-stage').map(node=>node.props['data-state']),['active','pending','pending']);
+});
+
 test('client registers matching main/sidebar slots and uses active session identity',()=>{
  const instance=harness(),registrations=instance.registrations;
  assert.equal(registrations.length,2);assert.equal(registrations[0].options.key,registrations[1].options.id);
