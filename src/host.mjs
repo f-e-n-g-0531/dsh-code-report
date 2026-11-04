@@ -1,4 +1,5 @@
 import {randomUUID,createHash} from 'node:crypto';
+import {snapshotJsonBytes} from './snapshot-json.mjs';
 import {runtimeInfo,checkUpdate} from './updates.mjs';
 import {collect,discover,listRefs} from './collect.mjs';
 import {createAnalysisPlan,analyzeReport,markdown} from './report.mjs';
@@ -107,7 +108,7 @@ function createProgressStore(ctx,now,backendInstanceId){
 }
 function publicPlan(plan){
   if(!plan)return null;
-  return {id:plan.id,formatVersion:plan.formatVersion,evidenceVersion:plan.evidenceVersion,inputBudget:plan.inputBudget,estimated:plan.estimated,batches:plan.batches.map(({id,evidenceIds,inputBytes})=>({id,evidenceIds,inputBytes})),coverage:plan.coverage};
+  return {id:plan.id,strategy:plan.strategy,mode:plan.mode,formatVersion:plan.formatVersion,evidenceVersion:plan.evidenceVersion,inputBudget:plan.inputBudget,estimated:plan.estimated,batches:plan.batches.map(({id,evidenceIds,inputBytes})=>({id,evidenceIds,inputBytes})),coverage:plan.coverage};
 }
 function routeKey(route){
   if(!route||typeof route.provider!=='string'||!route.provider.trim()||route.provider.length>200||typeof route.model!=='string'||!route.model.trim()||route.model.length>200)throw problem('input','请填写 DSH 已配置的提供方与模型 ID');
@@ -115,7 +116,12 @@ function routeKey(route){
 }
 
 // Dependencies are trusted in-process test seams, never fields accepted over RPC.
-export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,plan=createAnalysisPlan,analyze=analyzeReport,now=()=>Date.now()}={}){
+const defaultAnalysisPlan=(snapshot,options={})=>createAnalysisPlan(snapshot,{inputBudget:64000,...options,strategy:'single-request'});
+function localManifest(snapshot){
+ const files=snapshot.repositories.flatMap(r=>r.files.map(path=>({repository:r.path,path,status:'unknown',sentMetadata:false,sentText:false})));
+ return {strategy:'single-request',originalSourceBytes:snapshot.repositories.reduce((n,r)=>n+Buffer.byteLength(r.diff),0)+snapshot.context.reduce((n,c)=>n+Buffer.byteLength(c.text),0),fullManifestFiles:files.length,files};
+}
+export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,plan=defaultAnalysisPlan,analyze=analyzeReport,now=()=>Date.now()}={}){
   const backendInstanceId=randomUUID();
   const previews=createPreviewStore(ctx,now),progress=createProgressStore(ctx,now,backendInstanceId);let active=0;
   const assertSession=async(payload,cwd,signal)=>{if(await sessionCwd(ctx,payload.sessionId,signal)!==cwd)throw problem('session-changed','会话目录已变更');};
@@ -125,10 +131,10 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
     preview:async({payload,cwd,signal,update})=>{
       const snapshot=await capture(cwd,payload.request,signal,update);
       await assertSession(payload,cwd,signal);signal.throwIfAborted();
-      const previewId=randomUUID(),time=now(),bytes=Buffer.byteLength(JSON.stringify(snapshot));let analysisPlan=null,planError=null;
+      const previewId=randomUUID(),time=now(),bytes=snapshotJsonBytes(snapshot);let analysisPlan=null,planError=null;
       try{analysisPlan=plan(snapshot);}catch(error){planError={code:'code-report/plan-invalid',message:error.message};}
       previews.add(previewId,{snapshot,cwd,sessionId:payload.sessionId,time,bytes,used:false,plan:analysisPlan,completed:new Map(),routeKey:null});
-      return {previewId,expiresAt:time+PREVIEW_TTL,bytes,repositories:snapshot.repositories.map(({diff,...r})=>r),context:snapshot.context.map(({text,...c})=>c),limitations:snapshot.limitations,markdown:markdown(snapshot),analysisPlan:publicPlan(analysisPlan),planError};
+      return {previewId,expiresAt:time+PREVIEW_TTL,bytes,repositories:snapshot.repositories.map(({diff,...r})=>r),context:snapshot.context.map(({text,...c})=>c),limitations:snapshot.limitations,markdown:markdown(snapshot,null,null,{evidenceManifest:analysisPlan?.strategy==='single-request'?analysisPlan.coverage:plan===defaultAnalysisPlan?localManifest(snapshot):null}),analysisPlan:publicPlan(analysisPlan),planError};
     },
     'analysis-plan':async({payload,cwd,signal})=>{
       const p=previews.claim(payload,cwd);signal.throwIfAborted();
@@ -149,6 +155,7 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
       const llm={async *stream(input){
         await assertSession(payload,cwd,signal);signal.throwIfAborted();
         if(!dispatched&&now()-p.time>=PREVIEW_TTL)throw problem('preview-expired','预览已过期，请重新采集');
+        if(p.plan.strategy==='single-request'&&dispatched)throw problem('analysis-plan','单次摘要禁止隐式第二次模型请求；失败后须重新明确确认');
         dispatched=true;if(operation)operation.dispatchCount++;yield* ctx.llm.stream(input);
       }};
       update({phase:'analyzing',label:'正在分析固定快照；分片内部进度不可量化',completed:p.completed.size,total:p.plan.batches.length});
@@ -159,7 +166,7 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
         // Still recheck authoritative ownership without borrowing the delivery signal.
         await assertSession(payload,cwd,AbortSignal.timeout(15000));
         if(operation){operation.completedBatches=p.completed.size;operation.totalBatches=p.plan.batches.length;}
-        const value={markdown:markdown(p.snapshot,result.markdown,payload.route,{structured:true}),coverage:result.coverage};
+        const value={markdown:markdown(p.snapshot,result.markdown,payload.route,{structured:true,evidenceManifest:p.plan.strategy==='single-request'?p.plan.coverage:null}),coverage:result.coverage};
         progress.finish(operation,value);previews.discard(payload.previewId);return value;
       }catch(error){
         if(error.completed instanceof Map)p.completed=error.completed;

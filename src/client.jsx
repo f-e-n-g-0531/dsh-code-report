@@ -2,6 +2,7 @@ import React,{useState,useRef,useEffect} from 'react';
 import css from './style.css';
 import UpdatePanel from './UpdatePanel.jsx';
 import RepositoryCards from './RepositoryCards.jsx';
+import ReportDocument from './ReportDocument.jsx';
 import {version} from '../package.json';
 import {runtimeGate} from './protocol.mjs';
 import {createUpdateController} from './update-client.mjs';
@@ -66,7 +67,7 @@ export function apply(ctx){
   },[lifecycleState.lastCompleted,lifecycleState.lastFailure]);
   const [busy,setBusy]=useState(''),[error,setError]=useState(''),[progress,setProgress]=useState(null),[progressWarning,setProgressWarning]=useState('');
   const [scanState,setScanState]=useState('idle'),[scanError,setScanError]=useState(''),[scanWarnings,setScanWarnings]=useState([]),[visited,setVisited]=useState(null);
-  const [inputBudget,setInputBudget]=useState('24000'),[planDirty,setPlanDirty]=useState(false),[now,setNow]=useState(Date.now);
+  const [inputBudget,setInputBudget]=useState('64000'),[planDirty,setPlanDirty]=useState(false),[now,setNow]=useState(Date.now);
   const initialScanStarted=useRef(false),controller=useRef(null),mounted=useRef(true);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;controller.current?.abort();};},[]);
   useEffect(()=>{
@@ -167,7 +168,7 @@ export function apply(ctx){
    return perform('采集版本差异',async signal=>{
     setPreview(null);setConsent(false);setPlanDirty(false);
     const value=await tracked('preview',{sessionId:session.id,request:{title,repositories:rows.filter(row=>row.enabled).map(({enabled,...row})=>row),contextPaths:context.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),versionContexts,allowSvnNetwork:network,allowBatches:true}},signal);
-    if(!signal.aborted&&mounted.current){setNow(Date.now());setPreview(value);setInputBudget(String(value.analysisPlan?.inputBudget||24000));keepResult({markdown:value.markdown,stale:false,kind:'local'});}
+    if(!signal.aborted&&mounted.current){setNow(Date.now());setPreview(value);setInputBudget(String(value.analysisPlan?.inputBudget||64000));keepResult({markdown:value.markdown,stale:false,kind:'local'});}
    });
   };
   const generateReason=generationBlocker({preview,now,compatibility,busy:busy||(globalBusy?'其他任务执行中':''),consent,provider,model,pendingRecovery})||(planDirty?'输入预算已变化，请先更新分析计划。':'');
@@ -222,7 +223,7 @@ export function apply(ctx){
       <button disabled={rows.length>=500} onClick={()=>{invalidate();setRows([...rows,fresh()]);}}>＋ 添加项目</button>
       <details className="cr-guide"><summary>版本填写与远端读取说明</summary><p className="cr-hint">自动扫描当前工作区，保留已经填写的版本。路径相对于工作区，根目录填「.」。版本留空默认取对应 A/B 分支最新提交；两侧分支相同且版本均留空时无差异。Git 默认远端实时读取，可填 main / develop / origin/develop 等；会联网并可能要求身份验证，在隔离临时目录完整抓取，不创建业务本地分支、不修改业务 refs 或工作区。显式选择“本地离线”才仅用本地对象、不自动 fetch；远端失败不回退本地。SVN 仍需历史读取授权。</p></details>
       <label className="cr-check"><input type="checkbox" checked={network} onChange={event=>{invalidate();setNetwork(event.target.checked);}}/> 允许通过 SVN 工作副本地址读取历史版本（可能访问网络；此勾选随工作区配置保存，不保存密码）</label>
-      <p className="cr-hint">采集不设固定证据总量上限，分析按单片输入预算自动规划；发送前核对实际文件、字节和片数，多片可能多次计费，仍须再次确认。</p>
+      <p className="cr-hint">本地采集不设固定证据总量上限；默认生成一次请求的摘要分析，只发送预算内的本地摘要与选定片段，不发送全部正文。本地完整统计不等于模型全文覆盖，仍须核对范围并明确确认费用；失败不会自动重试。</p>
      </fieldset>
      <details className="cr-optional"><summary>2. 附带项目源码（可选）{context.trim()||versionContext.trim()?' · 已填写':''}</summary><fieldset disabled={!!busy||globalBusy}><legend>源码路径</legend><p>每行填写一个工作区内的文件或文件夹路径，根目录可填「.」。文件夹递归展开；不会自动附带未填写的目录或扫描调用链。</p>
       <textarea aria-label="源码上下文路径" rows={4} placeholder={'app/src/api.ts\napp/src/components'} value={context} onChange={event=>{invalidate();setContext(event.target.value);}}/>
@@ -251,22 +252,27 @@ function sideLabel(row,side){return row.type==='svn'?row['branch'+side]+' @ r'+r
 function downloadMarkdown(markdown){const url=URL.createObjectURL(new Blob([markdown],{type:'text/markdown;charset=utf-8'}));const anchor=document.createElement('a');anchor.href=url;anchor.download='release-report-'+new Date().toISOString().slice(0,10)+'.md';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function PreviewSection({preview,busy,expired,provider,model,consent,setProvider,setModel,setConsent,generateReason,onGenerate,onCapture,inputBudget,budgetValid,planDirty,onBudget,onReplan,compatibility,now}){
  const deadline=typeof preview.expiresAt==='number'?preview.expiresAt:Date.parse(preview.expiresAt);
+ const plan=preview.analysisPlan,coverage=plan?.coverage||{},single=plan?.strategy==='single-request'||plan?.mode==='single-request'||coverage.strategy==='single-request';
  return <fieldset className="cr-panel cr-preview" disabled={!!busy}><legend>3. 确认分析范围</legend>
-  <div className="cr-preview-metrics"><div className="cr-metric"><span>固定项目</span><strong>{preview.repositories.length}</strong></div><div className="cr-metric"><span>变更路径</span><strong>{preview.repositories.reduce((sum,row)=>sum+row.files.length,0)}</strong></div><div className="cr-metric"><span>源码文件</span><strong>{preview.context.length}</strong></div><div className="cr-metric"><span>模型分片</span><strong>{preview.analysisPlan?.batches?.length??'—'}</strong></div></div>
+  <div className="cr-preview-metrics"><div className="cr-metric"><span>固定项目</span><strong>{preview.repositories.length}</strong></div><div className="cr-metric"><span>变更路径</span><strong>{preview.repositories.reduce((sum,row)=>sum+row.files.length,0)}</strong></div><div className="cr-metric"><span>源码文件</span><strong>{preview.context.length}</strong></div><div className="cr-metric"><span>{single?'模型请求':'模型分片'}</span><strong>{plan?.batches?.length??'—'}</strong></div></div>
   <p>证据 {preview.bytes} 字节（约 {(preview.bytes/1024).toFixed(1)} KiB）；{preview.repositories.length} 个项目，{preview.repositories.reduce((total,row)=>total+(row.files?.length||0),0)} 条变更路径，{preview.context.length} 个实际源码文件（目录已展开）。{expired?'快照已过期。':'快照剩余约 '+Math.max(0,Math.ceil((deadline-now)/1000))+' 秒。'}</p>
   {expired&&<div className="cr-error" role="status">快照已过期，请重新采集并确认发送。<button disabled={!!compatibility} onClick={onCapture}>重新采集</button></div>}
   <ul className="cr-preview-repos">{preview.repositories.map((row,index)=><li key={index}><strong>{row.path}</strong> · {row.type} · {row.files.length} 个变更路径<br/><code>{sideLabel(row,'A')} → {sideLabel(row,'B')}</code>{row.type==='git'&&<p>{row.gitSource==='remote'?'远端实时读取 · '+(row.remote||'origin')+' · 观察时间 '+(row.observedAt||'未记录')+'（本次快照，之后不自动更新）':row.gitSource==='local'?'本地离线读取':'Git 来源未记录'}</p>}<br/>差异解码 {row.diffEncoding||'未记录'} · 原始字节 SHA-256 {row.rawDiffHash||'未记录'}</li>)}</ul>
   <details open><summary>查看源码上下文及限制</summary><p className="cr-hint">以下为本次实际附带的文件清单（目录已展开）；请核对来源与排除限制后再授权模型。</p><ul aria-label="实际源码文件清单">{preview.context.map((item,index)=><li key={index}>{item.repository?item.repository+' / ':''}{item.path} · {item.provenance==='version-A'?'版本 A':item.provenance==='version-B'?'版本 B':'当前工作区'} {item.revision||''} · 编码 {item.encoding||'未记录'} · 原始字节 SHA-256 {item.rawHash||item.hash}</li>)}</ul><ul aria-label="源码及采集限制">{preview.limitations.map((text,index)=><li key={index}>{text}</li>)}</ul></details>
-  <div className="cr-budget-row"><label>单片输入预算（保守字节估算，非 token）<input aria-label="单片输入预算" type="number" min={4000} max={64000} value={inputBudget} onChange={event=>onBudget(event.target.value)}/></label>
+  <div className="cr-budget-row"><label>{single?'单次输入预算（保守字节估算，非 token）':'单片输入预算（保守字节估算，非 token）'}<input aria-label={single?'单次输入预算':'单片输入预算'} type="number" min={4000} max={64000} value={inputBudget} onChange={event=>onBudget(event.target.value)}/></label>
   <button disabled={expired||!budgetValid||!!compatibility} onClick={onReplan}>更新分析计划</button></div>
   {!budgetValid&&<p role="alert">输入预算必须是 4000–64000 的整数。</p>}{planDirty&&<p role="status">预算已变更，请更新分析计划并重新确认。</p>}
   {preview.planError&&<p className="cr-error" role="alert">分析计划尚不可用：{preview.planError.message}。可调整预算重新规划；本地证据报告仍可下载。</p>}
-  <p className="cr-hint">本计划 {preview.analysisPlan?.batches?.length??0} 片，按顺序调用模型，可能产生多次费用；失败重试仅复用宿主保留的同计划、同路由已完成分片，每次仍须确认。更换模型路由或更新分析计划将重跑全部分片，可能再次计费。4000–64000 仅为合法输入范围，不保证一定可规划；4000 等较小预算可能连系统提示和元数据都容不下，此时请提高预算或缩小范围。字节估算也不能保证适配所有模型。</p>
+  {single&&<SingleRequestCoverage coverage={coverage}/>}
+  <p className="cr-hint">{single?'本计划仅一次模型请求，发送预算内本地摘要和明确选择的片段，不是全部正文；失败不会自动重试。更换模型路由、更新分析计划或再次明确确认后重试可能再次计费。':'本计划 '+(plan?.batches?.length??0)+' 片，按顺序调用模型，可能产生多次费用；失败重试仅复用宿主保留的同计划、同路由已完成分片，每次仍须确认。更换模型路由或更新分析计划将重跑全部分片，可能再次计费。'}4000–64000 仅为合法输入范围，不保证一定可规划；4000 等较小预算可能连系统提示和元数据都容不下，此时请提高预算或缩小范围。字节估算也不能保证适配所有模型。</p>
   <div className="cr-route"><label>DSH 提供方 ID<input value={provider} placeholder="已在 DSH 配置的 provider ID" onChange={event=>{setProvider(event.target.value);setConsent(false);}}/></label><label>模型 ID<input value={model} placeholder="该提供方支持的 model ID" onChange={event=>{setModel(event.target.value);setConsent(false);}}/></label></div>
   <p className="cr-hint">本插件暂未接入模型列表发现，请手填已在 DSH 配置的提供方和模型路由 ID；不会自动沿用聊天模型。</p>
-  <label className="cr-check cr-consent"><input type="checkbox" checked={consent} disabled={expired||planDirty||!preview.analysisPlan} onChange={event=>setConsent(event.target.checked)}/> 我确认向上方指定模型发送本次差异及所选源码（含文件名、路径与内容），并确认分批调用可能多次计费</label>
+  <label className="cr-check cr-consent"><input type="checkbox" checked={consent} disabled={expired||planDirty||!preview.analysisPlan} onChange={event=>setConsent(event.target.checked)}/> {single?'我确认向上方指定模型发送本次预算内摘要与所选片段（含文件名、路径与内容），理解未发送正文不属于模型全文分析，并确认一次请求可能计费':'我确认向上方指定模型发送本次差异及所选源码（含文件名、路径与内容），并确认分批调用可能多次计费'}</label>
   <div className="cr-actions"><button className="cr-primary" disabled={!!generateReason} onClick={onGenerate}>开始执行 · 生成报告</button><span>{generateReason||'也可直接导出下方本地证据报告，不调用模型；对外接口尚未分析。'}</span></div>
  </fieldset>;
+}
+function SingleRequestCoverage({coverage}){
+ return <section className="cr-guide" aria-label="单次摘要覆盖范围"><strong>单次摘要分析 · 非模型全文覆盖</strong><p>本地完整统计：本地差异文本字节 {coverage.originalSourceBytes??'未提供'}（已解码 UTF-8 口径，非原始网络字节），完整文件清单 {coverage.fullManifestFiles??'未提供'} 个；发送文件专属元数据或片段 {coverage.sentFileCount??'未提供'} 个，其中实际发送正文片段 {coverage.sentTextFileCount??'未提供'} 个；完全未发送文件专属证据 {coverage.omittedFileCount??'未提供'} 个；生成物 {coverage.generatedFileCount??'未提供'} 个。</p><p>本地完整统计不等于模型全文覆盖。仅发送本地摘要及预算内明确选择的片段；未发送的正文无法据此宣称已分析，已发送文件也不代表其全文已发送。生成物可能只发送元数据，不据此推断接口或行为没有变化。</p></section>;
 }
 function ProgressSection({progress}){
  const counted=progress.total>0&&['collecting','analyzing','completed'].includes(progress.phase);
@@ -275,7 +281,8 @@ function ProgressSection({progress}){
 function ReportSection({result,onDownload,onClear}){
  return <section className="cr-result"><div className="cr-actions"><h2>Markdown 报告</h2><button onClick={onDownload}>下载 .md 文件</button><button onClick={onClear}>清除报告</button></div>
   {result.stale&&<p className="cr-stale" role="status">已有报告与当前草稿可能不同，旧结果已保留，可继续下载；重新采集后才用于当前范围分析。</p>}
-  <p className="cr-hint">以下以纯文本展示，不执行报告中的 HTML；模型建议需要人工复核，不代表测试已通过。结果仅在当前插件实例内按会话暂存当前报告及最近成功模型报告（最多 16 个会话，按会话数量淘汰；大报告更耗内存），刷新、重载或宿主重启前请下载；不写入浏览器本地存储。</p>
-  {result.coverage&&<><p role="status">已处理证据 {result.coverage.processed??result.coverage.analyzed??0} / {result.coverage.total??0}；未处理 {result.coverage.remaining??0}；完成分片 {result.coverage.completedBatches??0} / {result.coverage.totalBatches??0}；被引用 {result.coverage.cited??0}。引用有效不代表结论正确，仍需人工复核。</p><details><summary>分析覆盖信息</summary><pre>{JSON.stringify(result.coverage,null,2)}</pre></details></>}<pre className="cr-report">{result.markdown}</pre>
+  <p className="cr-hint">以下为安全排版的阅读视图，不执行报告中的 HTML、外部链接或图片；原始 Markdown 可在下方展开检查。模型建议需要人工复核，不代表测试已通过。结果仅在当前插件实例内按会话暂存当前报告及最近成功模型报告（最多 16 个会话，按会话数量淘汰；大报告更耗内存），刷新、重载或宿主重启前请下载；不写入浏览器本地存储。</p>
+  {result.coverage?.strategy==='single-request'&&<SingleRequestCoverage coverage={result.coverage}/>}
+  {result.coverage&&<><p role="status">{result.coverage.strategy==='single-request'?'已处理摘要证据':'已处理证据'} {result.coverage.processed??result.coverage.analyzed??0} / {result.coverage.total??0}；未处理 {result.coverage.remaining??0}；完成分片 {result.coverage.completedBatches??0} / {result.coverage.totalBatches??0}；被引用 {result.coverage.cited??0}。引用有效不代表结论正确，仍需人工复核。</p><details><summary>分析覆盖信息</summary><pre>{JSON.stringify(result.coverage,null,2)}</pre></details></>}<ReportDocument markdown={result.markdown}/><details className="cr-report-raw"><summary>查看原始 Markdown</summary><pre>{result.markdown}</pre></details>
  </section>;
 }

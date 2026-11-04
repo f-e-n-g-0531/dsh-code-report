@@ -12,7 +12,9 @@ const ok=value=>({ok:true,value});
 const execution=(phase,{dispatched=true,available=false}={})=>({backendInstanceId:'fixture-backend',dispatch:dispatched?'dispatched':'not-dispatched',dispatchCount:dispatched?1:0,completedBatches:available?(settings.analysisBatches||1):0,totalBatches:settings.analysisBatches||1,resultAvailability:available?'available':'unavailable',phase});
 const fail=(message,code='code-report/input',extra={})=>({ok:false,error:{code,message,details:{fixture:true,...extra}}});
 const info=()=>({packageName:PACKAGE_NAME,protocol:PROTOCOL_VERSION,runningVersion:settings.runtimeMismatch?'0.0.0':(settings.runningVersion||version)});
-const plan=()=>({id:'plan-fixture',inputBudget:24000,estimated:true,batches:Array.from({length:settings.analysisBatches||1},(_,index)=>({id:'batch-'+(index+1),evidenceIds:['e-'+(index+1)],inputBytes:100})),coverage:{total:settings.analysisBatches||1,excluded:0}});
+// Single-request fixtures are contract mocks, not real compaction or coverage calculations.
+const singleCoverage=()=>({strategy:'single-request',originalSourceBytes:987654,fullManifestFiles:12,sentFileCount:7,sentTextFileCount:2,omittedFileCount:5,generatedFileCount:4,total:7,processed:7,remaining:0,completedBatches:1,totalBatches:1,cited:0});
+const plan=()=>settings.singleRequest?{id:'plan-single-fixture',strategy:'single-request',inputBudget:settings.singleBudget||64000,estimated:true,batches:[{id:'batch-single',evidenceIds:['summary-1'],inputBytes:4200}],coverage:singleCoverage()}:{id:'plan-fixture',inputBudget:24000,estimated:true,batches:Array.from({length:settings.analysisBatches||1},(_,index)=>({id:'batch-'+(index+1),evidenceIds:['e-'+(index+1)],inputBytes:100})),coverage:{total:settings.analysisBatches||1,excluded:0}};
 function gate(name){return new Promise(resolve=>{gates.set(name,resolve);});}
 function release(name){const resolve=gates.get(name);if(resolve){gates.delete(name);resolve();}}
 const wait=(ms,signal)=>new Promise((resolve,reject)=>{
@@ -56,7 +58,7 @@ async function rpc(channel,endpoint,payload,signal){
   return ok({phase:'collecting',completed:0,total:1,label:'fixture 正在处理'});
  }
  if(endpoint==='release-preview'){previews.delete(payload.previewId);return ok({released:true});}
- if(endpoint==='analysis-plan')return ok({analysisPlan:plan(),...plan()});
+ if(endpoint==='analysis-plan'){if(settings.singleRequest)settings.singleBudget=payload.inputBudget;return ok({analysisPlan:plan(),...plan()});}
  if(endpoint==='preview'){
   const request=structuredClone(payload.request);
   await wait(settings.delayPreview,signal);settledPreviews++;
@@ -79,7 +81,7 @@ async function rpc(channel,endpoint,payload,signal){
    await wait(settings.delayGenerate);
    settledGenerations++;
    if(settings.failGenerate){const proof=execution('stopped');results.set(payload.operationId,{sessionId:payload.sessionId,status:'stopped',execution:proof});return fail('fixture 模型失败','code-report/analysis-failed',{execution:proof});}
-   const value={markdown:'# 模型报告 '+payload.sessionId+'\n## 对外接口变更\n待确认\n<script>window.fixtureInjected=true</script>',coverage:{total:settings.analysisBatches||1,completed:settings.analysisBatches||1,excluded:0}};
+   const value={markdown:settings.richReport||('# 模型报告 '+payload.sessionId+'\n## 对外接口变更\n待确认\n<script>window.fixtureInjected=true</script>'),coverage:settings.singleRequest?singleCoverage():{total:settings.analysisBatches||1,completed:settings.analysisBatches||1,excluded:0}};
    results.set(payload.operationId,{sessionId:payload.sessionId,status:'completed',value});
    if(settings.failGenerateResponse)throw new Error('fixture response lost after generation');
    return ok(value);

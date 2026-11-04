@@ -10,7 +10,7 @@ test.afterEach(async({page})=>{expect(pageErrors.get(page)||[],'no uncaught brow
 
 const capture=page=>page.getByRole('button',{name:'开始执行 · 采集差异',exact:true});
 const generate=page=>page.getByRole('button',{name:'开始执行 · 生成报告',exact:true});
-const report=page=>page.locator('pre.cr-report');
+const report=page=>page.locator('article.cr-report');
 const consent=page=>page.getByRole('checkbox',{name:/我确认向上方指定模型发送/});
 const stats=page=>page.evaluate(()=>window.fixture.getStats());
 async function open(page,options={}){
@@ -30,6 +30,27 @@ async function workflow(page,states){await expect(page.locator('.cr-stage')).toH
 async function collect(page){await capture(page).click();await expect(report(page)).toContainText('本地证据');}
 async function route(page){await page.getByRole('textbox',{name:'DSH 提供方 ID',exact:true}).fill('fixture');await page.getByRole('textbox',{name:'模型 ID',exact:true}).fill('mock');}
 async function analyze(page){await route(page);await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告');}
+
+test('reader report renders semantic headings tables decoded identifiers and inert source with collapsed appendices (contract mock)',async({page},info)=>{
+ const markdown=['# 模型报告 · 可读发布摘要','','## 对外接口变更','','- 标识符 auth&#95;token 与 hex&#x5f;id','- 结论仍需人工复核','','| 接口 | 影响 |','| --- | --- |','| GET /api&#95;user | 待确认 |','','[证据 E1](#evidence-1)','','<details>','<summary>技术附录 · 证据索引</summary>','','<a id="evidence-1"></a>','','### 差异证据','','仅供复核的细节。','','</details>','','源文本：<script>window.fixtureInjected=true</script>','<img src="https://attacker.invalid/beacon" onerror="window.fixtureInjected=true">','[危险跳转](javascript:window.fixtureInjected=true)','![外部图片](https://attacker.invalid/image.png)','','~~~js','const literal = "auth&#95;token <script>not executable</script>";','~~~'].join('\n');
+ await open(page,{richReport:markdown});await selectGit(page);await collect(page);await analyze(page);const document=report(page);await expect(document).toHaveCount(1);await expect(document.getByRole('heading',{name:'模型报告 · 可读发布摘要',level:1,exact:true})).toBeVisible();await expect(document.getByRole('heading',{name:'对外接口变更',level:2,exact:true})).toBeVisible();await expect(document.getByRole('listitem')).toHaveCount(2);await expect(document.getByRole('listitem').first()).toHaveText('标识符 auth_token 与 hex_id');
+ await expect(document.getByRole('table')).toBeVisible();await expect(document.getByRole('columnheader',{name:'接口',exact:true})).toBeVisible();await expect(document.getByRole('cell',{name:'GET /api_user',exact:true})).toBeVisible();await expect(document.locator('pre code')).toHaveText('const literal = "auth&#95;token <script>not executable</script>";');
+ const appendix=document.locator('details');await expect(appendix).toHaveCount(1);await expect(appendix).not.toHaveAttribute('open','');await expect(document.getByRole('heading',{name:'差异证据',exact:true})).not.toBeVisible();const raw=page.locator('.cr-report-raw');await expect(raw).not.toHaveAttribute('open','');await expect(raw.locator('pre')).not.toBeVisible();
+ await expect(document.getByRole('link',{name:'证据 E1',exact:true})).toHaveAttribute('href','#evidence-1');await expect(document.locator('script,img,iframe,object,embed,svg,[onerror],[onclick],a[href^="javascript:"],a[href^="http"]')).toHaveCount(0);await expect(document).toContainText('<script>window.fixtureInjected=true</script>');expect(await page.evaluate(()=>window.fixtureInjected)).toBeUndefined();
+ await appendix.locator('summary').click();await expect(document.getByRole('heading',{name:'差异证据',level:3,exact:true})).toBeVisible();await raw.locator('summary').click();await expect(raw.locator('pre')).toHaveText(markdown);await raw.locator('summary').click();await expect(raw.locator('pre')).not.toBeVisible();
+ const pending=page.waitForEvent('download');await page.getByRole('button',{name:'下载 .md 文件',exact:true}).click();const download=await pending;expect(await readFile(await download.path(),'utf8')).toBe(markdown);expect((await stats(page)).modelCalls).toBe(1);expect((await stats(page)).calls.filter(call=>call.endpoint==='generate')).toHaveLength(1);
+ await appendix.locator('summary').click();const image=info.outputPath('readable-report.png');await page.locator('.cr-result').screenshot({path:image});await info.attach('safe-readable-report',{path:image,contentType:'image/png'});
+});
+
+test('single request preview distinguishes local coverage and budgeted excerpts, replan resets consent and recovery never redispatches (contract mock)',async({page})=>{
+ await open(page,{singleRequest:true,failGenerateResponse:true,resultPending:true});await selectGit(page);await collect(page);
+ const scope=page.getByRole('region',{name:'单次摘要覆盖范围',exact:true});await expect(scope).toContainText('非模型全文覆盖');await expect(scope).toContainText('本地差异文本字节 987654');await expect(scope).toContainText('已解码 UTF-8 口径，非原始网络字节');await expect(scope).toContainText('完整文件清单 12 个');await expect(scope).toContainText('发送文件专属元数据或片段 7 个');await expect(scope).toContainText('实际发送正文片段 2 个');await expect(scope).toContainText('完全未发送文件专属证据 5 个');await expect(scope).toContainText('生成物 4 个');await expect(scope).toContainText('已发送文件也不代表其全文已发送');await expect(scope).toContainText('生成物可能只发送元数据');
+ const budget=page.getByRole('spinbutton',{name:'单次输入预算',exact:true});await expect(budget).toHaveValue('64000');await expect(page.getByRole('spinbutton',{name:'单片输入预算',exact:true})).toHaveCount(0);await expect(page.locator('.cr-preview-metrics')).toContainText('模型请求1');
+ await route(page);await expect(consent(page)).toHaveAccessibleName(/一次请求可能计费/);await expect(consent(page)).toHaveAccessibleName(/未发送正文不属于模型全文分析/);await expect(generate(page)).toBeDisabled();await consent(page).check();await budget.fill('48000');await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();await page.getByRole('button',{name:'更新分析计划',exact:true}).click();await expect(consent(page)).toBeEnabled();await expect(budget).toHaveValue('48000');
+ expect((await stats(page)).calls.filter(call=>call.endpoint==='analysis-plan').at(-1).payload.inputBudget).toBe(48000);expect((await stats(page)).modelCalls).toBe(0);await consent(page).check();await generate(page).click();
+ const recover=page.getByRole('button',{name:'恢复已完成报告',exact:true});await expect(recover).toBeVisible();expect((await stats(page)).modelCalls).toBe(1);await recover.click();await expect(recover).toBeEnabled();await page.evaluate(()=>window.fixture.configure({resultPending:false}));await recover.click();await expect(report(page)).toContainText('模型报告 a');await expect(scope).toContainText('本地完整统计不等于模型全文覆盖');await expect(scope).toContainText('完全未发送文件专属证据 5 个');
+ const observed=await stats(page);expect(observed.modelCalls).toBe(1);expect(observed.calls.filter(call=>call.endpoint==='generate')).toHaveLength(1);expect(observed.calls.filter(call=>call.endpoint==='result').length).toBeGreaterThanOrEqual(2);expect(observed.installCalls).toBe(0);
+});
 
 test('real DOM scan → select → local evidence → explicit consent → safe download',async({page})=>{
  const errors=await open(page);await selectGit(page);await workflow(page,['active','pending','pending']);await collect(page);await workflow(page,['complete','active','pending']);

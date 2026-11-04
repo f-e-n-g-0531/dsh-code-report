@@ -129,6 +129,24 @@
 .cr-root .cr-update{padding:12px 0;overflow-wrap:anywhere;font-size:12px}
 .cr-root .cr-update .cr-actions{margin:0}
 .cr-root .cr-report{margin:16px 0;padding:22px;max-height:720px;overflow:auto;border:1px solid var(--cr-border);border-radius:9px;background:var(--cr-raised);white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.85 ui-monospace,"Cascadia Code",monospace}
+.cr-root .cr-report-document{max-height:none;padding:clamp(18px,3vw,36px);background:var(--cr-card);font:14px/1.85 Inter,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;white-space:normal;color:var(--cr-text)}
+.cr-root .cr-report-document>h1,.cr-root .cr-report-document>h2,.cr-root .cr-report-document>h3,.cr-root .cr-report-document>p,.cr-root .cr-report-document>ul,.cr-root .cr-report-document>ol{max-width:88ch}
+.cr-root .cr-report-document h1{font-size:26px;margin:0 0 24px;line-height:1.45}
+.cr-root .cr-report-document h2{font-size:19px;margin:30px 0 14px;padding-top:18px;border-top:1px solid var(--cr-border);line-height:1.5}
+.cr-root .cr-report-document h3{font-size:16px;margin:22px 0 10px;line-height:1.5}
+.cr-root .cr-report-document h4,.cr-root .cr-report-document h5,.cr-root .cr-report-document h6{font-size:14px;margin:18px 0 8px}
+.cr-root .cr-report-document p{margin:10px 0 16px;white-space:pre-line}
+.cr-root .cr-report-document ul,.cr-root .cr-report-document ol{padding-left:24px;margin:12px 0 20px}
+.cr-root .cr-report-document li{margin:7px 0;overflow-wrap:anywhere}
+.cr-root .cr-report-document code{padding:2px 5px;border-radius:4px;background:var(--cr-raised);font:12px/1.7 ui-monospace,"Cascadia Code",monospace;overflow-wrap:anywhere}
+.cr-root .cr-report-document pre,.cr-root .cr-report-raw pre{padding:16px;border:1px solid var(--cr-border);border-radius:7px;background:var(--cr-raised);max-height:480px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.8 ui-monospace,"Cascadia Code",monospace}
+.cr-root .cr-report-document pre code{padding:0;background:none;white-space:pre-wrap}
+.cr-root .cr-report-table{overflow:auto;max-width:100%;margin:16px 0}
+.cr-root .cr-report-table table{border-collapse:collapse;font-size:12px;min-width:100%;text-align:left}
+.cr-root .cr-report-table th,.cr-root .cr-report-table td{border:1px solid var(--cr-border);padding:10px 12px;vertical-align:top;min-width:100px;overflow-wrap:anywhere}
+.cr-root .cr-report-table th{background:var(--cr-raised);font-weight:650}
+.cr-root .cr-report-appendix,.cr-root .cr-report-raw{padding:14px 16px;margin:18px 0;border:1px solid var(--cr-border);border-radius:8px;background:var(--cr-raised)}
+.cr-root .cr-report-appendix summary,.cr-root .cr-report-raw summary{font-size:13px;color:var(--cr-muted)}
 .cr-root .cr-result{min-width:0}
 .cr-root details pre{white-space:pre-wrap;overflow-wrap:anywhere}
 @container(max-width:960px){.cr-root .cr-project-fields{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.cr-root .cr-project-path{grid-column:1/-1}.cr-root .cr-hero{align-items:flex-start}.cr-root .cr-summary-stats{gap:8px}}

@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {snapshotJsonChunks} from './snapshot-json.mjs';
 
 export const EVIDENCE_FORMAT_VERSION = 2;
 export const evidenceHash = value => createHash('sha256').update(value).digest('hex');
@@ -106,7 +107,7 @@ function sourceRanges(repository, included) {
   return parts.map(part => ({...part, assigned: true}));
 }
 
-function parseRepository(repository) {
+export function parseRepository(repository) {
   const diff = repository.diff, included = includedPaths(repository);
   // Header-only mode/binary changes lack ---/+++ labels. Index their exact Git
   // spellings once rather than scanning every included path for every block.
@@ -174,7 +175,7 @@ function* sections(block) {
   }
 }
 
-export function snapshotHash(snapshot) { return evidenceHash(JSON.stringify(snapshot)); }
+export function snapshotHash(snapshot) { const hash = createHash('sha256'); for (const chunk of snapshotJsonChunks(snapshot)) hash.update(chunk); return hash.digest('hex'); }
 
 /** Raw sources and synthetic summaries have independent coordinates; every byte is counted. */
 export function createEvidenceIndex(snapshot, {maxTextBytes = 12000} = {}) {
