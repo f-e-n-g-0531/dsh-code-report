@@ -1,5 +1,8 @@
 const utf8 = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true});
 const gb18030 = new TextDecoder('gb18030', {fatal: true, ignoreBOM: true});
+const utf16le = new TextDecoder('utf-16le', {fatal: true, ignoreBOM: true});
+const utf16be = new TextDecoder('utf-16be', {fatal: true, ignoreBOM: true});
+const copyright = new TextDecoder('windows-1252', {fatal: true, ignoreBOM: true});
 
 function inputBytes(value) {
   if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
@@ -32,12 +35,31 @@ function decodeUnit(bytes, label) {
 /**
  * Automatic, UTF-8-first heuristic for one complete file. Fatal decoders never
  * manufacture U+FFFD; a U+FFFD already encoded in valid input remains unchanged.
+ * BOM-marked UTF-16 is explicit; an ASCII+A9-only last resort is ambiguous.
  * This cannot infer author intent, repair mojibake, or identify other encodings.
  */
 export function decodeSourceBytes(value, {label} = {}) {
   const bytes = inputBytes(value);
+  const littleEndian = bytes[0] === 0xff && bytes[1] === 0xfe;
+  const bigEndian = bytes[0] === 0xfe && bytes[1] === 0xff;
+  if (littleEndian || bigEndian) {
+    let text;
+    try {
+      if (bytes.length % 2) throw new Error('odd UTF-16 byte length');
+      text = (littleEndian ? utf16le : utf16be).decode(bytes);
+    } catch {
+      throw Object.assign(new Error(inputLabel(label) + ' 含 UTF-16 BOM 但字节长度或代理项无效；拒绝替换非法编码'), {code: 'code-report/text-encoding'});
+    }
+    if (text.includes('\0')) throw Object.assign(new Error(inputLabel(label) + ' 解码后含 NUL 字符，按二进制拒绝'), {code: 'code-report/binary-input'});
+    return {text, encoding: littleEndian ? 'utf-16le-bom' : 'utf-16be-bom'};
+  }
   rejectBinary(bytes, label);
-  return decodeUnit(bytes, label);
+  try { return decodeUnit(bytes, label); } catch (error) {
+    // Do not broaden to arbitrary Windows-1252: that would hide malformed/truncated source.
+    if (!bytes.includes(0xa9) || !bytes.every(byte => byte <= 0x7f || byte === 0xa9)) throw error;
+    return {text: copyright.decode(bytes), encoding: 'windows-1252-copyright',
+      encodingWarning: 'UTF-8 与 GB18030 严格解码均失败；仅 ASCII 与单字节 0xA9 按 © 解释，编码归属存在歧义，不代表支持通用 Windows-1252。'};
+  }
 }
 
 /**

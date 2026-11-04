@@ -8,6 +8,7 @@ import {runtimeGate} from './protocol.mjs';
 import {createUpdateController} from './update-client.mjs';
 import {createLifecycleController} from './lifecycle-controller.mjs';
 import {createClientRpc} from './client-rpc.mjs';
+import {capturePreview} from './preview-client.mjs';
 import {fresh,mergeRepositories,repositoryIssues} from './repositories.mjs';
 import {DEFAULT_SCAN,loadConfiguration,saveConfiguration} from './configuration.mjs';
 import {createResultStore,staleResult,previewExpired,generationBlocker,parseVersionContexts,captureBlocker,completedViewResult,terminalAnalysisProgress} from './result-state.mjs';
@@ -167,7 +168,7 @@ export function apply(ctx){
    if(captureReason)return;
    return perform('采集版本差异',async signal=>{
     setPreview(null);setConsent(false);setPlanDirty(false);
-    const value=await tracked('preview',{sessionId:session.id,request:{title,repositories:rows.filter(row=>row.enabled).map(({enabled,...row})=>row),contextPaths:context.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),versionContexts,allowSvnNetwork:network,allowBatches:true}},signal);
+    const value=await capturePreview({rpc,signal,onProgress:value=>{if(mounted.current&&!signal.aborted)setProgress(value);},onWarning:value=>{if(mounted.current&&!signal.aborted)setProgressWarning(value);},payload:{sessionId:session.id,request:{title,repositories:rows.filter(row=>row.enabled).map(({enabled,...row})=>row),contextPaths:context.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),versionContexts,allowSvnNetwork:network,allowBatches:true}}});
     if(!signal.aborted&&mounted.current){setNow(Date.now());setPreview(value);setInputBudget(String(value.analysisPlan?.inputBudget||64000));keepResult({markdown:value.markdown,stale:false,kind:'local'});}
    });
   };

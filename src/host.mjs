@@ -64,6 +64,7 @@ function createProgressStore(ctx,now,backendInstanceId){
     if(prior||known){
       const owner=prior||known;
       if(owner.sessionId!==sessionId||owner.cwd!==cwd||owner.endpoint!==endpoint||owner.fingerprint!==fingerprint)throw problem('operation-conflict','任务标识已绑定其他请求，禁止重复发送');
+      if(prior?.endpoint==='preview-start')return {operation:prior,existing:true};
       if(prior?.result)return {operation:prior,replay:prior.result};
       throw problem('operation-exists','此任务标识已使用，请只读核对结果；禁止重新派发',{...(prior?{execution:execution(prior)}:{backendInstanceId})});
     }
@@ -104,7 +105,17 @@ function createProgressStore(ctx,now,backendInstanceId){
     return {status:'pending',phase:item.value.phase,execution:facts};
   };
   const read=async(payload,signal)=>{const item=await owned(payload,signal,'progress-unavailable');return {...item.value,execution:execution(item)};};
-  return {begin,authorize,update,read,finish,stop,result,execution};
+  const cancel=async(payload,signal,discardPreview)=>{
+    const item=await owned(payload,signal,'progress-unavailable');
+    if(item.endpoint!=='preview-start')throw problem('input','任务不是异步采集');
+    if(item.value.phase==='completed'){
+      if(item.result?.previewId)await discardPreview(item.result.previewId,item.sessionId);
+      delete item.result;item.error={code:'code-report/cancelled',message:'采集已取消'};
+      item.value={phase:'stopped',label:item.error.message};item.updatedAt=now();
+    }else if(!terminal(item))item.controller.abort();
+    return {operationId:item.id,cancelled:true,status:terminal(item)?item.value.phase:'pending'};
+  };
+  return {begin,authorize,update,read,finish,stop,result,execution,cancel};
 }
 function publicPlan(plan){
   if(!plan)return null;
@@ -123,8 +134,41 @@ function localManifest(snapshot){
 }
 export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,plan=defaultAnalysisPlan,analyze=analyzeReport,now=()=>Date.now()}={}){
   const backendInstanceId=randomUUID();
-  const previews=createPreviewStore(ctx,now),progress=createProgressStore(ctx,now,backendInstanceId);let active=0;
+  const previews=createPreviewStore(ctx,now),progress=createProgressStore(ctx,now,backendInstanceId),activeCaptures=new Set();let active=0;
   const assertSession=async(payload,cwd,signal)=>{if(await sessionCwd(ctx,payload.sessionId,signal)!==cwd)throw problem('session-changed','会话目录已变更');};
+  const startPreview=async(payload,transportSignal)=>{
+    transportSignal?.throwIfAborted();
+    if(!payload||typeof payload!=='object')throw problem('input','无效请求');
+    const cwd=await sessionCwd(ctx,payload.sessionId,transportSignal);
+    transportSignal?.throwIfAborted();previews.prune();
+    // Freeze all capture inputs before acknowledgement; request content, not just paid IDs, binds identity.
+    const capturedPayload=structuredClone(payload);
+    const fingerprint=createHash('sha256').update(JSON.stringify(capturedPayload)).digest('hex');
+    // Existing identical IDs replay an acknowledgement, never recapture; conflicts are checked by begin.
+    const started=progress.begin(payload.operationId,payload.sessionId,cwd,'preview-start',fingerprint);
+    const operation=started.operation;
+    if(started.existing)return {operationId:operation.id,status:TERMINAL_PHASES.includes(operation.value.phase)?operation.value.phase:'pending'};
+    if(active>=ACTIVE_LIMIT||activeCaptures.has(payload.sessionId+'\0'+cwd)){
+      const error=problem('busy','报告采集任务繁忙，请先恢复或取消已有采集');progress.stop(operation,error);throw error;
+    }
+    const controller=new AbortController(),key=payload.sessionId+'\0'+cwd;
+    operation.controller=controller;active++;activeCaptures.add(key);
+    // Yield so even a capture's synchronous startup cannot hold the acknowledgement open.
+    void new Promise(resolve=>setImmediate(resolve)).then(async()=>{
+      let value;
+      try{
+        await assertSession(capturedPayload,cwd,controller.signal);controller.signal.throwIfAborted();
+        value=await endpoints.preview({payload:capturedPayload,cwd,signal:controller.signal,update:value=>progress.update(operation,value)});
+        await assertSession(capturedPayload,cwd,controller.signal);controller.signal.throwIfAborted();
+        progress.finish(operation,value);
+      }catch(error){
+        if(value?.previewId)previews.discard(value.previewId);
+        if(controller.signal.aborted)error=problem('cancelled','采集已取消');
+        progress.stop(operation,error);
+      }finally{active--;activeCaptures.delete(key);delete operation.controller;}
+    }).catch(error=>{progress.stop(operation,error);});
+    return {operationId:operation.id,status:'pending'};
+  };
   const endpoints={
     discover:({payload,cwd,signal,update})=>scan(cwd,signal,payload.scan,update),
     refs:async({payload,cwd,signal})=>({refs:await refs(cwd,payload.repositoryPath,signal,{gitMode:payload.gitMode,gitRemote:payload.gitRemote})}),
@@ -178,7 +222,9 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
     }
   };
   return async(endpoint,payload,signal)=>{
-    if(endpoint==='runtime-info')return respond(()=>({...runtimeInfo(),backendInstanceId}));
+    if(endpoint==='runtime-info')return respond(()=>{const info=runtimeInfo();return {...info,backendInstanceId,capabilities:{...info.capabilities,asyncPreview:true}};});
+    if(endpoint==='preview-start')return respond(()=>startPreview(payload,signal));
+    if(endpoint==='preview-cancel')return respond(()=>progress.cancel(payload,signal,(previewId,sessionId)=>previews.release({previewId,sessionId},signal)));
     if(endpoint==='check-update')return respond(()=>checkUpdate({signal}));
     if(endpoint==='release-preview')return respond(()=>previews.release(payload,signal));
     if(endpoint==='progress')return respond(()=>progress.read(payload,signal));

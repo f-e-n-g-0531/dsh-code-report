@@ -1,0 +1,20 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {createHash} from 'node:crypto';
+import {collect} from '../src/collect.mjs';
+import {markdown} from '../src/report.mjs';
+import {run} from '../src/process.mjs';
+test('compatible source encoding retains raw hashes BOM text and explicit ambiguity in report',async t=>{
+ const cwd=await mkdtemp(path.join(tmpdir(),'report-source-codec-'));t.after(()=>rm(cwd,{recursive:true,force:true}));
+ const utf16=Buffer.concat([Buffer.from([255,254]),Buffer.from('// 源码\r\nint value;\r\n','utf16le')]),western=Buffer.from([47,47,32,169,32,86,97,108,118,101,10]);
+ await writeFile(path.join(cwd,'source.rc'),utf16);await writeFile(path.join(cwd,'sdk.h'),western);
+ const git=args=>run('git',args,{cwd});await git(['init','-b','main']);await git(['config','user.name','Fixture']);await git(['config','user.email','fixture@example.invalid']);await git(['add','.']);await git(['commit','-m','baseline']);const id=(await git(['rev-parse','HEAD'])).trim();
+ const s=await collect(cwd,{repositories:[{path:'.',type:'git',gitMode:'local',a:id,b:id}],contextPaths:['source.rc','sdk.h']});assert.equal(s.context.length,2);
+ const a=s.context.find(c=>c.path==='source.rc'),b=s.context.find(c=>c.path==='sdk.h');
+ assert.equal(a.encoding,'utf-16le-bom');assert.equal(a.text,'\ufeff// 源码\r\nint value;\r\n');assert.equal(a.rawHash,createHash('sha256').update(utf16).digest('hex'));
+ assert.equal(b.encoding,'windows-1252-copyright');assert.equal(b.text,'// © Valve\n');assert.match(b.encodingWarning,/歧义/);assert.equal(b.rawHash,createHash('sha256').update(western).digest('hex'));
+ const report=markdown(s);assert.match(report,/utf-16le-bom/);assert.match(report,/windows-1252-copyright/);assert.match(report,/解码提示/);assert.match(report,/歧义/);assert.ok(report.includes(b.rawHash));
+});

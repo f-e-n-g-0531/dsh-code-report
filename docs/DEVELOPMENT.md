@@ -32,7 +32,7 @@ npm run test:install
 
 - [宿主入口](<../index.mjs>)：注册 DSH 服务。
 - [宿主编排](<../src/host.mjs>)：会话目录、预览生命周期、进度、限流、确认与分片重试。测试依赖注入仅为进程内接口，不接受 RPC 覆盖。
-- [共享协议](<../src/protocol.mjs>)：通道和协议版本，不能依赖 Node 或 DSH 服务。v0.10.0 沿用协议版本 3，包含结构化执行恢复状态；v0.7.0 的协议 2 界面不能绕过版本门禁，升级后需重载前后台。
+- [共享协议](<../src/protocol.mjs>)：通道和协议版本，不能依赖 Node 或 DSH 服务。v0.10.2 沿用协议版本 3，包含结构化执行恢复状态；v0.7.0 的协议 2 界面不能绕过版本门禁，升级后需重载前后台。
 - [采集](<../src/collect.mjs>)、[预算](<../src/budget.mjs>)、[路径](<../src/paths.mjs>)、[进程](<../src/process.mjs>)：固定版本、来源、增量资源控制及取消。
 - [远端 Git](<../src/git-remote.mjs>)：读取业务仓库原始远端配置，在临时裸仓库查询和完整抓取，回调后清理；不写业务仓库。
 - [证据索引](<../src/evidence.mjs>)：格式版本 2；统一解析文件清单与差异块/源码单元，ID 绑定快照和准确文本，不重写差异正文。SVN property 头和值分开；路径只精确匹配 included 列表，不能按块序号猜测。无可归属文本的 included 文件/目录（含空字符串根路径）生成独立 scope 范围证据，计入片数及输入预算，不当作正文覆盖。SVN 在排除内部路径后逐 entry 读取时可附 diffParts:{path,start,end}，以完整 diff 的 UTF-16 连续区间绑定采集路径，不改原始正文；整仓 diff 或外部旧快照没有此元数据时不能假定同等定位能力。
@@ -64,15 +64,15 @@ remoteFailureDiagnostic(error) 只返回固定 kind/hint：SSH 身份/公钥/主
 
 SVN 两侧仍须仓库相对分支路径；版本可留空取各分支最新一次提交，显式历史版本仅接受数字或 r 前缀。固定两侧 peg/operative 端点并验证 UUID 和仓库根一致，不允许任意 URL，历史读取授权不变。
 
-contextPaths 为显式工作区文件或目录路径列表，允许根目录 `.`；目录递归展开为实际文件。展开跳过点前缀隐藏、敏感、依赖、构建和缓存路径、链接及非普通文件，limitations 记录排除计数；显式敏感路径仍拒绝。隐藏判断只基于点前缀，不读取 Windows Hidden 属性。目录展开不设固定条目、目录和深度上限；任一待附带文件含 NUL、UTF-8 与 GB18030 均无法解码或无法读取都使整次采集失败，不静默跳过或截断。
+contextPaths 为显式工作区文件或目录路径列表，允许根目录 `.`；目录按源码、脚本、文本配置及文档扩展名／常见文件名白名单递归展开，不读取所有普通文件。非源码 IDE 数据库、资源及编译库在正文前按元数据排除，limitations 列数量、扩展名及最多 5 个示例；排除内容不属于覆盖。未知文本格式可显式指定文件且仍严格校验；显式输入与目录重叠时只计一次并修正排除统计。展开跳过点前缀隐藏、敏感、依赖、构建和缓存路径、链接及非普通文件，limitations 记录排除计数；显式敏感路径仍拒绝。隐藏判断只基于点前缀，不读取 Windows Hidden 属性。目录展开不设固定条目、目录和深度上限；任一入选文件不符合源码编码规则或无法读取都使整次采集失败，不静默跳过或截断。
 
-versionContexts 为 {repository,path,side:A或B} 列表，repository 必须是已选项目，仍仅支持文件、不支持目录；内容只能从固定版本读取，不存在/非普通文件/符号链接/含 NUL/不支持的编码时失败，不回退磁盘。context 条目记录 provenance、repository、revision 和哈希。当前工作区源码不作为历史版本证据。预览展示展开后的实际文件清单与 limitations，操作者核对后才明确授权模型；不改变付费任务生命周期。
+versionContexts 为 {repository,path,side:A或B} 列表，repository 必须是已选项目，仍仅支持文件、不支持目录；内容只能从固定版本读取，不存在/非普通文件/符号链接/解码后含 NUL/不支持的编码时失败，不回退磁盘。context 条目记录 provenance、repository、revision 和哈希。当前工作区源码不作为历史版本证据。预览展示展开后的实际文件清单与 limitations，操作者核对后才明确授权模型；不改变付费任务生命周期。
 
 ## 正文解码与原字节追溯
 
-[正文解码器](<../src/text-encoding.mjs>) 对完整源码先使用 fatal UTF-8，失败后使用 fatal GB18030（兼容 GBK）；差异先按原始 LF 字节分行，每行执行同样顺序，保留 CRLF、孤立 CR、BOM 与末尾换行状态。不按整份 diff 回退，以免把 UTF-8 路径头与 GBK 代码分别占行的内容一起错误解码。编码标签为 `utf-8`、`gb18030` 或差异中的 `utf-8+gb18030`，ASCII 不单独证明某种编码。
+[正文解码器](<../src/text-encoding.mjs>) 对完整源码先识别明确 BOM 的 fatal UTF-16LE／BE（标签 `utf-16le-bom`／`utf-16be-bom`），严格拒绝奇数字节、未配对代理项和解码后 NUL。非 BOM 文件先 fatal UTF-8、再 fatal GB18030（兼容 GBK）；均失败且所有字节仅 ASCII＋0xA9、至少一个 0xA9 时才窄回退 ©，标签 `windows-1252-copyright` 并带 `encodingWarning` 歧义说明，不支持通用 Windows-1252。差异不继承两种源码兼容：先按原始 LF 字节分行，每行 UTF-8／GB18030，保留 CRLF、孤立 CR、BOM 与末尾换行状态。不按整份 diff 回退，以免把 UTF-8 路径头与 GBK 代码分别占行的内容一起错误解码。编码标签为 `utf-8`、`gb18030` 或差异中的 `utf-8+gb18030`，ASCII 不单独证明某种编码。
 
-此规则不是完整编码检测器，不保证同一行混合编码或同时合法的 UTF-8/GBK 字节的作者意图；不修复已有乱码或 U+FFFD，不修改源文件。含 NUL 先拒绝（不自动解码 UTF-16）；两种 fatal 解码都失败时拒绝，不制造替换字符。默认命令文本输出仍严格 UTF-8，用于路径名单、refs、SVN XML 等元数据；仅正文读取请求 raw 字节并调用解码器。
+此规则不是完整编码检测器，不保证同一行混合编码或同时合法的 UTF-8/GBK 字节的作者意图；不修复已有乱码或 U+FFFD，不修改源文件。无 BOM 的 NUL 及其他不符合上述保守兼容条件的字节仍拒绝，不制造替换字符；差异含 NUL 仍直接拒绝。默认命令文本输出仍严格 UTF-8，用于路径名单、refs、SVN XML 等元数据；仅正文读取请求 raw 字节并调用解码器。
 
 context 条目的 `encoding` 记录所用编码，`hash` 与 `rawHash` 都校验原始文件字节。仓库 `diffEncoding` 记录差异解码路径，`rawDiffHash` 校验原始 diff 字节，`diffHash` 校验解码后 UTF-8 文本。SVN 排除内部路径后的逐 entry 读取以读取顺序拼接原字节计算 rawDiffHash，不是全仓未过滤 diff 的哈希。报告分别展示原字节与文本哈希；证据索引和片预算使用解码文本，不把文本哈希冒充原字节身份。
 
@@ -80,7 +80,7 @@ context 条目的 `encoding` 记录所用编码，`hash` 与 `rawHash` 都校验
 
 一次仍为 1–12 项目。工作区与固定版本源码路径条目、实际文件数量、单文件大小、总证据和单命令 stdout 不再有默认固定规模上限；采集命令和采集请求不再强制 60/240 秒截止，调用者显式预算及取消仍可生效。stderr 诊断有界，取消等待子进程 close，源码句柄 finally 关闭。旧配置 allowBatches 字段兼容保留，不再充当采集规模开关；采集能力与模型策略分离，宿主/UI 现在默认 single-request 摘要而非 full 分批。项目自动发现仍保留浅层扫描与数量/时间预算，预算中断返回部分发现及提示。这里的无固定规模上限不等于无限资源：快照、证据索引、报告与 UI 清单仍占用内存，受操作系统、工具和模型能力约束；不得静默截断或用提高常量冒充解除上限。
 
-preview 返回 expiresAt、固定版本元数据、本地 Markdown 和 analysisPlan。createHandler 默认计划器强制 strategy:"single-request"，默认 inputBudget=64000；analysis-plan 可在 4000–64000 字节间重规划，不能从 UI 切为 full。计划只公开 ID、所选证据 ID、片数、预算与 coverage，不返回内部 payload。默认计划器规划失败时仍以 localManifest 生成 compact 本地报告，不 full fallback；不要因异常预算/巨大标题就把全部 diff 重新嵌入报告。字节包含提示与 JSON 包装，不是 tokens 或适配器实际 wire 长度；必要项目统计或单条元数据无法容纳时拒绝规划。库级 createAnalysisPlan 默认仍为 strategy:"full"、inputBudget=24000，可完整分片，不代表宿主/UI 默认行为。详见[单次摘要实现与限制](<SINGLE-REQUEST.md>)。
+采集由 preview-start 一次登记 operationId，result／progress 短 RPC 只读查询 pending/completed/stopped；轮询不重新执行采集。取消单独使用 preview-cancel，针对已登记任务，不自动重试；结果及任务内存缓存受 TTL／容量约束，后台重启不续跑。传输超时不等于后台停止，也不能据此盲目重启采集。界面采用单一外层滚动。完成结果返回 expiresAt、固定版本元数据、本地 Markdown 和 analysisPlan。createHandler 默认计划器强制 strategy:"single-request"，默认 inputBudget=64000；analysis-plan 可在 4000–64000 字节间重规划，不能从 UI 切为 full。计划只公开 ID、所选证据 ID、片数、预算与 coverage，不返回内部 payload。默认计划器规划失败时仍以 localManifest 生成 compact 本地报告，不 full fallback；不要因异常预算/巨大标题就把全部 diff 重新嵌入报告。字节包含提示与 JSON 包装，不是 tokens 或适配器实际 wire 长度；必要项目统计或单条元数据无法容纳时拒绝规划。库级 createAnalysisPlan 默认仍为 strategy:"full"、inputBudget=24000，可完整分片，不代表宿主/UI 默认行为。详见[单次摘要实现与限制](<SINGLE-REQUEST.md>)。
 
 generate 必须提供 sessionId、previewId、匹配的 planId、route、sendToModel=true 及由前端先登记的 operationId；派发前重验会话目录和取消。single-request 计划必须恰好一份 payload，宿主同次生成只允许一次 llm.stream 派发，无隐式第二次模型请求或自动重试；再次明确确认仍可能计费。底层适配器或网络重试不能仅由插件 dispatchCount 证明，次数不是供应商计费承诺。模型只返回五组数组 changes/interfaces/impacts/qa/unknowns，每项 text/evidenceIds。非未知结论必须引用本片有效证据；未知无引用时明确限制。拒绝自由 Markdown、无效引用、工具调用、截断、未 stop 和结束后输出。每片模型输出含推理最多 256 KiB，maxTokens=8192。
 
@@ -94,7 +94,7 @@ generate 必须提供 sessionId、previewId、匹配的 planId、route、sendToM
 
 ## 安全与可重复证明
 
-保留路径包含及敏感路径检查、正文读取前排除 .git/.svn、无 shell、Git 环境清理及禁外部 diff/textconv。不是完整密钥扫描，也不保证所有文件替换竞争被隔离。报告纯文本展示；下载的阅读器有独立安全边界。
+保留路径包含及敏感路径检查、正文读取前排除 .git/.svn、无 shell、Git 环境清理及禁外部 diff/textconv。不是完整密钥扫描，也不保证所有文件替换竞争被隔离。报告使用安全 React 文档阅读视图，原始 Markdown 单独折叠；正文数字实体只解为文本，源码围栏保持字面内容，任意 HTML、外部图片和链接不执行。下载的阅读器仍有独立安全边界。
 
 固定夹具测试用于证明稳定格式、字节覆盖、结构/引用约束、预算和失败行为；历史发布记录中的 32 场景验证是当时记录，不将它宣称为本次可重跑证明。新增评测样例与逐步验收见 [验收清单](<ACCEPTANCE.md>)。
 

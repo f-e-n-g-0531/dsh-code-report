@@ -297,7 +297,7 @@ export async function collect(cwd, request, signal, onProgress = () => {}) {
    '差异仅比较两个版本端点，不包含未提交修改；Git 子模块仅记录指针变化，不递归分析。',
    '源码上下文按来源分别标记：current-workspace 为当前磁盘内容，version-A/version-B 为固定版本内容；未执行测试。',
    '影响分析不是完整调用图；二进制、LFS 内容及未提供源码的行为需要人工验证。',
-   '正文自动优先严格 UTF-8，失败后尝试 GB18030（兼容 GBK）；差异逐行解码，自动识别有歧义，无法保证同一行混合编码或修复已乱码文本。元数据仍要求 UTF-8。',
+   '源码按 BOM 严格识别 UTF-16LE/BE；无 BOM 时优先严格 UTF-8，再尝试 GB18030（兼容 GBK），仅 ASCII 与单字节版权符号 © 的特殊文本可使用带歧义告警的西文兼容。差异仍逐行按 UTF-8 / GB18030 解码，不支持 UTF-16 或西文回退。自动识别有歧义，不能修复已乱码文本；元数据仍要求 UTF-8。',
    '源码 hash/rawHash 与差异 rawDiffHash 校验原始字节；diffHash 校验解码后 UTF-8 文本，不是原始字节哈希。',
   ],
  };

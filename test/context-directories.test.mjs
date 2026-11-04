@@ -34,22 +34,52 @@ async function repo(cwd) {
  return {path:'repo', type:'git', a:id, b:id};
 }
 
-test('nested trees include all extensions, deterministic order, canonical dedup and workspace root', async t => {
+test('nested source trees use deterministic order, canonical dedup and workspace root', async t => {
  const cwd = await workspace(t);
- for (const name of ['src/z.txt','src/nested/no-extension','src/A.weird','readme']) await file(cwd, name);
- const expected = ['src/A.weird','src/nested/no-extension','src/z.txt'];
+ for (const name of ['src/z.cpp','src/nested/Makefile','src/A.h','readme.md']) await file(cwd, name);
+ const expected = ['src/A.h','src/nested/Makefile','src/z.cpp'];
  assert.deepEqual((await expand(cwd, ['src'])).paths, expected);
- assert.deepEqual((await expand(cwd, ['src/nested','src/z.txt','src','./src/A.weird','src'])).paths, expected);
- assert.deepEqual((await expand(cwd, ['.'])).paths, ['readme', ...expected]);
+ assert.deepEqual((await expand(cwd, ['src/nested','src/z.cpp','src','./src/A.h','src'])).paths, expected);
+ assert.deepEqual((await expand(cwd, ['.'])).paths, ['readme.md', ...expected]);
+});
+
+test('automatic directory selection includes source, shader, build, config and docs case-insensitively', async t => {
+ const cwd = await workspace(t);
+ const names=['logic.CPP','public.H','Client.cs','Script.LUA','data.JSON','schema.Xml','Client.vcxproj','tool.cmake','Makefile','math.inl','render.shader','Dockerfile','README','license','CMakeLists.txt','nested/fragment.HLSL','nested/message.proto','web.tsx'];
+ for(const name of names)await file(cwd,'src/'+name,'// readable source/config');
+ assert.deepEqual((await expand(cwd,['src'])).paths,names.map(name=>'src/'+name).sort());
+});
+
+test('automatic non-source binaries are metadata-only exclusions while explicit files remain strict', async t => {
+ const cwd=await workspace(t),row=await repo(cwd);
+ const extensions=['sdf','DLL','png','lib','pdb','o','zip','exe'];
+ for(const extension of extensions)await file(cwd,'src/asset.'+extension,Buffer.from('NON_SOURCE_BODY_MUST_NOT_APPEAR\0\xff'));
+ await file(cwd,'src/unknown.custom','CUSTOM_TEXT_BODY');await file(cwd,'src/plain','PLAIN_BODY');await file(cwd,'src/good.cpp','int good;');
+ const expanded=await expand(cwd,['src']);assert.deepEqual(expanded.paths,['src/good.cpp']);
+ const notes=expanded.limitations.join('\n');assert.match(notes,/已排除 10 个/);assert.match(notes,/非源码扩展名统计/);assert.match(notes,/示例/);assert.match(notes,/未读取这些文件正文/);
+ for(const extension of extensions)assert.ok(notes.includes('.'+extension.toLowerCase()+' 1 项'));assert.ok(notes.includes('.custom 1 项'));
+ const typeNotes=expanded.limitations.find(note=>note.includes('非源码扩展名统计'));assert.ok(typeNotes);const examples=typeNotes.split('示例：')[1].split('；')[0].split('、');assert.equal(examples.length,5);assert.ok(notes.includes('(无扩展名) 1 项'));
+ assert.ok(!JSON.stringify(expanded).includes('NON_SOURCE_BODY'));
+ const captured=await collect(cwd,{repositories:[row],contextPaths:['src']});assert.deepEqual(captured.context.map(item=>item.path),['src/good.cpp']);assert.ok(!JSON.stringify(captured).includes('NON_SOURCE_BODY'));
+ for(const extension of extensions)await assert.rejects(collect(cwd,{repositories:[row],contextPaths:['src/asset.'+extension]}),error=>/二进制/.test(error.message)&&error.message.includes('src/asset.'+extension));
+});
+
+test('unknown text explicit override works before and after a directory without reading unrelated bodies', async t => {
+ const cwd=await workspace(t),row=await repo(cwd);await file(cwd,'src/custom.custom','custom text');await file(cwd,'src/ok.cpp','int ok;');await file(cwd,'src/binary.sdf',Buffer.from([0,255]));
+ for(const paths of [['src','src/custom.custom'],['src/custom.custom','src'],['src','src/custom.custom','src']]){
+  const expanded=await expand(cwd,paths);assert.deepEqual(expanded.paths,['src/custom.custom','src/ok.cpp']);const notes=expanded.limitations.join('\n');assert.match(notes,/已排除 1 个/);assert.match(notes,/\.sdf 1 项/);assert.ok(!notes.includes('custom.custom'));assert.ok(!notes.includes('.custom 1 项'));
+  const captured=await collect(cwd,{repositories:[row],contextPaths:paths});assert.deepEqual(captured.context.map(item=>item.path),['src/custom.custom','src/ok.cpp']);assert.equal(captured.context[0].text,'custom text');
+ }
+ await file(cwd,'src/bad.custom',Buffer.from([0x81]));await assert.rejects(collect(cwd,{repositories:[row],contextPaths:['src','src/bad.custom']}),error=>/UTF-8/.test(error.message)&&error.message.includes('src/bad.custom'));
 });
 
 test('secret, hidden and dependency/build entries skip before body reads with exclusion counts', async t => {
  const cwd = await workspace(t);
  const excluded = ['.env','.env.local','id_rsa','id_ed25519','thing.pem','thing.key','thing.p12','thing.pfx','credentials/token','.git/config','.svn/wc.db','node_modules/pkg/index','dist/output','build/output','Library/a','Temp/a','obj/a','bin/a','coverage/a','cache/a','.hidden/a','.hiddenfile'];
  for (const name of excluded) await file(cwd, 'src/' + name, Buffer.from([0, 0xff]));
- await file(cwd, 'src/good.unknown', 'safe');
+ await file(cwd, 'src/good.cpp', 'safe');
  const result = await expand(cwd, ['src']);
- assert.deepEqual(result.paths, ['src/good.unknown']);
+ assert.deepEqual(result.paths, ['src/good.cpp']);
  assert.match(result.limitations.join('\n'), /已排除 22 个/);
  assert.match(result.limitations.join('\n'), /secretPath.*隐藏路径.*依赖|依赖.*secretPath.*隐藏路径/);
  assert.ok(!JSON.stringify(result).includes('token'));
@@ -71,18 +101,18 @@ test('empty directories and explicitly skipped build paths yield zero files and 
 test('junction directory roots, ancestors, nested aliases and secret aliases never follow', async t => {
  const cwd = await workspace(t);
  await file(cwd, 'credentials/private', 'SECRET_BODY_MUST_NOT_LEAK');
- await file(cwd, 'src/good', 'ok');
+ await file(cwd, 'src/good.cpp', 'ok');
  await symlink(path.join(cwd, 'credentials'), path.join(cwd, 'alias'), process.platform === 'win32' ? 'junction' : 'dir');
  await symlink(path.join(cwd, 'src'), path.join(cwd, 'src-alias'), process.platform === 'win32' ? 'junction' : 'dir');
  await symlink(path.join(cwd, 'credentials'), path.join(cwd, 'src/nested-alias'), process.platform === 'win32' ? 'junction' : 'dir');
- for (const name of ['alias','alias/private','src-alias','src-alias/good']) {
+ for (const name of ['alias','alias/private','src-alias','src-alias/good.cpp']) {
   const result = await expand(cwd, [name]);
   assert.deepEqual(result.paths, []);
   assert.match(result.limitations.join('\n'), /junction/);
   assert.ok(!JSON.stringify(result).includes('SECRET_BODY'));
  }
  const nested = await expand(cwd, ['src']);
- assert.deepEqual(nested.paths, ['src/good']);
+ assert.deepEqual(nested.paths, ['src/good.cpp']);
  assert.match(nested.limitations.join('\n'), /junction/);
  // A symlink in cwd itself or any ancestor also must not be resolved away.
  assert.deepEqual((await expand(path.join(cwd, 'src-alias'), ['.'])).paths, []);
@@ -104,24 +134,24 @@ test('file symlinks including secret aliases are excluded without content access
 test('streaming expansion exceeds former entry, directory, depth and file caps without omission', async t => {
  const cwd = await workspace(t);
  for (let i = 0; i < 2000; i++) await file(cwd, 'wide/.skip-' + i);
- await file(cwd, 'wide/good', 'complete');
+ await file(cwd, 'wide/good.cpp', 'complete');
  const wide = await expand(cwd, ['wide']);
- assert.deepEqual(wide.paths, ['wide/good']);
+ assert.deepEqual(wide.paths, ['wide/good.cpp']);
  assert.match(wide.limitations.join('\n'), /已排除 2000 个/);
  for (let i = 0; i < 256; i++) await mkdir(path.join(cwd, 'dirs', String(i)), {recursive:true});
- await file(cwd, 'dirs/255/good');
- assert.deepEqual((await expand(cwd, ['dirs'])).paths, ['dirs/255/good']);
+ await file(cwd, 'dirs/255/good.cpp');
+ assert.deepEqual((await expand(cwd, ['dirs'])).paths, ['dirs/255/good.cpp']);
  await mkdir(path.join(cwd, 'deep', ...Array(21).fill('n')), {recursive:true});
- const deepFile = ['deep', ...Array(21).fill('n'), 'good'].join('/');
+ const deepFile = ['deep', ...Array(21).fill('n'), 'good.cpp'].join('/');
  await file(cwd, deepFile);
  assert.deepEqual((await expand(cwd, ['deep'])).paths, [deepFile]);
- for (let i = 0; i < 21; i++) await file(cwd, 'files/' + i);
+ for (let i = 0; i < 21; i++) await file(cwd, 'files/' + i + '.cpp');
  assert.equal((await expand(cwd, ['files'])).paths.length, 21);
 });
 
 test('cancellation before and during asynchronous scanning and deadline checks never return partial results', async t => {
  const cwd = await workspace(t);
- await file(cwd, 'tree/nested/good');
+ await file(cwd, 'tree/nested/good.cpp');
  const controller = new AbortController();
  controller.abort(new Error('cancelled-before'));
  await assert.rejects(expandContextPaths(cwd, ['tree'], createCollectionBudget({signal:controller.signal})), /cancelled-before/);
@@ -148,11 +178,11 @@ test('cancellation before and during asynchronous scanning and deadline checks n
 
 test('collect expands before repository I/O and sets expanded progress totals; provenance and hash stay intact', async t => {
  const cwd = await workspace(t), row = await repo(cwd);
- await file(cwd, 'context/z', '最后');
- await file(cwd, 'context/a', 'first');
+ await file(cwd, 'context/z.cpp', '最后');
+ await file(cwd, 'context/a.cpp', 'first');
  const progress = [];
- const result = await collect(cwd, {repositories:[row],contextPaths:['context','context/a']}, undefined, value => progress.push(value));
- assert.deepEqual(result.context.map(item => item.path), ['context/a','context/z']);
+ const result = await collect(cwd, {repositories:[row],contextPaths:['context','context/a.cpp']}, undefined, value => progress.push(value));
+ assert.deepEqual(result.context.map(item => item.path), ['context/a.cpp','context/z.cpp']);
  for (const item of result.context) {
   assert.equal(item.provenance, 'current-workspace');
   assert.equal(item.hash, createHash('sha256').update(item.text).digest('hex'));
@@ -164,7 +194,7 @@ test('collect expands before repository I/O and sets expanded progress totals; p
  assert.match(filtered.limitations.join('\n'), /排除 1 个.*secretPath/);
  assert.ok(!JSON.stringify(filtered).includes('SECRET_BODY_NOT_IN_PREVIEW'));
  const invalidRepo = {...row,path:'missing-repo'};
- for (let i = 0; i < 21; i++) await file(cwd, 'many/' + i);
+ for (let i = 0; i < 21; i++) await file(cwd, 'many/' + i + '.cpp');
  await assert.rejects(collect(cwd, {repositories:[invalidRepo],contextPaths:['many']}), /ENOENT/);
  assert.equal((await collect(cwd, {repositories:[row],contextPaths:['many']})).context.length, 21);
  await mkdir(path.join(cwd, 'context-empty'));
@@ -175,10 +205,10 @@ test('collect expands before repository I/O and sets expanded progress totals; p
 
 test('selected directory replaced by a junction after expansion cannot expose a secret alias', async t => {
  const cwd = await workspace(t);
- await file(cwd, 'context/good', 'safe');
- await file(cwd, 'credentials/good', 'SECRET_BODY_NOT_READ');
+ await file(cwd, 'context/good.cpp', 'safe');
+ await file(cwd, 'credentials/good.cpp', 'SECRET_BODY_NOT_READ');
  const expanded = await expand(cwd, ['context']);
- assert.deepEqual(expanded.paths, ['context/good']);
+ assert.deepEqual(expanded.paths, ['context/good.cpp']);
  await rename(path.join(cwd, 'context'), path.join(cwd, 'old-context'));
  await symlink(path.join(cwd, 'credentials'), path.join(cwd, 'context'), process.platform === 'win32' ? 'junction' : 'dir');
  await assert.rejects(resolveContextFile(cwd, expanded.paths[0], createCollectionBudget()), /普通文件/);
@@ -187,21 +217,21 @@ test('selected directory replaced by a junction after expansion cannot expose a 
 test('binary and invalid text encoding directory files fail whole collection with the actual path', async t => {
  const cwd = await workspace(t), row = await repo(cwd);
  for (const [name, bytes, pattern] of [['binary', Buffer.from([0,1]), /二进制/],['legacy', Buffer.from([0x81]), /UTF-8/],['binary-tail', Buffer.concat([Buffer.alloc(256*1024,65), Buffer.from([0])]), /二进制/],['legacy-tail', Buffer.concat([Buffer.alloc(256*1024,65), Buffer.from([0x81])]), /UTF-8/]]) {
-  await file(cwd, name + '/bad.data', bytes);
-  await file(cwd, name + '/a-good', 'good');
-  await assert.rejects(collect(cwd, {repositories:[row],contextPaths:[name]}), error => pattern.test(error.message) && error.message.includes(name + '/bad.data'));
+  await file(cwd, name + '/bad.cpp', bytes);
+  await file(cwd, name + '/a-good.cpp', 'good');
+  await assert.rejects(collect(cwd, {repositories:[row],contextPaths:[name]}), error => pattern.test(error.message) && error.message.includes(name + '/bad.cpp'));
  }
 });
 
 test('expanded workspace and fixed version files exceed 20 files without expanding historical directories', async t => {
  const cwd = await workspace(t), row = await repo(cwd);
- for (let i = 0; i < 19; i++) await file(cwd, 'context/' + String(i).padStart(2,'0'));
+ for (let i = 0; i < 19; i++) await file(cwd, 'context/' + String(i).padStart(2,'0') + '.cpp');
  const versionContexts = [{repository:'repo',side:'A',path:'historical.txt'}];
  const result = await collect(cwd, {repositories:[row],contextPaths:['context'],versionContexts});
  assert.equal(result.context.length, 20);
  assert.equal(result.context.at(-1).provenance, 'version-A');
  assert.equal(result.context.at(-1).text, 'pinned');
- await file(cwd, 'context/extra');
+ await file(cwd, 'context/extra.cpp');
  assert.equal((await collect(cwd, {repositories:[row],contextPaths:['context'],versionContexts})).context.length, 21);
  await assert.rejects(collect(cwd, {repositories:[row],versionContexts:[{repository:'repo',side:'A',path:'.'}]}), /仓库相对文件路径/);
  const ac = new AbortController();
@@ -227,7 +257,7 @@ test('large directory scan emits cancellable live progress and aggregates empty-
 
 test('queued directories are revalidated before opening after a late junction replacement', async t => {
  const cwd = await workspace(t);
- await file(cwd, 'tree/nested/good', 'safe');
+ await file(cwd, 'tree/nested/good.cpp', 'safe');
  await file(cwd, 'credentials/private', 'secret');
  const probe = await opendir(path.join(cwd, 'tree'));
  const prototype = Object.getPrototypeOf(probe);await probe.close();

@@ -3,6 +3,11 @@ import {lstat, realpath, opendir} from 'node:fs/promises';
 import {relative, secretPath} from './paths.mjs';
 
 const SKIP_DIRECTORY = /^(?:node_modules|dist|build|Library|Temp|obj|bin|coverage|cache|vendor|target|out|bower_components|__pycache__)$/i;
+// Automatic directory selection is source-oriented, not every regular file on disk.
+// Explicit file inputs may opt into another text format; the strict decoder still rejects binaries.
+const SOURCE_EXTENSIONS = new Set(('c cc cpp cxx h hh hpp hxx inl ipp tpp m mm cs fs fsx vb java kt kts scala groovy go rs swift py pyw pyi rb php pl pm lua luau js jsx mjs cjs ts tsx mts cts vue svelte html htm css scss sass less sql sh bash zsh fish ps1 psm1 psd1 bat cmd cmake mk mak make gradle bazel bzl proto thrift graphql gql asm s inc tcc tsc def i f for f77 f90 f95 pas pp d zig dart ex exs erl hrl clj cljs cljc edn lisp lsp cl el vim r jl ml mli nim v vhd vhdl sv svh ets shader hlsl hlsli glsl vert frag geom tesc tese comp cg cginc compute metal usf ush json jsonc json5 jsonl xml xsd xsl xslt yaml yml toml ini cfg conf config properties rc rc2 manifest vcxproj vcproj csproj fsproj vbproj props targets filters vcxitems vsprops natvis pbxproj xcconfig xcscheme xib pro pri in am m4 gyp gypi dox command code-workspace sln slnx qrc ui resx plist entitlements md rst txt tex').split(' '));
+const SOURCE_NAMES = new Set(['makefile','gnumakefile','dockerfile','containerfile','cmakelists.txt','jenkinsfile','rakefile','gemfile','procfile','meson.build','meson_options.txt','configure','configure.ac','sconstruct','sconscript','readme','license','copying','authors']);
+const sourceFile = name => SOURCE_NAMES.has(path.basename(name).toLowerCase()) || SOURCE_EXTENSIONS.has(path.extname(name).slice(1).toLowerCase());
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 const display = value => value.split(path.sep).join('/') || '.';
 async function checked(budget, action) {
@@ -57,7 +62,9 @@ export async function expandContextPaths(cwd, names, budget, {onProgress = () =>
  // Each directory is enumerated once, with one open handle, without recursive calls or name arrays.
  const directories = [];
  let entries = 0, emptyDirectories = 0;
- const emptyExamples = [];
+ const emptyExamples = [], nonSourceExamples = [];
+ const nonSourceCandidates = new Map();
+ const nonSourceTypes = new Map();
  async function visit(name, explicit, parent) {
   budget.check();
   if (++entries % 256 === 0) {
@@ -68,6 +75,10 @@ export async function expandContextPaths(cwd, names, budget, {onProgress = () =>
   if (!explicit && secretPath(name)) { exclude('敏感路径（secretPath，未读取正文）'); return; }
   const entry = await checked(budget, () => inspect(cwd, name, budget));
   if (entry.excluded) { exclude(entry.excluded); return; }
+  if (!entry.directory && !explicit && !sourceFile(entry.name)) {
+   nonSourceCandidates.set(entry.canonical, entry.name);
+   return;
+  }
   if (seen.has(entry.canonical)) return;
   seen.add(entry.canonical);
   if (!entry.directory) {
@@ -109,7 +120,15 @@ export async function expandContextPaths(cwd, names, budget, {onProgress = () =>
   }
  }
  budget.check();
+ for (const [canonical,name] of nonSourceCandidates) {
+  if (files.has(canonical)) continue;
+  const extension = path.extname(name).toLowerCase() || '(无扩展名)';
+  exclude('非源码文件（按扩展名 / 文件名筛选）');
+  nonSourceTypes.set(extension, (nonSourceTypes.get(extension) || 0) + 1);
+  if (nonSourceExamples.length < 5) nonSourceExamples.push(name);
+ }
  if (emptyDirectories) limitations.push('源码目录展开中 ' + emptyDirectories + ' 个目录为 0 个新增普通文件（空目录、全部排除或已去重）；示例：' + emptyExamples.join('、') + '。示例不是完整目录清单，未读取目录正文。');
  if (exclusions.size) limitations.push('源码目录展开已排除 ' + [...exclusions.values()].reduce((a,b) => a+b, 0) + ' 个文件 / 目录条目：' + [...exclusions].sort(([a],[b]) => compare(a,b)).map(([reason, count]) => reason + ' ' + count + ' 项').join('；') + '。排除目录不递归，未读取其正文，不属于报告覆盖。');
+ if (nonSourceTypes.size) limitations.push('目录自动收集仅包含支持的源码 / 脚本 / 文本配置及文档；非源码扩展名统计：' + [...nonSourceTypes].sort(([a],[b]) => compare(a,b)).map(([extension,count]) => extension + ' ' + count + ' 项').join('；') + '。示例：' + nonSourceExamples.join('、') + '；未读取这些文件正文，不属于报告覆盖。未识别的文本格式可显式指定文件，仍须通过严格编码 / 二进制校验。');
  return {paths:[...files.values()].sort(compare), limitations};
 }

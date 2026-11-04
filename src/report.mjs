@@ -11,7 +11,7 @@ export function interfaceSection(analysis){if(!analysis)return INTERFACE_NO_MODE
 const ANALYSIS_MISSING='未调用模型。本报告只包含差异证据；业务影响范围与 QA 测试计划尚待人工分析。';
 const LOCAL_ROUTE='模式：本地证据报告（未发送模型）';
 const releaseScopeLines=repositories=>repositories.map(r=>'- **'+inline(r.path)+'** ('+inline(r.type)+')：'+inline(r.type==='svn'?r.branchA+' @ r'+r.a:r.requestedA)+' → '+inline(r.type==='svn'?r.branchB+' @ r'+r.b:r.requestedB)+'；固定端点 '+inline(r.a)+' → '+inline(r.b)+'；'+r.files.length+' 个变更路径'+(r.type==='git'?'；来源 '+(r.gitSource==='remote'?'远端 '+inline(r.remote)+'；观察于 '+inline(r.observedAt)+'（固定快照）':'本地离线引用（不代表远端最新）'):''));
-const sourceLines=context=>context.map(c=>'- '+inline(c.path)+'；'+(c.provenance==='version-A'||c.provenance==='version-B'?inline(c.repository)+'；固定版本 '+inline(c.revision)+'（'+c.provenance+'）':'当前工作区快照')+'；编码 '+inline(c.encoding??'未记录')+'；原始字节 SHA-256 '+inline(c.rawHash??c.hash));
+const sourceLines=context=>context.map(c=>'- '+inline(c.path)+'；'+(c.provenance==='version-A'||c.provenance==='version-B'?inline(c.repository)+'；固定版本 '+inline(c.revision)+'（'+c.provenance+'）':'当前工作区快照')+'；编码 '+inline(c.encoding??'未记录')+(c.encodingWarning?'；解码提示 '+inline(c.encodingWarning):'')+'；原始字节 SHA-256 '+inline(c.rawHash??c.hash));
 const limitationLines=limitations=>[...limitations.map(x=>'- '+inline(x)),'- 模型输出为待人工复核的推断，不代表测试通过、缺陷证明或发布批准。'];
 const routeLine=route=>route?'模型：'+inline(route.provider)+' / '+inline(route.model):LOCAL_ROUTE;
 const excludedPathLines=r=>r.excludedPaths?.length?['','### 排除的内部路径 · '+inline(r.path),'','以下路径仅记录排除清单，正文未读取，不属于分析覆盖：',...r.excludedPaths.map(p=>'- '+inline(p))]:[];

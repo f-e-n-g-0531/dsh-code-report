@@ -13,6 +13,7 @@ const generate=page=>page.getByRole('button',{name:'开始执行 · 生成报告
 const report=page=>page.locator('article.cr-report');
 const consent=page=>page.getByRole('checkbox',{name:/我确认向上方指定模型发送/});
 const stats=page=>page.evaluate(()=>window.fixture.getStats());
+const paidReads=calls=>{const captureIds=new Set(calls.filter(call=>call.endpoint==='preview-start').map(call=>call.payload.operationId));return calls.filter(call=>call.endpoint==='result'&&!captureIds.has(call.payload.operationId));};
 async function open(page,options={}){
  const errors=[];page.on('pageerror',error=>errors.push(error.message));
  await page.addInitScript(value=>{window.__fixtureOptions=value;},options);
@@ -32,6 +33,39 @@ async function collect(page){await capture(page).click();await expect(report(pag
 async function route(page){await page.getByRole('textbox',{name:'DSH 提供方 ID',exact:true}).fill('fixture');await page.getByRole('textbox',{name:'模型 ID',exact:true}).fill('mock');}
 async function analyze(page){await route(page);await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告');}
 
+test('lost short capture start and result responses recover one detached task without recapture or model dispatch',async({page})=>{
+ await open(page,{holdPreview:true,failPreviewStartResponse:true,failCaptureResultOnce:true});await selectGit(page);await capture(page).click();await expect(page.getByText(/采集连接暂时失联/).first()).toBeVisible();await expect(capture(page)).toBeDisabled();
+ await expect.poll(async()=>(await stats(page)).calls.filter(call=>call.endpoint==='result').length).toBeGreaterThanOrEqual(2);let observed=await stats(page);const start=observed.calls.filter(call=>call.endpoint==='preview-start');expect(start).toHaveLength(1);expect(observed.captureTasks).toMatchObject([{status:'pending',sessionId:'a',operationId:start[0].payload.operationId}]);expect(observed.calls.filter(call=>call.endpoint==='result').every(call=>call.payload.operationId===start[0].payload.operationId)).toBe(true);expect(observed.modelCalls).toBe(0);
+ await page.evaluate(()=>window.fixture.releasePreview());await expect(report(page)).toContainText('本地证据 a');observed=await stats(page);expect(observed.calls.filter(call=>call.endpoint==='preview-start')).toHaveLength(1);expect(observed.calls.filter(call=>call.endpoint==='preview-cancel'||call.endpoint==='generate')).toHaveLength(0);expect(observed.modelCalls).toBe(0);expect(observed.captureTasks[0].status).toBe('completed');
+});
+test('explicit capture cancellation stops backend task before a new capture and never leaks stale preview',async({page})=>{
+ await open(page,{delayPreview:1200});await selectGit(page);await capture(page).click();await expect.poll(async()=>(await stats(page)).captureTasks.length).toBe(1);await expect(capture(page)).toBeDisabled();await page.getByRole('button',{name:'取消',exact:true}).click();await expect.poll(async()=>(await stats(page)).captureTasks[0].status).toBe('stopped');await expect(report(page)).toHaveCount(0);
+ await page.evaluate(()=>window.fixture.configure({delayPreview:0}));await collect(page);await expect.poll(async()=>(await stats(page)).settledPreviews).toBe(2);const observed=await stats(page),starts=observed.calls.filter(call=>call.endpoint==='preview-start'),cancel=observed.calls.find(call=>call.endpoint==='preview-cancel');expect(starts).toHaveLength(2);expect(starts[0].payload.operationId).not.toBe(starts[1].payload.operationId);expect(cancel.payload.operationId).toBe(starts[0].payload.operationId);expect(observed.captureTasks.map(task=>task.status)).toEqual(['stopped','completed']);expect(observed.modelCalls).toBe(0);await expect(report(page)).toContainText('本地证据 a');
+});
+
+// Constrain only the synthetic host slot; no plugin internal style overrides.
+async function constrainHost(page){await page.addStyleTag({content:'html,body{height:100%;overflow:hidden}#fixture-controls{display:none}#root{position:fixed;inset:0;height:100%;display:flex;flex-direction:column;min-height:0;overflow:hidden}#root>[aria-label="模拟宿主会话"]{flex:none}#root>.cr-root{flex:1 1 0;min-height:0}'});}
+async function assertNoNestedScroll(page){
+ const nodes=await page.locator('.cr-table-scroll,article.cr-report,.cr-report-table,.cr-root pre,#cr-capture-reason,.cr-root textarea').evaluateAll(elements=>elements.filter(element=>element.getClientRects().length&&element.clientHeight>0).map(element=>{const s=getComputedStyle(element);return {node:element.tagName+'.'+element.className,x:s.overflowX,y:s.overflowY,maxHeight:s.maxHeight,w:element.clientWidth,sw:element.scrollWidth,h:element.clientHeight,sh:element.scrollHeight};}));
+ for(const node of nodes){expect(['auto','scroll'].includes(node.x),node.node+' horizontal scroll container').toBe(false);expect(['auto','scroll'].includes(node.y),node.node+' vertical scroll container').toBe(false);expect(node.sw,node.node+' horizontal content fully fits').toBeLessThanOrEqual(node.w+2);expect(node.sh,node.node+' vertical content not clipped').toBeLessThanOrEqual(node.h+2);expect(node.maxHeight,node.node+' no height cap').toBe('none');}
+ const size=await page.evaluate(()=>({docH:document.documentElement.scrollHeight,docW:document.documentElement.scrollWidth,h:innerHeight,w:innerWidth,root:document.querySelector('.cr-root').scrollWidth,rw:document.querySelector('.cr-root').clientWidth,layout:[...document.querySelector('#root').children].map(e=>({class:e.className,h:e.getBoundingClientRect().height,sh:e.scrollHeight,overflow:getComputedStyle(e).overflow,flex:getComputedStyle(e).flex})),rh:document.querySelector('.cr-root').clientHeight,rsh:document.querySelector('.cr-root').scrollHeight}));expect(size.docH,JSON.stringify(size)).toBeLessThanOrEqual(size.h+2);expect(size.docW).toBeLessThanOrEqual(size.w+2);expect(size.root).toBeLessThanOrEqual(size.rw+2);
+}
+async function wheelOuter(page,target){
+ await target.scrollIntoViewIfNeeded();const box=await target.boundingBox();expect(box).not.toBeNull();await page.mouse.move(Math.min(page.viewportSize().width-20,Math.max(20,box.x+box.width/2)),Math.min(page.viewportSize().height-60,Math.max(80,box.y+30)));
+ const before=await page.locator('.cr-root').evaluate(element=>element.scrollTop);await page.mouse.wheel(0,360);await expect.poll(()=>page.locator('.cr-root').evaluate(element=>element.scrollTop)).toBeGreaterThan(before);expect(await target.evaluate(element=>element.scrollTop)).toBe(0);expect(await page.evaluate(()=>document.scrollingElement.scrollTop)).toBe(0);
+}
+for(const width of [380,1280])test('one constrained outer scroll reaches 500 projects and long code table raw report '+width,async({page},info)=>{
+ test.setTimeout(60000);await page.setViewportSize({width,height:900});const token='very_long_identifier_'.repeat(35);
+ const markdown=['# 模型报告 · 长内容滚动验收','',...Array.from({length:30},(_,i)=>'段落 '+i+'：'+token+'\n'),'| '+Array.from({length:8},(_,i)=>'列'+i).join(' | ')+' |','| '+Array(8).fill('---').join(' | ')+' |','| '+Array(8).fill(token).join(' | ')+' |','','~~~text',...Array.from({length:90},(_,i)=>'line '+i+' '+token),'~~~','','<details>','<summary>技术附录 · 长内容</summary>','',...Array.from({length:20},(_,i)=>'附录 '+i+' '+token+'\n'),'附录终点 END_APPENDIX','</details>','','正文终点 END_REPORT'].join('\n');
+ await open(page,{count:500,richReport:markdown});await constrainHost(page);await expect(page.getByRole('checkbox',{name:/^纳入项目 [0-9]+$/})).toHaveCount(500);await assertNoNestedScroll(page);await wheelOuter(page,page.locator('#cr-row-1'));
+ await page.getByRole('button',{name:'展开项目 500',exact:true}).scrollIntoViewIfNeeded();await expect(page.getByRole('button',{name:'展开项目 500',exact:true})).toBeInViewport();await selectGit(page);await page.getByRole('button',{name:'收起项目 1',exact:true}).click();
+ await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();const textarea=page.getByRole('textbox',{name:'源码上下文路径',exact:true});const originalHeight=await textarea.evaluate(element=>element.clientHeight);const paths=Array.from({length:70},(_,i)=>'client/source-'+i+'.ts').join('\n');await textarea.fill(paths);await expect(textarea).toHaveValue(paths);const textareaMetrics=await textarea.evaluate(element=>({height:element.clientHeight,scrollHeight:element.scrollHeight,fieldSizing:getComputedStyle(element).fieldSizing,overflow:getComputedStyle(element).overflow}));expect(textareaMetrics.height).toBeGreaterThan(originalHeight);await info.attach('textarea-autogrow-'+width,{body:JSON.stringify({initialHeight:originalHeight,...textareaMetrics,lines:70}),contentType:'application/json'});await assertNoNestedScroll(page);await wheelOuter(page,textarea);await expect(textarea).toHaveValue(paths);
+ await collect(page);await analyze(page);const document=report(page);await document.locator('details summary').click();await page.locator('.cr-report-raw summary').click();await assertNoNestedScroll(page);await wheelOuter(page,document.locator('pre'));await wheelOuter(page,document.locator('.cr-report-table'));
+ await expect(document.getByText('附录终点 END_APPENDIX',{exact:true})).toHaveCount(1);await document.getByText('附录终点 END_APPENDIX',{exact:true}).scrollIntoViewIfNeeded();await expect(document.getByText('附录终点 END_APPENDIX',{exact:true})).toBeInViewport();await document.getByText('正文终点 END_REPORT',{exact:true}).scrollIntoViewIfNeeded();await expect(document.getByText('正文终点 END_REPORT',{exact:true})).toBeInViewport();
+ const raw=page.locator('.cr-report-raw pre');await expect(raw).toHaveText(markdown);await page.locator('.cr-root').evaluate(element=>element.scrollTop=element.scrollHeight);expect(await raw.evaluate(element=>element.getBoundingClientRect().bottom)).toBeLessThanOrEqual(900);await assertNoNestedScroll(page);expect((await stats(page)).modelCalls).toBe(1);expect((await stats(page)).calls.filter(call=>call.endpoint==='generate')).toHaveLength(1);
+ const image=info.outputPath('outer-scroll-end-'+width+'.png');await page.screenshot({path:image});await info.attach('outer-scroll-end-'+width,{path:image,contentType:'image/png'});
+});
+
 for(const width of [380,1280])test('projects default collapsed, toggle independently, preserve values and locate hidden errors '+width,async({page},info)=>{
  await page.setViewportSize({width,height:1100});await open(page,{count:2,mixed:true});const row1=page.locator('#cr-row-0'),row2=page.locator('#cr-row-1');await expect(row1).toBeVisible();await expect(row2).toBeVisible();await expect(row1.locator(':scope > td')).toHaveCount(5);await expect(row2.locator(':scope > td')).toHaveCount(5);
  const toggle=index=>page.getByRole('button',{name:new RegExp('^(?:展开|收起)项目 '+index+'$')});for(const index of [1,2]){await expect(toggle(index)).toHaveAttribute('aria-expanded','false');await expect(page.getByRole('button',{name:'移除项目 '+index,exact:true})).toBeVisible();}
@@ -40,7 +74,7 @@ for(const width of [380,1280])test('projects default collapsed, toggle independe
  await toggle(1).click();await expect(toggle(1)).toHaveAttribute('aria-expanded','false');await expect(toggle(2)).toHaveAttribute('aria-expanded','true');await expect(row1.locator('[aria-label="版本 A 1"]')).toHaveValue('v1');await expect(row1.locator('[aria-label="版本 A 1"]')).not.toBeVisible();await expect(page.getByRole('checkbox',{name:'纳入项目 1',exact:true})).toBeChecked();await toggle(2).click();await expandProject(page,2);
  const search=page.getByRole('textbox',{name:'搜索项目路径',exact:true});await search.fill('project-1');await expect(row1).toHaveCount(0);await page.locator('.cr-bulk summary').click();await page.locator('.cr-bulk').getByRole('textbox',{name:'B 目标',exact:true}).fill('v2');await page.getByRole('button',{name:'应用到已选 GIT 项目',exact:true}).click();await search.fill('');await expect(row1.locator('[aria-label="版本 A 1"]')).toHaveValue('v1');await expect(row1.locator('[aria-label="版本 B 1"]')).toHaveValue('v2');await expect(toggle(1)).toHaveAttribute('aria-expanded','false');await expect(toggle(2)).toHaveAttribute('aria-expanded','true');
  await expandProject(page);await expect(page.getByRole('combobox',{name:'GIT 分支 A 1',exact:true})).toHaveValue('main');await page.getByRole('textbox',{name:'项目路径 1',exact:true}).fill('');await toggle(1).click();await expect(row1.locator('.cr-project-error')).toBeVisible();await search.fill('project-1');await page.getByRole('button',{name:'定位首个错误项目',exact:true}).click();await expect(search).toHaveValue('');await expect(toggle(1)).toHaveAttribute('aria-expanded','true');await expect(page.getByRole('textbox',{name:'项目路径 1',exact:true})).toBeFocused();
- const observed=await stats(page);expect(observed.calls.filter(call=>['refs','preview','generate'].includes(call.endpoint))).toHaveLength(0);expect(observed.modelCalls).toBe(0);expect(observed.installCalls).toBe(0);await expect(page.getByRole('checkbox',{name:'纳入项目 2',exact:true})).toBeChecked();const screenshot=info.outputPath('project-collapse-'+width+'.png');await page.locator('.cr-repositories').screenshot({path:screenshot});await info.attach('project-collapse-'+width,{path:screenshot,contentType:'image/png'});
+ const observed=await stats(page);expect(observed.calls.filter(call=>['refs','preview-start','generate'].includes(call.endpoint))).toHaveLength(0);expect(observed.modelCalls).toBe(0);expect(observed.installCalls).toBe(0);await expect(page.getByRole('checkbox',{name:'纳入项目 2',exact:true})).toBeChecked();const screenshot=info.outputPath('project-collapse-'+width+'.png');await page.locator('.cr-repositories').screenshot({path:screenshot});await info.attach('project-collapse-'+width,{path:screenshot,contentType:'image/png'});
 });
 
 test('reader report renders semantic headings tables decoded identifiers and inert source with collapsed appendices (contract mock)',async({page},info)=>{
@@ -61,7 +95,7 @@ test('single request preview distinguishes local coverage and budgeted excerpts,
  await route(page);await expect(consent(page)).toHaveAccessibleName(/一次请求可能计费/);await expect(consent(page)).toHaveAccessibleName(/未发送正文不属于模型全文分析/);await expect(generate(page)).toBeDisabled();await consent(page).check();await budget.fill('48000');await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();await page.getByRole('button',{name:'更新分析计划',exact:true}).click();await expect(consent(page)).toBeEnabled();await expect(budget).toHaveValue('48000');
  expect((await stats(page)).calls.filter(call=>call.endpoint==='analysis-plan').at(-1).payload.inputBudget).toBe(48000);expect((await stats(page)).modelCalls).toBe(0);await consent(page).check();await generate(page).click();
  const recover=page.getByRole('button',{name:'恢复已完成报告',exact:true});await expect(recover).toBeVisible();expect((await stats(page)).modelCalls).toBe(1);await recover.click();await expect(recover).toBeEnabled();await page.evaluate(()=>window.fixture.configure({resultPending:false}));await recover.click();await expect(report(page)).toContainText('模型报告 a');await expect(scope).toContainText('本地完整统计不等于模型全文覆盖');await expect(scope).toContainText('完全未发送文件专属证据 5 个');
- const observed=await stats(page);expect(observed.modelCalls).toBe(1);expect(observed.calls.filter(call=>call.endpoint==='generate')).toHaveLength(1);expect(observed.calls.filter(call=>call.endpoint==='result').length).toBeGreaterThanOrEqual(2);expect(observed.installCalls).toBe(0);
+ const observed=await stats(page);expect(observed.modelCalls).toBe(1);expect(observed.calls.filter(call=>call.endpoint==='generate')).toHaveLength(1);expect(paidReads(observed.calls).length).toBeGreaterThanOrEqual(2);expect(observed.installCalls).toBe(0);
 });
 
 test('real DOM scan → select → local evidence → explicit consent → safe download',async({page})=>{
@@ -77,9 +111,9 @@ test('real DOM scan → select → local evidence → explicit consent → safe 
 
 test('mixed Git and SVN requires explicit history authorization before capture',async({page})=>{
  await open(page,{count:2,mixed:true});await selectGit(page);await page.getByRole('checkbox',{name:'纳入项目 2',exact:true}).check();
- await expect(capture(page)).toBeDisabled();expect((await stats(page)).calls.filter(x=>x.endpoint==='preview')).toHaveLength(0);
+ await expect(capture(page)).toBeDisabled();expect((await stats(page)).calls.filter(x=>x.endpoint==='preview-start')).toHaveLength(0);
  await page.getByRole('checkbox',{name:/允许通过 SVN 工作副本地址读取历史版本/}).check();await collect(page);
- const request=(await stats(page)).calls.find(x=>x.endpoint==='preview').payload.request;expect(request.allowSvnNetwork).toBe(true);expect(request.repositories.map(x=>x.type)).toEqual(['git','svn']);expect((await stats(page)).modelCalls).toBe(0);
+ const request=(await stats(page)).calls.find(x=>x.endpoint==='preview-start').payload.request;expect(request.allowSvnNetwork).toBe(true);expect(request.repositories.map(x=>x.type)).toEqual(['git','svn']);expect((await stats(page)).modelCalls).toBe(0);
 });
 
 test('local refs and automatic batch/context inputs retain authorization boundaries',async({page})=>{
@@ -88,7 +122,7 @@ test('local refs and automatic batch/context inputs retain authorization boundar
  await expect(page.getByRole('checkbox',{name:/允许分批分析较大差异/})).toHaveCount(0);await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();
  await page.getByRole('textbox',{name:'源码上下文路径',exact:true}).fill('client/current.ts');
  await page.getByRole('textbox',{name:'固定版本源码路径',exact:true}).fill('client|A|src/api.ts');await collect(page);
- const request=(await stats(page)).calls.find(x=>x.endpoint==='preview').payload.request;expect(request.allowBatches).toBe(true);expect(request.contextPaths).toEqual(['client/current.ts']);expect(request.versionContexts).toEqual([{repository:'client',side:'A',path:'src/api.ts'}]);
+ const request=(await stats(page)).calls.find(x=>x.endpoint==='preview-start').payload.request;expect(request.allowBatches).toBe(true);expect(request.contextPaths).toEqual(['client/current.ts']);expect(request.versionContexts).toEqual([{repository:'client',side:'A',path:'src/api.ts'}]);
  await route(page);await consent(page).check();await page.getByRole('textbox',{name:'模型 ID',exact:true}).fill('other');await expect(consent(page)).not.toBeChecked();
  await consent(page).check();await page.getByRole('spinbutton',{name:'单片输入预算',exact:true}).fill('12000');await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();
  await page.getByRole('button',{name:'更新分析计划',exact:true}).click();await expect(consent(page)).toBeEnabled();expect((await stats(page)).modelCalls).toBe(0);
@@ -100,7 +134,7 @@ test('Git defaults to explicit remote origin in refs and collection with visible
  await expect(page.getByRole('textbox',{name:'Git 远端名 1',exact:true})).toHaveValue('origin');await expect(page.getByText(/远端.*(联网|访问)|联网.*远端/).first()).toBeVisible();const safety=page.locator('#cr-row-0 details');if(await safety.count())await safety.locator('summary').click();await expect(page.locator('#cr-row-0')).toContainText('不修改');await expect(page.locator('#cr-row-0')).toContainText(/不(?:会)?回退/);
  await page.getByRole('button',{name:'读取远端分支/标签',exact:true}).click();await expect.poll(async()=>(await stats(page)).calls.filter(call=>call.endpoint==='refs').length).toBe(1);
  const refs=(await stats(page)).calls.find(call=>call.endpoint==='refs').payload;expect(refs).toMatchObject({sessionId:'a',repositoryPath:'client',gitMode:'remote',gitRemote:'origin'});
- await collect(page);const row=(await stats(page)).calls.find(call=>call.endpoint==='preview').payload.request.repositories[0];expect(row).toMatchObject({gitMode:'remote',gitRemote:'origin'});
+ await collect(page);const row=(await stats(page)).calls.find(call=>call.endpoint==='preview-start').payload.request.repositories[0];expect(row).toMatchObject({gitMode:'remote',gitRemote:'origin'});
  await expect(page.getByRole('group',{name:'3. 确认分析范围',exact:true})).toContainText('origin');await expect(page.getByRole('group',{name:'3. 确认分析范围',exact:true})).toContainText('2026-11-03T10:00:00.000Z');expect((await stats(page)).modelCalls).toBe(0);
 });
 
@@ -111,7 +145,7 @@ test('classified remote authentication failure is safe, remains remote and permi
  // This mock sends only a classified safe hint. Backend unit tests own raw-stderr/secret filtering.
  const text=await page.locator('.cr-root').innerText();expect(text).not.toMatch(/PRIVATE KEY|raw-secret|password=|https:\/\/[^ ]+@/i);
  let calls=(await stats(page)).calls.filter(call=>call.endpoint==='refs');expect(calls).toHaveLength(1);expect(calls[0].payload).toMatchObject({gitMode:'remote',gitRemote:'origin'});
- expect((await stats(page)).calls.some(call=>call.endpoint==='preview'||call.endpoint==='generate')).toBe(false);
+ expect((await stats(page)).calls.some(call=>call.endpoint==='preview-start'||call.endpoint==='generate')).toBe(false);
  await page.evaluate(()=>window.fixture.configure({refsAuthFailure:false}));await query.click();await expect(alert).toHaveCount(0);await expect(page.locator('#cr-refs-0 option')).toHaveCount(3);
  calls=(await stats(page)).calls.filter(call=>call.endpoint==='refs');expect(calls).toHaveLength(2);expect(calls.every(call=>call.payload.gitMode==='remote'&&call.payload.gitRemote==='origin')).toBe(true);expect((await stats(page)).modelCalls).toBe(0);expect((await stats(page)).installCalls).toBe(0);
 });
@@ -120,7 +154,7 @@ test('Git local offline mode is explicit and stays local for refs and collection
  await open(page);await selectGit(page);await page.getByRole('combobox',{name:'Git 读取方式 1',exact:true}).selectOption('local');
  await page.getByRole('button',{name:'读取本地分支/标签',exact:true}).click();await expect(page.getByText('已载入 3 个本地引用，在 A/B 输入中选择；不会 fetch。')).toBeVisible();
  const refs=(await stats(page)).calls.find(call=>call.endpoint==='refs').payload;expect(refs).toMatchObject({sessionId:'a',repositoryPath:'client',gitMode:'local',gitRemote:'origin'});
- await collect(page);expect((await stats(page)).calls.find(call=>call.endpoint==='preview').payload.request.repositories[0].gitMode).toBe('local');
+ await collect(page);expect((await stats(page)).calls.find(call=>call.endpoint==='preview-start').payload.request.repositories[0].gitMode).toBe('local');
  await expect(page.getByRole('group',{name:'3. 确认分析范围',exact:true})).toContainText('本地');expect((await stats(page)).modelCalls).toBe(0);
 });
 
@@ -131,7 +165,7 @@ test('Git mode and remote edits invalidate preview and consent without changing 
  await expect(page.locator('#cr-refs-0 option')).toHaveCount(0);await expect(consent(page)).toHaveCount(0);await expect(branchA).toHaveValue('custom-baseline');await expect(branchB).toHaveValue('origin/develop');
  await page.getByRole('button',{name:'读取远端分支/标签',exact:true}).click();await expect(page.locator('#cr-refs-0 option')).toHaveCount(3);
  expect((await stats(page)).calls.filter(call=>call.endpoint==='refs').at(-1).payload).toMatchObject({gitMode:'remote',gitRemote:'upstream'});
- await collect(page);await route(page);await consent(page).check();expect((await stats(page)).calls.filter(call=>call.endpoint==='preview').at(-1).payload.request.repositories[0].gitRemote).toBe('upstream');
+ await collect(page);await route(page);await consent(page).check();expect((await stats(page)).calls.filter(call=>call.endpoint==='preview-start').at(-1).payload.request.repositories[0].gitRemote).toBe('upstream');
  await page.getByRole('combobox',{name:'Git 读取方式 1',exact:true}).selectOption('local');await expect(page.locator('#cr-refs-0 option')).toHaveCount(0);await expect(consent(page)).toHaveCount(0);await expect(branchA).toHaveValue('custom-baseline');await expect(branchB).toHaveValue('origin/develop');
  expect((await stats(page)).modelCalls).toBe(0);expect((await stats(page)).calls.filter(call=>call.endpoint==='generate')).toHaveLength(0);
 });
@@ -150,7 +184,7 @@ test('folder input preserves original request and expanded preview is visible be
  await input.fill('client/src/components\nclient/current.ts');
  await page.getByRole('textbox',{name:'固定版本源码路径',exact:true}).fill('client|A|src/api.ts');
  await collect(page);
- const calls=(await stats(page)).calls;const requests=calls.filter(call=>call.endpoint==='preview');expect(requests).toHaveLength(1);
+ const calls=(await stats(page)).calls;const requests=calls.filter(call=>call.endpoint==='preview-start');expect(requests).toHaveLength(1);
  expect(requests[0].payload.request.contextPaths).toEqual(['client/src/components','client/current.ts']);
  expect(requests[0].payload.request.versionContexts).toEqual([{repository:'client',side:'A',path:'src/api.ts'}]);
  await expect(input).toHaveValue('client/src/components\nclient/current.ts');
@@ -172,7 +206,7 @@ test('large context lists and over 32 batches remain bound to explicit preview a
  await page.getByRole('textbox',{name:'源码上下文路径',exact:true}).fill(contextPaths.join('\n'));
  await page.getByRole('textbox',{name:'固定版本源码路径',exact:true}).fill(versionContexts.map(item=>item.repository+'|'+item.side+'|'+item.path).join('\n'));
  await expect(capture(page)).toBeEnabled();await collect(page);
- const previewCall=(await stats(page)).calls.find(call=>call.endpoint==='preview');expect(previewCall.payload.request.contextPaths).toEqual(contextPaths);expect(previewCall.payload.request.versionContexts).toEqual(versionContexts);expect(previewCall.payload.request.allowBatches).toBe(true);
+ const previewCall=(await stats(page)).calls.find(call=>call.endpoint==='preview-start');expect(previewCall.payload.request.contextPaths).toEqual(contextPaths);expect(previewCall.payload.request.versionContexts).toEqual(versionContexts);expect(previewCall.payload.request.allowBatches).toBe(true);
  const files=page.getByRole('list',{name:'实际源码文件清单',exact:true});await expect(files.getByRole('listitem')).toHaveCount(50);await expect(files).toContainText('client/src/dir-24/file.ts');await expect(files).toContainText('src/old-24.ts');
  await expect(page.getByText('证据 9437184 字节（约 9216.0 KiB）；',{exact:false})).toBeVisible();
  await expect(page.getByText('本计划 40 片，按顺序调用模型，可能产生多次费用；',{exact:false})).toBeVisible();
@@ -184,8 +218,8 @@ test('large context lists and over 32 batches remain bound to explicit preview a
 
 test('progress connection loss is visible without redispatching a pending operation',async({page})=>{
  await open(page,{delayPreview:1700,progressFailure:true});await selectGit(page);await capture(page).click();
- await expect(page.getByRole('status').filter({hasText:'进度连接暂时失联'})).toBeVisible();await expect(capture(page)).toBeDisabled();
- await expect(report(page)).toContainText('本地证据');expect((await stats(page)).calls.filter(x=>x.endpoint==='preview')).toHaveLength(1);expect((await stats(page)).modelCalls).toBe(0);
+ await expect(page.getByRole('status').filter({hasText:/(?:采集|进度)连接暂时失联/})).toBeVisible();await expect(capture(page)).toBeDisabled();
+ await expect(report(page)).toContainText('本地证据');expect((await stats(page)).calls.filter(x=>x.endpoint==='preview-start')).toHaveLength(1);expect((await stats(page)).modelCalls).toBe(0);
 });
 
 test('editing draft and failing a new capture preserve the previous export',async({page})=>{
@@ -209,8 +243,8 @@ test('failed model attempt requires fresh consent before paid retry',async({page
 test('lost generate response recovers completed result without another model call',async({page})=>{
  await open(page,{failGenerateResponse:true});await selectGit(page);await collect(page);await route(page);await consent(page).check();await generate(page).click();
  await expect(report(page)).toContainText('模型报告 a');expect((await stats(page)).modelCalls).toBe(1);
- const calls=(await stats(page)).calls;expect(calls.filter(x=>x.endpoint==='generate')).toHaveLength(1);expect(calls.filter(x=>x.endpoint==='result')).toHaveLength(1);
- expect(calls.find(x=>x.endpoint==='result').payload.operationId).toBe(calls.find(x=>x.endpoint==='generate').payload.operationId);
+ const calls=(await stats(page)).calls;expect(calls.filter(x=>x.endpoint==='generate')).toHaveLength(1);expect(paidReads(calls)).toHaveLength(1);
+ expect(paidReads(calls)[0].payload.operationId).toBe(calls.find(x=>x.endpoint==='generate').payload.operationId);
 });
 
 test('pending lost response blocks duplicate generation and manual recovery is read only',async({page})=>{
@@ -218,7 +252,7 @@ test('pending lost response blocks duplicate generation and manual recovery is r
  const recover=page.getByRole('button',{name:'恢复已完成报告',exact:true});await expect(recover).toBeVisible();await expect(generate(page)).toBeDisabled();
  expect((await stats(page)).modelCalls).toBe(1);await recover.click();await expect(recover).toBeEnabled();await expect(generate(page)).toBeDisabled();
  await page.evaluate(()=>window.fixture.configure({resultPending:false}));await recover.click();await expect(report(page)).toContainText('模型报告 a');
- expect((await stats(page)).modelCalls).toBe(1);expect((await stats(page)).calls.filter(x=>x.endpoint==='generate')).toHaveLength(1);expect((await stats(page)).calls.filter(x=>x.endpoint==='result')).toHaveLength(3);
+ expect((await stats(page)).modelCalls).toBe(1);expect((await stats(page)).calls.filter(x=>x.endpoint==='generate')).toHaveLength(1);expect(paidReads((await stats(page)).calls)).toHaveLength(3);
 });
 
 test('pending recovery survives session switch and blocks duplicate work and native installation',async({page})=>{
@@ -264,21 +298,21 @@ test('cancelled delayed capture cannot overwrite a retained report',async({page}
  await page.evaluate(()=>window.fixture.configure({delayPreview:500,ignoreAbort:true}));await capture(page).click();
  await page.getByRole('button',{name:'取消',exact:true}).click();await expect(page.getByText(/^执行已取消；已有报告已保留$/)).toBeVisible();
  await expect.poll(async()=>await page.evaluate(()=>window.fixture.getStats().settledPreviews)).toBe(2);
- await expect(report(page)).toContainText('模型报告 a');expect((await stats(page)).modelCalls).toBe(1);
+ await expect(report(page)).toContainText('模型报告 a');expect((await stats(page)).modelCalls).toBe(1);expect((await stats(page)).calls.filter(call=>call.endpoint==='preview-cancel')).toHaveLength(1);expect((await stats(page)).captureTasks.at(-1).status).toBe('stopped');
 });
 
 test('late response after session unmount does not leak a report into another session',async({page})=>{
  await open(page,{delayPreview:500,ignoreAbort:true});await selectGit(page);await capture(page).click();
  await page.getByRole('button',{name:'测试会话 B',exact:true}).click();
  await expect.poll(async()=>await page.evaluate(()=>window.fixture.getStats().settledPreviews)).toBe(1);
- await expect(report(page)).toHaveCount(0);await expect(page.locator('.cr-workspace')).toContainText('G:/fixture/b');
+ await expect(report(page)).toHaveCount(0);await expect(page.locator('.cr-workspace')).toContainText('G:/fixture/b');expect((await stats(page)).calls.filter(call=>call.endpoint==='preview-cancel')).toHaveLength(1);expect((await stats(page)).captureTasks[0].status).toBe('stopped');
 });
 
 test('no workspace and incompatible backend never dispatch collection or model',async({page})=>{
  await open(page,{noSession:true,runtimeMismatch:true});await expect(page.getByText('请先打开一个带工作目录的会话。')).toBeVisible();
  await page.getByRole('button',{name:'测试会话 A',exact:true}).click();
  await expect(page.getByRole('alert').filter({hasText:/界面与后台版本/}).first()).toBeVisible();
- expect((await stats(page)).calls.filter(x=>['discover','preview','generate'].includes(x.endpoint))).toHaveLength(0);expect((await stats(page)).modelCalls).toBe(0);
+ expect((await stats(page)).calls.filter(x=>['discover','preview-start','generate'].includes(x.endpoint))).toHaveLength(0);expect((await stats(page)).modelCalls).toBe(0);
 });
 
 test('native update restart barrier survives session remount and prevents repeat installation',async({page})=>{
@@ -336,7 +370,7 @@ test('detached paid response loss retains same operation for read-only recovery'
  await page.getByRole('button',{name:'测试会话 A',exact:true}).click();
  const recovery=page.getByRole('button',{name:'恢复已完成报告',exact:true});
  if(await recovery.count())await recovery.click();await expect(report(page)).toContainText('模型报告 a');
- const proof=await assertPaidProof(page);expect(proof.generateAborts).toBe(0);const paid=proof.calls.find(call=>call.endpoint==='generate');const reads=proof.calls.filter(call=>call.endpoint==='result');expect(reads.length).toBeGreaterThan(0);expect(reads.every(call=>call.payload.operationId===paid.payload.operationId&&call.payload.sessionId==='a')).toBe(true);
+ const proof=await assertPaidProof(page);expect(proof.generateAborts).toBe(0);const paid=proof.calls.find(call=>call.endpoint==='generate');const reads=paidReads(proof.calls);expect(reads.length).toBeGreaterThan(0);expect(reads.every(call=>call.payload.operationId===paid.payload.operationId&&call.payload.sessionId==='a')).toBe(true);
 });
 
 test('explicit paid cancellation retains unknown identity and later completion restores without dispatch',async({page})=>{
@@ -347,7 +381,7 @@ test('explicit paid cancellation retains unknown identity and later completion r
  await page.getByRole('button',{name:'恢复已完成报告',exact:true}).click();await expect(capture(page)).toBeDisabled();
  await page.evaluate(()=>window.fixture.releaseGenerate());await expect.poll(async()=>(await stats(page)).settledGenerations).toBe(1);
  await page.getByRole('button',{name:'恢复已完成报告',exact:true}).click();await expect(report(page)).toContainText('模型报告 a');
- const after=await assertPaidProof(page);expect(after.calls.filter(call=>call.endpoint==='result').every(call=>call.payload.operationId===operation)).toBe(true);
+ const after=await assertPaidProof(page);expect(paidReads(after.calls).every(call=>call.payload.operationId===operation)).toBe(true);
 });
 
 test('unknown paid work in A blocks installation and refs in B while downloads remain local',async({page})=>{

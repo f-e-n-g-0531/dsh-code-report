@@ -15,7 +15,7 @@ test('public documentation versions labels links and boundaries match the packag
 
 test('directory source documentation states expansion, refusal and authorization boundaries',async()=>{
  const readme=await readFile('README.md','utf8');const client=await readFile('src/client.jsx','utf8');const development=await readFile('docs/DEVELOPMENT.md','utf8');const acceptance=await readFile('docs/ACCEPTANCE.md','utf8');const notes=await readFile('RELEASE-NOTES.md','utf8');
- for(const text of ['支持直接填写目录','递归展开','根目录可填 `.`','固定版本源码仍仅支持文件，不支持目录','不设固定规模上限','无 NUL','可用内存','排除计数','显式填写敏感路径仍拒绝','整次采集失败','不静默跳过或截断','实际源码文件清单'])assert.ok(readme.includes(text),text);
+ for(const text of ['支持直接填写目录','递归展开','根目录可填 `.`','固定版本源码仍仅支持文件，不支持目录','不设固定规模上限','解码后 NUL 字符仍拒绝','可用内存','排除计数','显式填写敏感路径仍拒绝','整次采集失败','不制造替换字符或静默截断','实际源码文件清单'])assert.ok(readme.includes(text),text);
  assert.ok(!readme.includes('不支持直接填写目录'),'obsolete directory refusal removed');
  for(const text of ['点前缀隐藏','不按 Windows Hidden 属性筛选','敏感','依赖','构建','缓存','链接','非普通文件'])assert.ok(readme.includes(text),text);
  for(const text of ['不设固定规模上限','不按 Windows Hidden 属性筛选','实际文件清单','授权模型','证据 {preview.bytes} 字节','可能产生多次费用'])assert.ok(client.includes(text),text);
@@ -37,7 +37,7 @@ test('GBK documentation distinguishes decoding, hashes and unverified history',a
  for(const source of [readme,development,notes.split('## v0.8.0 历史记录')[0]]){
   for(const text of ['GB18030','GBK','UTF-8','同一行混合编码','U+FFFD','不修改源文件','rawDiffHash','diffHash'])assert.ok(source.includes(text),text);
  }
- assert.ok(readme.includes('源码按完整文件优先严格 UTF-8'));
+ for(const text of ['源码按完整文件解码','非 BOM 文件仍先尝试 UTF-8、再 GB18030','UTF-16LE／BE','windows-1252-copyright','encodingWarning','不代表支持通用 Windows-1252','不继承源码的 BOM UTF-16 或窄 © 回退'])assert.ok(readme.includes(text),text);
  assert.ok(readme.includes('按原始 LF 字节边界逐行'));
  assert.ok(readme.includes('路径名单、SVN XML 等元数据仍严格要求 UTF-8'));
  const encodingHistory=notes.split('## v0.8.1 历史记录')[1]?.split('## v0.8.0 历史记录')[0];

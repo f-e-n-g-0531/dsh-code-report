@@ -40,7 +40,7 @@ test('ArrayBuffer and exact byte views respect offsets and lengths without readi
   }
 });
 
-test('source and diff reject NUL before fallback rather than interpreting UTF-16 or binary', () => {
+test('source without BOM and all diffs reject NUL before fallback rather than guessing UTF-16', () => {
   for (const bytes of [Buffer.from([0]), Buffer.from([0x41, 0, 0x42, 0]), concat(gbkChinese, Buffer.from([0]))]) {
     for (const decode of [decodeSourceBytes, decodeDiffBytes]) {
       assert.throws(() => decode(bytes, {label: 'sample.bin'}), error => error.code === 'code-report/binary-input' && /sample.bin.*NUL/.test(error.message));
@@ -90,6 +90,66 @@ test('byte LF framing preserves CRLF, lone CR, empty lines and missing final new
   }
   assert.deepEqual(decodeDiffBytes(utf8('')), {text: '', encoding: 'utf-8'});
   assert.deepEqual(decodeDiffBytes(utf8('\n\r\n')), {text: '\n\r\n', encoding: 'utf-8'});
+});
+
+const utf16 = (text, bigEndian = false) => {const value=Buffer.from(text,'utf16le');return bigEndian ? value.swap16() : value;};
+
+test('source recognizes UTF-16 LE and BE only with BOM and preserves BOM CRLF and astral text', () => {
+ const text='\ufeff// copyright © 中文🙂\r\nline\r';
+ for(const bigEndian of [false,true]){
+  const bytes=utf16(text,bigEndian),original=Buffer.from(bytes);
+  assert.deepEqual(decodeSourceBytes(bytes),{text,encoding:bigEndian?'utf-16be-bom':'utf-16le-bom'});
+  assert.deepEqual(bytes,original);
+ }
+ for(const bigEndian of [false,true])assert.equal(decodeSourceBytes(utf16('\ufeff',bigEndian)).text,'\ufeff');
+});
+
+test('BOM UTF-16 source rejects odd lengths and unpaired surrogates without legacy fallback', () => {
+ for(const bigEndian of [false,true])for(const value of ['\ufeff\ud800','\ufeff\udc00','\ufeff\ud800A','\ufeffA\udc00']){
+  assert.throws(()=>decodeSourceBytes(utf16(value,bigEndian),{label:'broken.rc'}),error=>error.code==='code-report/text-encoding'&&/broken.rc.*UTF-16/.test(error.message));
+ }
+ for(const hex of ['fffe41','feff00','fffe00d8ff','feffd800ff'])assert.throws(()=>decodeSourceBytes(Buffer.from(hex,'hex')),{code:'code-report/text-encoding'});
+});
+
+test('BOM UTF-16 rejects decoded NUL but not ordinary zero bytes used by ASCII code units', () => {
+ for(const bigEndian of [false,true]){
+  assert.equal(decodeSourceBytes(utf16('\ufeffASCII\r\n',bigEndian)).text,'\ufeffASCII\r\n');
+  assert.throws(()=>decodeSourceBytes(utf16('\ufeffA\0B',bigEndian),{label:'binary.rc'}),error=>error.code==='code-report/binary-input'&&/binary.rc.*NUL/.test(error.message));
+ }
+ for(const bytes of [utf16('AB'),utf16('AB',true)])assert.throws(()=>decodeSourceBytes(bytes),{code:'code-report/binary-input'});
+});
+
+test('new BOM source paths respect exact views and do not mutate raw bytes', () => {
+ for(const bigEndian of [false,true]){
+  const raw=utf16('\ufeffA🙂',bigEndian),storage=Buffer.concat([Buffer.from([255]),raw,Buffer.from([0,255])]),original=Buffer.from(storage);
+  for(const value of [storage.subarray(1,1+raw.length),new DataView(storage.buffer,storage.byteOffset+1,raw.length),new Uint8Array(storage.buffer,storage.byteOffset+1,raw.length),Uint8Array.from(raw).buffer]){
+   assert.equal(decodeSourceBytes(value).text,'\ufeffA🙂');
+  }
+  assert.deepEqual(storage,original);
+ }
+});
+
+test('copyright-only source fallback maps exactly ASCII plus A9 and surfaces ambiguity', () => {
+ for(const bytes of [Buffer.from([0xa9]),concat('// ',Buffer.from([0xa9]),' Valve\r\n')]){
+  const original=Buffer.from(bytes),decoded=decodeSourceBytes(bytes,{label:'any-name.custom'});
+  assert.equal(decoded.encoding,'windows-1252-copyright');assert.equal(decoded.text,bytes.toString('latin1'));assert.match(decoded.encodingWarning,/歧义/);assert.match(decoded.encodingWarning,/不代表支持通用 Windows-1252/);assert.ok(!decoded.text.includes('\ufffd'));assert.deepEqual(bytes,original);
+ }
+ assert.deepEqual(decodeSourceBytes(utf8('©')),{text:'©',encoding:'utf-8'});
+ assert.equal(decodeSourceBytes(Buffer.from('a9a9','hex')).encoding,'gb18030');
+});
+
+test('copyright exception does not accept other Western bytes or conceal truncated sequences', () => {
+ for(const hex of ['a9ff','a981ff','a980ff','a996ff','e9','93','81','c2','e282ff','f09f92']){
+  assert.throws(()=>decodeSourceBytes(Buffer.from(hex,'hex'),{label:'bad.h'}),error=>error.code==='code-report/text-encoding'&&/bad.h/.test(error.message));
+ }
+ // These byte pairs are already valid GB18030, even if another encoding could interpret them differently.
+ for(const hex of ['a981','a980','a996','e282'])assert.equal(decodeSourceBytes(Buffer.from(hex,'hex')).encoding,'gb18030');
+ assert.throws(()=>decodeSourceBytes(Buffer.from([0xa9,0])),{code:'code-report/binary-input'});
+});
+
+test('diff policy remains strict and does not inherit BOM UTF-16 or copyright source exceptions', () => {
+ for(const bigEndian of [false,true])assert.throws(()=>decodeDiffBytes(utf16('\ufeff+ASCII\r\n',bigEndian)),{code:'code-report/binary-input'});
+ for(const value of [Buffer.from([0xa9]),concat('+',Buffer.from([0xa9]),'\n')])assert.throws(()=>decodeDiffBytes(value),{code:'code-report/text-encoding'});
 });
 
 test('a broken multibyte sequence cannot borrow bytes from the next original LF line', () => {

@@ -72,7 +72,8 @@ test('client submits explicit remote capture and refs options and retains offlin
   calls.push({endpoint,payload});
   if(endpoint==='runtime-info')return {ok:true,value:{packageName:PACKAGE_NAME,runningVersion:version,protocol:PROTOCOL_VERSION}};
   if(endpoint==='refs')return {ok:true,value:{refs:['refs/heads/develop']}};
-  if(endpoint==='preview')return {ok:false,error:{message:'fixture capture stopped'}};
+  if(endpoint==='preview-start')return {ok:true,value:{operationId:payload.operationId,status:'pending'}};
+  if(endpoint==='result')return {ok:true,value:{status:'stopped',error:{code:'code-report/capture-stopped',message:'fixture capture stopped'}}};
   throw new Error('unexpected '+endpoint);
  }});
  instance.render();instance.effects.find(item=>item.deps?.length===1&&item.deps[0]===0).fn();
@@ -83,12 +84,12 @@ test('client submits explicit remote capture and refs options and retains offlin
  await cards.props.loadRefs('.',undefined,{gitMode:'local',gitRemote:'origin'});
  assert.equal(calls.at(-1).payload.gitMode,'local');
  await all.find(node=>node.type==='button'&&node.props.children==='开始执行 · 采集差异').props.onClick();
- const capture=calls.find(call=>call.endpoint==='preview');
+ const capture=calls.find(call=>call.endpoint==='preview-start');
  assert.equal(capture.payload.request.repositories[0].gitMode,'remote');
  assert.equal(capture.payload.request.repositories[0].gitRemote,'origin');
  cards.props.change(0,'gitMode','local');all=nodes(instance.render());
  await all.find(node=>node.type==='button'&&node.props.children==='开始执行 · 采集差异').props.onClick();
- assert.equal(calls.filter(call=>call.endpoint==='preview').at(-1).payload.request.repositories[0].gitMode,'local');
+ assert.equal(calls.filter(call=>call.endpoint==='preview-start').at(-1).payload.request.repositories[0].gitMode,'local');
 });
 test('workspace groups workflow stages without changing initial approval state',()=>{
  const all=nodes(harness().render());

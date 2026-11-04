@@ -5,13 +5,13 @@ import {PACKAGE_NAME,PROTOCOL_VERSION} from '../../src/protocol.mjs';
 
 // Synthetic service: dispatched model work can outlive its client transport.
 const settings={count:1,ttl:600000,failPreview:false,failGenerate:false,delayPreview:0,delayGenerate:0,ignoreAbort:false,runtimeMismatch:false,progressFailure:false,holdGenerate:false,holdInstall:false,holdRefs:false,...window.__fixtureOptions};
-const calls=[],previews=new Map(),results=new Map(),gates=new Map();
+const calls=[],previews=new Map(),results=new Map(),captureTasks=new Map(),gates=new Map();
 let previewSequence=0,modelCalls=0,installCalls=0,settledPreviews=0,settledGenerations=0,generateAborts=0,switchSession;
 const sessions={a:{id:'a',cwd:'G:/fixture/a',retainedBy:{mainView:1}},b:{id:'b',cwd:'G:/fixture/b',retainedBy:{mainView:1}}};
 const ok=value=>({ok:true,value});
 const execution=(phase,{dispatched=true,available=false}={})=>({backendInstanceId:'fixture-backend',dispatch:dispatched?'dispatched':'not-dispatched',dispatchCount:dispatched?1:0,completedBatches:available?(settings.analysisBatches||1):0,totalBatches:settings.analysisBatches||1,resultAvailability:available?'available':'unavailable',phase});
 const fail=(message,code='code-report/input',extra={})=>({ok:false,error:{code,message,details:{fixture:true,...extra}}});
-const info=()=>({packageName:PACKAGE_NAME,protocol:PROTOCOL_VERSION,runningVersion:settings.runtimeMismatch?'0.0.0':(settings.runningVersion||version)});
+const info=()=>({packageName:PACKAGE_NAME,protocol:PROTOCOL_VERSION,runningVersion:settings.runtimeMismatch?'0.0.0':(settings.runningVersion||version),asyncPreview:true});
 // Single-request fixtures are contract mocks, not real compaction or coverage calculations.
 const singleCoverage=()=>({strategy:'single-request',originalSourceBytes:987654,fullManifestFiles:12,sentFileCount:7,sentTextFileCount:2,omittedFileCount:5,generatedFileCount:4,total:7,processed:7,remaining:0,completedBatches:1,totalBatches:1,cited:0});
 const plan=()=>settings.singleRequest?{id:'plan-single-fixture',strategy:'single-request',inputBudget:settings.singleBudget||64000,estimated:true,batches:[{id:'batch-single',evidenceIds:['summary-1'],inputBytes:4200}],coverage:singleCoverage()}:{id:'plan-fixture',inputBudget:24000,estimated:true,batches:Array.from({length:settings.analysisBatches||1},(_,index)=>({id:'batch-'+(index+1),evidenceIds:['e-'+(index+1)],inputBytes:100})),coverage:{total:settings.analysisBatches||1,excluded:0}};
@@ -34,7 +34,9 @@ function modelTransport(work,signal){
 async function rpc(channel,endpoint,payload,signal){
  calls.push({channel,endpoint,payload:structuredClone(payload)});
  if(endpoint==='runtime-info')return ok(info());
+ if(endpoint==='preview-cancel'){const task=captureTasks.get(payload.operationId);if(!task||task.sessionId!==payload.sessionId)return fail('采集任务不存在');task.status='stopped';task.error={code:'code-report/capture-stopped',message:'fixture 采集已取消'};if(task.value)previews.delete(task.value.previewId);return ok({operationId:payload.operationId,status:'stopped'});}
  if(endpoint==='result'){
+  const capture=captureTasks.get(payload.operationId);if(capture&&capture.sessionId===payload.sessionId){if(settings.failCaptureResultOnce){settings.failCaptureResultOnce=false;throw new Error('fixture capture result response lost');}return ok({status:capture.status,...(capture.status==='completed'?{result:capture.value}:{}),...(capture.error?{error:capture.error}:{})});}
   const entry=results.get(payload.operationId);
   if(!entry||entry.sessionId!==payload.sessionId)return ok({status:'unavailable',execution:execution('unknown',{dispatched:false})});
   if(entry.status==='stopped')return ok({status:'stopped',execution:entry.execution});
@@ -50,6 +52,7 @@ async function rpc(channel,endpoint,payload,signal){
  }
  if(endpoint==='progress'){
   if(settings.progressFailure)throw new Error('fixture progress disconnected');
+  const capture=captureTasks.get(payload.operationId);if(capture&&capture.sessionId===payload.sessionId)return ok({phase:capture.status==='pending'?'collecting':capture.status,completed:0,total:1,label:'fixture 正在采集'});
   const task=results.get(payload.operationId);
   if(task&&task.sessionId===payload.sessionId){
    const phase=task.status==='pending'?'analyzing':task.status;
@@ -59,17 +62,21 @@ async function rpc(channel,endpoint,payload,signal){
  }
  if(endpoint==='release-preview'){previews.delete(payload.previewId);return ok({released:true});}
  if(endpoint==='analysis-plan'){if(settings.singleRequest)settings.singleBudget=payload.inputBudget;return ok({analysisPlan:plan(),...plan()});}
- if(endpoint==='preview'){
-  const request=structuredClone(payload.request);
-  await wait(settings.delayPreview,signal);settledPreviews++;
-  if(settings.failPreview)return fail('fixture 采集失败');
+ if(endpoint==='preview-start'){
+  const prior=captureTasks.get(payload.operationId);if(prior)return prior.sessionId===payload.sessionId?ok({operationId:payload.operationId,status:prior.status}):fail('任务会话不匹配');
+  if([...captureTasks.values()].some(task=>task.status==='pending'))return fail('采集仍在执行','code-report/busy');
+  const request=structuredClone(payload.request),task={sessionId:payload.sessionId,status:'pending'};captureTasks.set(payload.operationId,task);
+  // Backend work is intentionally detached from the short RPC request signal.
+  task.work=(async()=>{if(settings.holdPreview)await gate('preview');await wait(settings.delayPreview);settledPreviews++;if(task.status==='stopped')return;
+  if(settings.failPreview){task.status='stopped';task.error={code:'code-report/input',message:'fixture 采集失败'};return;}
   const previewId='preview-'+(++previewSequence);
   // Contract-only fixture data: no filesystem traversal or real exclusion checks occur here.
   const expanded=settings.directoryContextPreview;
   const context=expanded?structuredClone(expanded.context):[];
   const limitations=['模拟服务，不读取真实仓库',...(expanded?.limitations||[])];
   const value={previewId,expiresAt:Date.now()+settings.ttl,bytes:expanded?.bytes??100,repositories:request.repositories.map(row=>({...row,...(row.type==='git'?{gitSource:row.gitMode==='local'?'local':'remote',...(row.gitMode!=='local'?{remote:row.gitRemote||'origin',observedAt:'2026-11-03T10:00:00.000Z'}:{})}:{}),a:'a'.repeat(40),b:'b'.repeat(40),files:['api.ts']})),context,limitations,analysisPlan:plan(),markdown:'# 本地证据 '+payload.sessionId+' '+request.title+'\n未调用模型\n<script>window.fixtureInjected=true</script>'};
-  previews.set(previewId,{sessionId:payload.sessionId,value});return ok(value);
+  previews.set(previewId,{sessionId:payload.sessionId,value});task.value=value;task.status='completed';})();
+  if(settings.failPreviewStartResponse)throw new Error('fixture capture start response lost');return ok({operationId:payload.operationId,status:'pending'});
  }
  if(endpoint==='generate'){
   const preview=previews.get(payload.previewId);
@@ -90,7 +97,7 @@ async function rpc(channel,endpoint,payload,signal){
  }
  return fail('未知模拟端点 '+endpoint);
 }
-window.fixture={configure(value){Object.assign(settings,value);},releaseGenerate:()=>release('generate'),releaseInstall:()=>release('install'),releaseRefs:()=>release('refs'),getStats:()=>({calls:structuredClone(calls),modelCalls,installCalls,settledPreviews,settledGenerations,generateAborts}),switchSession:id=>switchSession(id),settings};
+window.fixture={configure(value){Object.assign(settings,value);},releasePreview:()=>release('preview'),releaseGenerate:()=>release('generate'),releaseInstall:()=>release('install'),releaseRefs:()=>release('refs'),getStats:()=>({calls:structuredClone(calls),modelCalls,installCalls,settledPreviews,settledGenerations,generateAborts,captureTasks:[...captureTasks.entries()].map(([operationId,task])=>({operationId,sessionId:task.sessionId,status:task.status}))}),switchSession:id=>switchSession(id),settings};
 // Explicit host-theme simulation. This is not a screenshot of the live DSH GUI.
 if(settings.theme){
  const dark=settings.theme==='dark',root=document.documentElement;
