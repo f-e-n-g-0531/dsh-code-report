@@ -22,23 +22,32 @@ export function runGitRead(args, options = {}) {
 }
 
 /** Network reads are only for caller-owned temporary bare repositories, never report worktrees.
- * Retain credential/TLS/SSH settings without inheriting URL rewrites, hooks or remote helpers. */
+ * Retain credential/TLS/SSH settings without inheriting URL rewrites, hooks or remote helpers.
+ * authenticationRoot reads trusted source-repository authentication configuration only.
+ * Configured credential/SSH programs and explicit SSH environment overrides are user-trusted
+ * executable code, not an OS sandbox. Relative command paths retain the transport temp cwd. */
 export async function runGitRemote(args, options = {}) {
+  const {authenticationRoot, ...transportOptions} = options;
+  if (authenticationRoot !== undefined && (typeof authenticationRoot !== 'string' || !authenticationRoot)) throw new Error('无效认证配置根目录');
   const source = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
   const safe = ['-c','core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'),'-c','core.fsmonitor=false'];
-  const configuration = await execute('git', [...safe,'config','--null','--list','--includes'], {...options,raw:false,onStdoutBytes:undefined}, source);
+  const configuration = await execute('git', [...safe,'config','--null','--list','--includes'], {...transportOptions,cwd:authenticationRoot ?? transportOptions.cwd,raw:false,onStdoutBytes:undefined}, source);
   options.signal?.throwIfAborted();
   const retained = [];
   for (const record of configuration.split('\0')) {
     const split = record.indexOf('\n');
     if (split < 0) continue;
     const key = record.slice(0,split), value = record.slice(split+1);
-    if (/^(?:credential[.]|http[.])|^core[.]sshcommand$/i.test(key)) retained.push([key,value]);
+    if (/^(?:credential[.]|http[.])|^(?:core[.]sshcommand|ssh[.]variant)$/i.test(key)) retained.push([key,value]);
   }
   const env = {...isolatedEnvironment(source), GIT_TERMINAL_PROMPT:'0', GCM_INTERACTIVE:'never', GIT_CONFIG_COUNT:String(retained.length)};
+  for (const [key,value] of Object.entries(process.env)) {
+    const canonical = process.platform === 'win32' ? key.toUpperCase() : key;
+    if (['GIT_SSH_COMMAND','GIT_SSH','GIT_SSH_VARIANT'].includes(canonical)) env[canonical] = value;
+  }
   retained.forEach(([key,value],index) => { env['GIT_CONFIG_KEY_' + index] = key; env['GIT_CONFIG_VALUE_' + index] = value; });
   const protocols = ['-c','protocol.allow=never', ...['file','http','https','ssh','git'].flatMap(name => ['-c','protocol.' + name + '.allow=always']),'-c','protocol.ext.allow=never'];
-  return execute('git', [...safe,...protocols,'-c','fetch.recurseSubmodules=false','-c','submodule.recurse=false',...args], {...options,killTree:true}, env);
+  return execute('git', [...safe,...protocols,'-c','fetch.recurseSubmodules=false','-c','submodule.recurse=false',...args], {...transportOptions,killTree:true}, env);
 }
 
 function execute(command, args, {cwd, signal, maxBytes, timeoutMs, onStdoutBytes, raw = false, killTree = false} = {}, env) {

@@ -66,9 +66,17 @@ test('visual refresh documentation keeps workflow and business boundaries separa
  for(const label of ['配置发布范围','核对差异证据','生成与导出']){assert.ok(readme.includes(label),label);assert.ok(client.includes(label),label);}
  for(const label of ['A · 比较基线','B · 发布目标']){assert.ok(readme.includes(label),label);assert.ok(cards.includes(label),label);}
  for(const text of ['发布工作台','项目卡片','帮助说明可折叠','深浅主题','窄屏','不代替采集或模型发送确认'])assert.ok(readme.includes(text),text);
- const current=notes.split('## v0.9.0 历史记录')[0];for(const text of ['仅界面','不更改后端','remote/origin','模型发送确认','不表示当前 DSH 已更新','正式发布以远端门禁'])assert.ok(current.includes(text),text);
+ const visualHistory=notes.split('## v0.9.1 历史记录')[1]?.split('## v0.9.0 历史记录')[0];for(const text of ['仅界面','不更改后端','remote/origin','模型发送确认','不表示当前 DSH 已更新','正式发布以远端门禁'])assert.ok(visualHistory?.includes(text),text);assert.ok(visualHistory.includes('256/256'));assert.ok(visualHistory.includes('38/38'));
  assert.ok(acceptance.includes('v0.9.1 视觉升级'));assert.ok(acceptance.includes('截图检查不等于完整无障碍认证'));
  const history=notes.split('## v0.9.0 历史记录')[1]?.split('## v0.8.1 历史记录')[0];assert.ok(history?.includes('254/254'));assert.ok(history?.includes('32/32'));
+});
+
+test('source authentication documentation exposes effective configuration and diagnostic boundaries',async()=>{
+ const readme=await readFile('README.md','utf8'),development=await readFile('docs/DEVELOPMENT.md','utf8'),notes=await readFile('RELEASE-NOTES.md','utf8'),acceptance=await readFile('docs/ACCEPTANCE.md','utf8');
+ for(const text of ['源仓库有效','core.sshCommand','ssh.variant','GIT_SSH_COMMAND','GIT_SSH_VARIANT','相对 -i 路径不会自动改写','不证明用户凭据错误','密钥路径','known_hosts','不会自动关闭 TLS 校验'])assert.ok(readme.includes(text),text);
+ for(const text of ['authenticationRoot','配置预检 cwd','credential.*','http.*','core.sshCommand','ssh.variant','GIT_SSH_COMMAND','GIT_SSH_VARIANT','transportOptions','实际网络 cwd 始终为自有临时目录','其他 GIT_ 注入仍清除','runGitRead 维持严格隔离不变','remote uploadpack','相对 -i 或命令路径不改写','remoteFailureDiagnostic(error)','不保证宿主 RPC 保留该属性','不拼接原始 stderr/stdout/error'])assert.ok(development.includes(text),text);
+ const current=notes.split('## v0.9.1 历史记录')[0];for(const text of ['不能据此断定用户凭据错误','authenticationRoot','可信可执行配置','不是 OS 沙箱','不回显 URL、凭据或密钥路径','不宣称已实测业务远端认证或安装当前 GUI','正式发布以远端门禁'])assert.ok(current.includes(text),text);
+ assert.ok(acceptance.includes('v0.9.2 SSH 认证兼容'));assert.ok(acceptance.includes('相对 -i 不自动改写'));
 });
 
 test('maintenance commands and release evidence boundaries stay explicit',async()=>{

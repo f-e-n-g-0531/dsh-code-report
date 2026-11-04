@@ -13,14 +13,34 @@ function remoteName(remote) {
   return remote;
 }
 
-function safeFailure(remote, stage) {
-  return Object.assign(new Error('Git 远端 ' + remote + '：' + stage + '失败；请检查远端配置、访问权限与非交互认证，未回退本地版本'), {code: 'code-report/git-remote'});
+/** Only fixed diagnostic categories cross the RPC boundary; raw Git stderr may contain secrets. */
+export function remoteFailureDiagnostic(error) {
+  const message=typeof error?.message==='string'?error.message:'';
+  const rules=[
+    ['ssh-identity',/identity file .*not accessible|no such identity|load key .*|bad permissions|unprotected private key/i,'SSH 密钥无法读取或格式/权限不正确；请检查当前仓库 core.sshCommand 指定的私钥，建议使用绝对路径'],
+    ['ssh-publickey',/permission denied[^\n]*(?:publickey|keyboard-interactive)|no supported authentication methods|no authentication methods available|no more authentication methods to try/i,'SSH 公钥认证被拒绝；请确认当前仓库指定的密钥已在服务器授权，并可由 DSH 运行用户使用'],
+    ['ssh-host-key',/host key verification failed|remote host identification has changed|authenticity of host .*can.t be established|no .*host key is known/i,'SSH 主机密钥未受信任或已变化；请在终端核验服务器指纹并配置 known_hosts，不会自动跳过主机校验'],
+    ['dns',/could not resolve (?:host|hostname)|name or service not known|temporary failure in name resolution|no such host is known|nodename nor servname/i,'无法解析远端主机；请检查域名、VPN 和 DNS'],
+    ['proxy',/could not resolve proxy|failed to connect to .*proxy|proxy authentication required|proxy connect aborted|received http code 407|returned error: 407/i,'代理连接或代理认证失败；请检查 Git HTTP/SSH 代理设置'],
+    ['connection',/connection refused|connection timed out|operation timed out|failed to connect|network is unreachable|no route to host|connection reset|connection closed|命令超时/i,'远端网络连接失败或超时；请检查网络、VPN、端口及防火墙'],
+    ['tls',/ssl certificate|certificate verify failed|server certificate verification failed|schannel:|ssl connect error|unable to get local issuer/i,'TLS 证书校验或握手失败；请检查受信任证书和 Git TLS 配置，不会自动关闭校验'],
+    ['authentication',/authentication failed|could not read (?:username|password)|terminal prompts disabled|returned error: (?:401|403)|http[^\n]*(?:401|403)|access denied|permission denied/i,'认证失败或访问被拒绝；请配置当前仓库可用的非交互凭据，并确认仓库读取权限'],
+    ['tool',/cannot run .*: no such file|cannot spawn|is not recognized|could not run|unable to fork|cannot exec|command not found/i,'Git、SSH 或认证辅助程序无法启动；请检查 DSH 运行环境中的程序路径'],
+    ['repository',/repository .*not found|repository not found|does not appear to be a git repository|could not read from remote repository|project .*not found/i,'远端仓库不存在或当前身份无读取权限；请核对 origin 配置和服务器授权']
+  ];
+  if(error?.code==='ENOENT')return {kind:'tool',hint:'Git、SSH 或认证辅助程序无法启动；请检查 DSH 运行环境中的程序路径'};
+  for(const [kind,pattern,hint] of rules)if(pattern.test(message))return {kind,hint};
+  return {kind:'unknown',hint:'无法确认具体原因；请检查远端配置、访问权限与非交互认证（原始输出已隐藏，以免泄露 URL、密钥路径或凭据）'};
+}
+function safeFailure(remote, stage, error) {
+  const diagnostic=remoteFailureDiagnostic(error);
+  return Object.assign(new Error('Git 远端 ' + remote + '：' + stage + '失败；'+diagnostic.hint+'；未回退本地版本'), {code: 'code-report/git-remote',diagnostic:diagnostic.kind});
 }
 
 async function safely(remote, stage, signal, fn) {
   signal?.throwIfAborted();
   try { return await fn(); }
-  catch { signal?.throwIfAborted(); throw safeFailure(remote, stage); }
+  catch (error) { signal?.throwIfAborted(); throw safeFailure(remote, stage, error); }
 }
 
 /** Only the original configured address is inspected; URL and credentials stay private. */
@@ -51,7 +71,7 @@ async function configuration(root, remote, signal) {
     const address = transportAddress(urls[0], canonical);
     const format = (await runGitRead(['rev-parse', '--show-object-format'], {cwd: canonical, signal})).trim();
     if (!['sha1', 'sha256'].includes(format)) throw new Error('未知对象格式');
-    return {address, format};
+    return {address, format, authenticationRoot:canonical};
   });
 }
 
@@ -94,29 +114,29 @@ function parseAdvertisement(text) {
   return {refs: refs.sort(), headTarget, headId};
 }
 
-async function advertisement(directory, address, remote, signal) {
-  return safely(remote, '查询引用', signal, async () => parseAdvertisement(await runGitRemote(['ls-remote', '--symref', '--', address, 'HEAD', 'refs/heads/*', 'refs/tags/*'], {cwd: directory, signal})));
+async function advertisement(directory, address, remote, signal, authenticationRoot) {
+  return safely(remote, '查询引用', signal, async () => parseAdvertisement(await runGitRemote(['ls-remote', '--symref', '--', address, 'HEAD', 'refs/heads/*', 'refs/tags/*'], {cwd: directory, signal, authenticationRoot})));
 }
 
 /** Fresh remote-only refs; no checkout, source-ref update, or local fallback. */
 export async function listRemoteRefs(root, {remote = 'origin', signal} = {}) {
-  const {address, format} = await configuration(root, remote, signal);
+  const {address, format, authenticationRoot} = await configuration(root, remote, signal);
   return temporary(remote, signal, async directory => {
     // A bare root prevents discovery of an ancestor repository or its local configuration.
     await safely(remote, '初始化隔离仓库', signal, () => runGitRead(['init', '--bare', '--template=', '--object-format=' + format, directory], {cwd: directory, signal}));
-    return (await advertisement(directory, address, remote, signal)).refs;
+    return (await advertisement(directory, address, remote, signal, authenticationRoot)).refs;
   });
 }
 
 /** Fully fetch advertised branches/tags into a disposable bare repository. */
 export async function withRemoteRepository(root, {remote = 'origin', signal, onProgress = () => {}} = {}, fn) {
   if (typeof fn !== 'function') throw new TypeError('缺少远端读取回调');
-  const {address, format} = await configuration(root, remote, signal);
+  const {address, format, authenticationRoot} = await configuration(root, remote, signal);
   return temporary(remote, signal, async directory => {
     await safely(remote, '初始化隔离仓库', signal, () => runGitRead(['init', '--bare', '--template=', '--object-format=' + format, directory], {cwd: directory, signal}));
     onProgress({phase: 'remote-fetch', label: '远端 ' + remote + '：抓取完整分支与标签（不修改工作区）'});
-    const observed = await advertisement(directory, address, remote, signal);
-    await safely(remote, '抓取', signal, () => runGitRemote(['fetch', '--no-recurse-submodules', '--no-write-fetch-head', '--no-auto-maintenance', '--no-tags', '--', address, '+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*'], {cwd: directory, signal}));
+    const observed = await advertisement(directory, address, remote, signal, authenticationRoot);
+    await safely(remote, '抓取', signal, () => runGitRemote(['fetch', '--no-recurse-submodules', '--no-write-fetch-head', '--no-auto-maintenance', '--no-tags', '--', address, '+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*'], {cwd: directory, signal, authenticationRoot}));
     if (observed.headId) {
       await safely(remote, '固定远端 HEAD', signal, async () => {
         if (observed.headTarget) {

@@ -41,7 +41,11 @@ async function rpc(channel,endpoint,payload,signal){
  }
  if(endpoint==='check-update')return ok({...info(),latestVersion:'99.0.0',available:true,releaseUrl:'https://example.invalid/release'});
  if(endpoint==='discover')return ok({repositories:Array.from({length:settings.count},(_,i)=>({path:i?'project-'+i+'-'+('very-long-path-'.repeat(12)):'client',type:settings.mixed&&i===1?'svn':'git',branch:settings.mixed&&i===1?'trunk':'main'})),warnings:[],visited:settings.count+1});
- if(endpoint==='refs'){if(settings.holdRefs)await gate('refs');return ok({refs:['main','release','refs/tags/v1.0']});}
+ if(endpoint==='refs'){
+  if(settings.holdRefs)await gate('refs');
+  if(settings.refsAuthFailure&&payload.gitMode==='remote')return fail('Git 远端 '+(payload.gitRemote||'origin')+'：查询失败；SSH 公钥认证被拒绝；请确认当前仓库指定的密钥已在服务器授权，并可由 DSH 运行用户使用；未回退本地版本','code-report/git-remote',{diagnostic:'ssh-publickey'});
+  return ok({refs:['main','release','refs/tags/v1.0']});
+ }
  if(endpoint==='progress'){
   if(settings.progressFailure)throw new Error('fixture progress disconnected');
   const task=results.get(payload.operationId);

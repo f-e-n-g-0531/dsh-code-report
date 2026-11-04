@@ -71,6 +71,18 @@ test('Git defaults to explicit remote origin in refs and collection with visible
  await expect(page.getByRole('group',{name:'3. 确认分析范围',exact:true})).toContainText('origin');await expect(page.getByRole('group',{name:'3. 确认分析范围',exact:true})).toContainText('2026-11-03T10:00:00.000Z');expect((await stats(page)).modelCalls).toBe(0);
 });
 
+test('classified remote authentication failure is safe, remains remote and permits explicit retry (contract mock)',async({page})=>{
+ await open(page,{refsAuthFailure:true});await selectGit(page);const query=page.getByRole('button',{name:'读取远端分支/标签',exact:true});await query.click();
+ const alert=page.locator('#cr-row-0').getByRole('alert');await expect(alert).toContainText('SSH 公钥认证被拒绝');await expect(alert).toContainText('DSH 运行用户使用');await expect(alert).toContainText('未回退本地版本');await expect(query).toBeEnabled();
+ await expect(page.getByRole('combobox',{name:'Git 读取方式 1',exact:true})).toHaveValue('remote');await expect(page.getByRole('textbox',{name:'Git 远端名 1',exact:true})).toHaveValue('origin');await expect(page.locator('#cr-refs-0 option')).toHaveCount(0);
+ // This mock sends only a classified safe hint. Backend unit tests own raw-stderr/secret filtering.
+ const text=await page.locator('.cr-root').innerText();expect(text).not.toMatch(/PRIVATE KEY|raw-secret|password=|https:\/\/[^ ]+@/i);
+ let calls=(await stats(page)).calls.filter(call=>call.endpoint==='refs');expect(calls).toHaveLength(1);expect(calls[0].payload).toMatchObject({gitMode:'remote',gitRemote:'origin'});
+ expect((await stats(page)).calls.some(call=>call.endpoint==='preview'||call.endpoint==='generate')).toBe(false);
+ await page.evaluate(()=>window.fixture.configure({refsAuthFailure:false}));await query.click();await expect(alert).toHaveCount(0);await expect(page.locator('#cr-refs-0 option')).toHaveCount(3);
+ calls=(await stats(page)).calls.filter(call=>call.endpoint==='refs');expect(calls).toHaveLength(2);expect(calls.every(call=>call.payload.gitMode==='remote'&&call.payload.gitRemote==='origin')).toBe(true);expect((await stats(page)).modelCalls).toBe(0);expect((await stats(page)).installCalls).toBe(0);
+});
+
 test('Git local offline mode is explicit and stays local for refs and collection',async({page})=>{
  await open(page);await selectGit(page);await page.getByRole('combobox',{name:'Git 读取方式 1',exact:true}).selectOption('local');
  await page.getByRole('button',{name:'读取本地分支/标签',exact:true}).click();await expect(page.getByText('已载入 3 个本地引用，在 A/B 输入中选择；不会 fetch。')).toBeVisible();

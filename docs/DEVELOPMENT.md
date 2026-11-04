@@ -32,7 +32,7 @@ npm run test:install
 
 - [宿主入口](<../index.mjs>)：注册 DSH 服务。
 - [宿主编排](<../src/host.mjs>)：会话目录、预览生命周期、进度、限流、确认与分片重试。测试依赖注入仅为进程内接口，不接受 RPC 覆盖。
-- [共享协议](<../src/protocol.mjs>)：通道和协议版本，不能依赖 Node 或 DSH 服务。v0.9.0 候选版沿用协议版本 3，包含结构化执行恢复状态；v0.7.0 的协议 2 界面不能绕过版本门禁，升级后需重载前后台。
+- [共享协议](<../src/protocol.mjs>)：通道和协议版本，不能依赖 Node 或 DSH 服务。v0.9.2 沿用协议版本 3，包含结构化执行恢复状态；v0.7.0 的协议 2 界面不能绕过版本门禁，升级后需重载前后台。
 - [采集](<../src/collect.mjs>)、[预算](<../src/budget.mjs>)、[路径](<../src/paths.mjs>)、[进程](<../src/process.mjs>)：固定版本、来源、增量资源控制及取消。
 - [远端 Git](<../src/git-remote.mjs>)：读取业务仓库原始远端配置，在临时裸仓库查询和完整抓取，回调后清理；不写业务仓库。
 - [证据索引](<../src/evidence.mjs>)：格式版本 2；统一解析文件清单与差异块/源码单元，ID 绑定快照和准确文本，不重写差异正文。SVN property 头和值分开；路径只精确匹配 included 列表，不能按块序号猜测。无可归属文本的 included 文件/目录（含空字符串根路径）生成独立 scope 范围证据，计入片数及输入预算，不当作正文覆盖。SVN 在排除内部路径后逐 entry 读取时可附 diffParts:{path,start,end}，以完整 diff 的 UTF-16 连续区间绑定采集路径，不改原始正文；整仓 diff 或外部旧快照没有此元数据时不能假定同等定位能力。
@@ -54,7 +54,11 @@ Git 行字段 gitMode 为 remote/local，gitRemote 为远端配置名。UI 新�
 
 normalizeRemoteRef 仅将匹配所选远端的 origin/name、refs/remotes/origin/name（以 origin 为例）映射为 refs/heads/name；其他 main/develop、标签、SHA 和 HEAD~ 表达式保持 Git 解析，标签可用 refs/tags/name 避免歧义。HEAD 先按远端广告观察，再校验抓取后的目标 hash 相同；移动时失败并要求重采。其他分支取 fetch 时版本，observedAt 是抓取完成后的观察时间，不承诺所有远端引用或跨项目原子一致。A/B SHA、差异及固定版本源码在临时仓库内读取，临时目录释放后生成只使用快照，不重新访问 Git 远端。
 
-网络 runner runGitRemote 仅在受控临时目录使用。清除继承的 GIT_*，读取有效用户 global/system 配置后只重注入 credential.*、http.*、core.sshCommand；实际网络进程禁用全局/系统配置并用 GIT_CONFIG_COUNT 白名单。URL rewrite、hooks 与 ext/任意 remote helper 不继承，非交互认证依赖用户已配好的可信 credential helper/SSH。这些用户信任的程序可能执行，不能承诺不执行 helper 或提供 OS 网络/进程沙箱；公网认证组合另行验收。网络 execute 使用 killTree:true：POSIX 独立进程组先 TERM、随后 KILL，Windows 使用 taskkill /T /F，等待自有传输进程树停止及 close 后才返回，由上层 finally 清理临时目录。取消语义是停止本地自有传输进程树并清理临时目录；不保证远端服务器撤销请求，不等于服务器端事务回滚。
+网络 runner runGitRemote 的 authenticationRoot 仅用于配置预检 cwd，调用方传入已验证源仓库 canonical root；读取 --includes 后的有效认证配置，只保留 credential.*、http.*、core.sshCommand、ssh.variant，以 GIT_CONFIG_COUNT 重注入实际网络进程。transportOptions 显式剥离 authenticationRoot，实际网络 cwd 始终为自有临时目录，禁用全局/系统配置，不在业务仓库执行传输。旧版只从临时目录读取 global/system 认证，遗漏仓库 local core.sshCommand；修复不表示用户凭据原本错误。
+
+配置预检清除继承的 GIT_*；只有网络进程重新保留显式 GIT_SSH_COMMAND、GIT_SSH、GIT_SSH_VARIANT，其他 GIT_ 注入仍清除。本地 runGitRead 维持严格隔离不变。URL rewrite、hooks、remote uploadpack 与 ext/任意 remote helper 不继承，认证白名单不是复制全部源仓库配置。仓库 local 认证程序与用户 global 认证程序一样是用户信任的可执行代码；不能承诺不执行 helper 或提供 OS 网络/进程沙箱。相对 -i 或命令路径不改写，仍按临时 cwd 执行，建议绝对路径或 SSH 配置；公网认证组合另行验收。
+
+remoteFailureDiagnostic(error) 只返回固定 kind/hint：SSH 身份/公钥/主机密钥、DNS、代理、连接、TLS、HTTP/通用认证、仓库权限、缺失工具及 unknown。safeFailure 维持 code-report/git-remote，在 Error 上附 diagnostic 分类，但不保证宿主 RPC 保留该属性；UI 可见的是固定中文指导。不拼接原始 stderr/stdout/error，不公开 URL、凭据或密钥路径，不自动关闭主机或证书校验。分类用于排查，不是根因证明，未匹配时保留泛化提示。网络 execute 使用 killTree:true：POSIX 独立进程组先 TERM、随后 KILL，Windows 使用 taskkill /T /F，等待自有传输进程树停止及 close 后才返回，由上层 finally 清理临时目录。取消语义是停止本地自有传输进程树并清理临时目录；不保证远端服务器撤销请求，不等于服务器端事务回滚。
 
 本地离线模式、业务元数据及临时仓库内的只读差异/源码使用 runGitRead：清除继承 GIT_*，设置 GIT_NO_LAZY_FETCH=1、空 GIT_ALLOW_PROTOCOL 和 protocol.allow=never；缺对象失败，不自动联网补取。普通 run 供测试建仓等用途，不代替两类专用 runner。Git patch 显式固定前缀、行标记、word diff、算法与 hunk 相关选项，不宣称隔离所有仓库配置。
 
