@@ -2,8 +2,8 @@
 export function resultKey(session){return JSON.stringify([session?.id,session?.cwd]);}
 export function createResultStore({limit=16,maxBytes=Infinity}={}){
  const entries=new Map(),recoveries=new Map();
- const size=value=>new TextEncoder().encode(value.markdown).length;
- const entrySize=entry=>size(entry.current)+(entry.analysis&&entry.analysis.markdown!==entry.current.markdown?size(entry.analysis):0);
+ const size=value=>value?new TextEncoder().encode(value.markdown).length:0;
+ const entrySize=entry=>size(entry.current)+(entry.analysis&&entry.analysis.markdown!==entry.current?.markdown?size(entry.analysis):0);
  const restore=value=>value?{...value,stale:true}:null;
  return {
   get(session){return restore(entries.get(resultKey(session))?.current);},
@@ -24,6 +24,17 @@ export function createResultStore({limit=16,maxBytes=Infinity}={}){
    // Default retention is count-based; do not repeatedly encode every large report.
    let bytes=Number.isFinite(maxBytes)?[...entries.values()].reduce((sum,item)=>sum+entrySize(item),0):0;
    while(entries.size>limit||bytes>maxBytes){const key=entries.keys().next().value;if(Number.isFinite(maxBytes))bytes-=entrySize(entries.get(key));entries.delete(key);}
+  },
+  clearCurrent(session){
+   const key=resultKey(session),entry=entries.get(key);
+   // Clearing evidence must not discard the separately retained successful model report.
+   if(!entry||entry.current?.kind==='analysis')return;
+   if(entry.analysis)entries.set(key,{current:null,analysis:entry.analysis});else entries.delete(key);
+  },
+  clearAnalysis(session){
+   const key=resultKey(session),entry=entries.get(key);
+   if(!entry)return;
+   if(entry.current&&entry.current.kind!=='analysis')entries.set(key,{current:entry.current});else entries.delete(key);
   },
   delete(session){entries.delete(resultKey(session));}
  };

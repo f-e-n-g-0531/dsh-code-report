@@ -320,6 +320,23 @@ test('successful local recapture and subsequent analysis failure retain prior AI
  expect(await readFile(await download.path(),'utf8')).toContain('模型报告 a');expect((await stats(page)).modelCalls).toBe(2);
 });
 
+test('clearing local evidence preserves previous model download and session restoration until explicit report clear',async({page})=>{
+ await open(page);await selectGit(page);await collect(page);await analyze(page);
+ await page.getByRole('textbox',{name:'报告标题',exact:true}).fill('下一次采集');await collect(page);
+ await page.getByRole('button',{name:'清除证据结果',exact:true}).click();await expect(report(page)).toHaveCount(0);
+ const view=page.getByRole('button',{name:'查看上一份模型报告',exact:true}),download=page.getByRole('button',{name:'下载上一份模型报告',exact:true});
+ await expect(view).toBeVisible();await expect(download).toBeEnabled();
+ const pending=page.waitForEvent('download');await download.click();const saved=await pending;
+ expect(saved.suggestedFilename()).toMatch(/^release-report-/);expect(await readFile(await saved.path(),'utf8')).toContain('模型报告 a');
+ await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await expect(view).toHaveCount(0);await expect(report(page)).toHaveCount(0);
+ await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await expect(report(page)).toHaveCount(0);await expect(view).toBeVisible();await expect(download).toBeEnabled();await expect(consent(page)).toHaveCount(0);
+ await view.click();await expect(report(page)).toContainText('模型报告 a');
+ await page.getByRole('button',{name:'清除报告',exact:true}).click();await expect(report(page)).toHaveCount(0);await expect(view).toHaveCount(0);await expect(download).toHaveCount(0);
+ await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await page.getByRole('button',{name:'测试会话 A',exact:true}).click();
+ await expect(report(page)).toHaveCount(0);await expect(view).toHaveCount(0);await expect(download).toHaveCount(0);
+ const observed=await stats(page);expect(observed.modelCalls).toBe(1);expect(observed.calls.filter(call=>call.endpoint==='generate')).toHaveLength(1);
+});
+
 test('expired snapshot disables generation and allows recollection with consent reset',async({page})=>{
  await page.clock.install();await open(page,{ttl:60000});await selectGit(page);await collect(page);await route(page);await consent(page).check();await page.clock.fastForward(61000);
  await expect(page.getByText(/预览已过期|快照已过期/).first()).toBeVisible({timeout:6000});await expect(generate(page)).toBeDisabled();await workflow(page,['active','pending','pending']);

@@ -96,6 +96,10 @@ export function apply(ctx){
    timer=setTimeout(poll,250);return()=>{ac.abort();clearTimeout(timer);};
   },[ownTask?.operationId]);
   const keepResult=value=>{results.set(session,value);setResult(value);setLatestAnalysis(results.getAnalysis(session));};
+  const clearResult=()=>{
+   if(result?.kind==='analysis')results.clearAnalysis(session);else results.clearCurrent(session);
+   setResult(results.get(session));setLatestAnalysis(results.getAnalysis(session));
+  };
   const invalidate=()=>{
    draftRevision.current++;
    setPreview(null);setConsent(false);setProgress(null);setPlanDirty(false);
@@ -240,7 +244,7 @@ export function apply(ctx){
      {progress&&<ProgressSection progress={progress}/>}{progressWarning&&<p className="cr-error" role="status">{progressWarning}</p>}
      {error&&error!==scanError&&<p className="cr-error" role="alert">{error}</p>}
      {latestAnalysis&&result?.kind!=='analysis'&&<p className="cr-stale">上一份成功模型报告仍保留，与当前草稿可能不同。<button onClick={()=>keepResult({...latestAnalysis,stale:true})}>查看上一份模型报告</button><button onClick={()=>downloadMarkdown(latestAnalysis.markdown,latestAnalysis.kind)}>下载上一份模型报告</button></p>}
-     {result&&<ReportSection result={result} onDownload={()=>downloadMarkdown(result.markdown,result.kind)} onClear={()=>{results.delete(session);setResult(null);setLatestAnalysis(null);}}/>}
+     {result&&<ReportSection result={result} onDownload={()=>downloadMarkdown(result.markdown,result.kind)} onClear={clearResult}/>}
     </>}
    </fieldset>
   </section>;

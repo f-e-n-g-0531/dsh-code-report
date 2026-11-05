@@ -76,6 +76,40 @@ test('current local result never overwrites latest successful paid analysis',()=
  bounded.set(one,{markdown:'789012',kind:'local'});
  assert.equal(bounded.get(one),null);assert.equal(bounded.getAnalysis(one),null);
 });
+test('clearing local evidence retains session scoped model report and unresolved recovery',()=>{
+ const store=createResultStore({maxBytes:100});
+ store.set(one,{markdown:'paid report',kind:'analysis',coverage:{total:2}});
+ store.set(one,{markdown:'local evidence',kind:'local'});store.setRecovery(one,{operationId:'pending'});
+ const analysis=store.getAnalysis(one);store.clearCurrent(one);
+ assert.equal(store.get(one),null);assert.deepEqual(store.getAnalysis(one),analysis);
+ assert.equal(store.get(two),null);assert.equal(store.getAnalysis(two),null);
+ assert.equal(store.getAnalysis({...one,cwd:'G:/other'}),null);
+ assert.deepEqual(store.getRecovery(one),{operationId:'pending'});
+ store.clearCurrent(one);assert.deepEqual(store.getAnalysis(one),analysis);
+ // Adding another session must account for analysis-only entries without crashing or losing the report.
+ store.set(two,{markdown:'other local',kind:'local'});assert.deepEqual(store.getAnalysis(one),analysis);
+ store.set(one,store.getAnalysis(one));assert.equal(store.get(one).kind,'analysis');
+ store.clearCurrent(one);assert.equal(store.get(one).kind,'analysis');
+ store.clearAnalysis(one);assert.equal(store.get(one),null);assert.equal(store.getAnalysis(one),null);
+ assert.deepEqual(store.getRecovery(one),{operationId:'pending'});
+ store.set(one,{markdown:'new local',kind:'local'});assert.equal(store.getAnalysis(one),null);
+});
+test('explicit model clear preserves current local evidence and other sessions',()=>{
+ const store=createResultStore();
+ for(const session of [one,two])store.set(session,{markdown:'paid report',kind:'analysis'});
+ store.set(one,{markdown:'local evidence',kind:'local'});store.clearAnalysis(one);
+ assert.equal(store.getAnalysis(one),null);assert.equal(store.get(one).markdown,'local evidence');
+ assert.equal(store.getAnalysis(two).markdown,'paid report');
+ store.clearCurrent(one);assert.equal(store.get(one),null);
+ store.clearCurrent(one);store.clearAnalysis(one);store.clearCurrent({id:'missing'});
+});
+test('analysis-only retention still enforces byte and count limits',()=>{
+ const bytes=createResultStore({maxBytes:10});
+ bytes.set(one,{markdown:'123456',kind:'analysis'});bytes.set(one,{markdown:'789',kind:'local'});bytes.clearCurrent(one);
+ bytes.set(two,{markdown:'12345',kind:'local'});assert.equal(bytes.getAnalysis(one),null);assert.equal(bytes.get(two).markdown,'12345');
+ const count=createResultStore({limit:1});count.set(one,{markdown:'paid',kind:'analysis'});count.set(one,{markdown:'local',kind:'local'});count.clearCurrent(one);
+ count.set(two,{markdown:'other',kind:'local'});assert.equal(count.getAnalysis(one),null);
+});
 test('unknown paid operation recovery survives session switches without crossing boundaries',()=>{
  const store=createResultStore();
  store.setRecovery(one,{operationId:'paid-operation',consent:true,source:'not retained'});

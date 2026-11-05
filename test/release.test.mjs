@@ -20,7 +20,7 @@ test('single browser job gates publishing without replacing the four-matrix pack
  assert.match(browser,/npx playwright install --with-deps chromium/);assert.match(browser,/npm run test:browser/);
  assert.match(browser,/if: always[(][)]/);assert.match(browser,/actions\/upload-artifact@v4/);
  assert.match(source,/needs: \[test, browser\]/);
- assert.match(release,/name: package-ubuntu-latest-node-24/);assert.match(release,/sha256sum --check SHA256SUMS[.]txt/);
+ assert.match(release,/artifact-ids: \$\{\{ steps[.]tested-package[.]outputs[.]artifact-id \}\}/);assert.match(release,/merge-multiple: true/);assert.match(release,/sha256sum --check SHA256SUMS[.]txt/);
  assert.doesNotMatch(release,/npm run build|npm run test:browser|npm run verify:package|npm pack/);
  assert.match(release,/if: startsWith[(]github[.]ref, 'refs\/tags\/'[)] && [(]github[.]event_name == 'push' \|\| inputs[.]publish[)]/);
 });
@@ -32,6 +32,23 @@ test('runner temporary output path is scoped to browser step, never job environm
  assert.doesNotMatch(jobContext,/runner[.]temp|DSH_BROWSER_OUTPUT/,'runner context is unavailable at jobs.<job>.env');
  assert.match(browser,/^      - run: npm run test:browser\r?\n        env:\r?\n          DSH_BROWSER_OUTPUT: \$\{\{ runner[.]temp \}\}\/dsh-code-report-browser-results$/m);
  assert.match(browser,/^          path: \$\{\{ runner[.]temp \}\}\/dsh-code-report-browser-results$/m);
+});
+
+test('all CI uploads are attempt-scoped and never overwrite or delete prior evidence',async()=>{
+ const source=await readFile(new URL('../.github/workflows/ci.yml',import.meta.url),'utf8');
+ const names=[...source.matchAll(/^          name: (.+)$/gm)].map(match=>match[1]);
+ assert.equal(names.length,3);
+ assert.ok(names.includes('package-${{ matrix.os }}-node-${{ matrix.node }}-attempt-${{ github.run_attempt }}'));
+ assert.ok(names.includes('browser-evidence-${{ github.run_id }}-attempt-${{ github.run_attempt }}'));
+ assert.ok(names.includes('release-${{ github.ref_name }}-${{ github.run_id }}-attempt-${{ github.run_attempt }}'));
+ assert.doesNotMatch(source,/overwrite:|deleteArtifact|delete-artifact|merge@/);
+ const release=source.split('  release:\n')[1];
+ assert.match(release,/actions: read/);
+ assert.match(release,/github[.]paginate[(]github[.]rest[.]actions[.]listWorkflowRunArtifacts/);
+ assert.match(release,/run_id: context[.]runId, per_page: 100/);
+ assert.ok(release.indexOf('artifact-ids:')<release.indexOf('sha256sum --check'));
+ assert.ok(release.indexOf('sha256sum --check')<release.indexOf('npm run test:install'));
+ assert.ok(release.indexOf('npm run test:install')<release.indexOf('Preserve exact release artifact'));
 });
 
 test('release entry script passes Node syntax validation',()=>{const r=spawnSync(process.execPath,['--check','scripts/release.mjs'],{encoding:'utf8'});assert.equal(r.status,0,r.stderr);});
