@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {build} from 'esbuild';
+import {createRequire} from 'node:module';
+const require=createRequire(import.meta.url);
+const result=await build({entryPoints:['src/RepositoryCards.jsx'],bundle:true,write:false,format:'cjs',platform:'node',external:['react']});
+const module={exports:{}};new Function('require','module','exports',result.outputFiles[0].text)(require,module,module.exports);
+const {comparisonSummary}=module.exports;
+test('Git summary always includes both configured branches and versions',()=>{assert.equal(comparisonSummary({type:'git',branchA:'release/2026',branchB:'develop',a:'abc123',b:'v2'}),'A：release/2026 @ abc123 → B：develop @ v2');});
+test('blank versions show latest of each branch without implying resolved hashes',()=>{assert.equal(comparisonSummary({type:'git',branchA:'main',branchB:'release',a:'',b:' '}),'A：main @ 最新提交 → B：release @ 最新提交');});
+test('SVN revisions have exactly one r and missing branches remain explicit',()=>{assert.equal(comparisonSummary({type:'svn',branchA:'trunk',branchB:'branches/release',a:'r12',b:'15'}),'A：trunk @ r12 → B：branches/release @ r15');assert.match(comparisonSummary({type:'git'}),/未填写分支 @ 最新提交/);});
