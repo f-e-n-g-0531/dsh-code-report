@@ -88,7 +88,7 @@ async function rpc(channel,endpoint,payload,signal){
    await wait(settings.delayGenerate);
    settledGenerations++;
    if(settings.failGenerate){const proof=execution('stopped');results.set(payload.operationId,{sessionId:payload.sessionId,status:'stopped',execution:proof});return fail('fixture 模型失败','code-report/analysis-failed',{execution:proof});}
-   const value={markdown:settings.richReport||('# 模型报告 '+payload.sessionId+'\n## 对外接口变更\n待确认\n<script>window.fixtureInjected=true</script>'),coverage:settings.singleRequest?singleCoverage():{total:settings.analysisBatches||1,completed:settings.analysisBatches||1,excluded:0}};
+   const value={markdown:settings.richReport||('# 模型报告 '+payload.sessionId+'\n## 改动内容\n模型报告 '+payload.sessionId+'\n## 对外接口变更\n待确认\n<script>window.fixtureInjected=true</script>'),coverage:settings.singleRequest?singleCoverage():{total:settings.analysisBatches||1,completed:settings.analysisBatches||1,excluded:0}};
    results.set(payload.operationId,{sessionId:payload.sessionId,status:'completed',value});
    if(settings.failGenerateResponse)throw new Error('fixture response lost after generation');
    return ok(value);
