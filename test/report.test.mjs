@@ -4,6 +4,8 @@ import {mkdtemp,mkdir,writeFile,readFile,rm,symlink,realpath} from 'node:fs/prom
 import os from 'node:os';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {reportDownloadText} from '../src/report-export.mjs';
+import {markdownText} from '../src/markdown-text.mjs';
 import {pathToFileURL} from 'node:url';
 import {collect,discover,revision} from '../src/collect.mjs';
 import {relative,inside,regular,secretPath} from '../src/paths.mjs';
@@ -19,6 +21,21 @@ test('workspace containment and secret paths',async t=>{const cwd=await fixture(
 test('source aliases cannot expose sensitive canonical targets',async t=>{const cwd=await fixture(t);for(const name of ['.git','credentials']){await mkdir(path.join(cwd,name));await writeFile(path.join(cwd,name,'config'),'fixture-secret');await symlink(path.join(cwd,name),path.join(cwd,'alias-'+name.replace('.','')),'junction');await assert.rejects(regular(cwd,'alias-'+name.replace('.','')+'/config'),/禁止采集/);}await mkdir(path.join(cwd,'safe'));await writeFile(path.join(cwd,'safe','api.ts'),'safe');await symlink(path.join(cwd,'safe'),path.join(cwd,'safe-alias'),'junction');assert.equal(await regular(cwd,'safe-alias/api.ts'),await realpath(path.join(cwd,'safe/api.ts')));});
 test('completed progress entries are evicted without rejecting the 65th operation',async t=>{const cwd=await fixture(t);const handler=createHandler({sessions:new Map([['s',{header:{cwd}}],['other',{header:{cwd}}]])});for(let i=0;i<70;i++)assert.equal((await handler('discover',{sessionId:'s',operationId:'scan-'+i})).ok,true);assert.equal((await handler('progress',{sessionId:'s',operationId:'scan-0'})).ok,false);assert.equal((await handler('progress',{sessionId:'s',operationId:'scan-69'})).value.phase,'completed');assert.equal((await handler('progress',{sessionId:'other',operationId:'scan-69'})).ok,false);assert.equal((await handler('discover',{sessionId:'s',operationId:'scan-69'})).ok,false);});
 test('multi Git snapshots pin revisions, preserve unicode and exclude dirty content',async t=>{const cwd=await fixture(t);const one=await gitRepo(cwd,'one'),two=await gitRepo(cwd,'two');await writeFile(path.join(one.root,'api.js'),'DIRTY SECRET');await writeFile(path.join(cwd,'context.ts'),'consumer(value)');const updates=[];const result=await collect(cwd,{repositories:[one.row,{...two.row,b:'HEAD'}],contextPaths:['context.ts']},undefined,p=>updates.push(p));assert.equal(updates.at(-1).completed,3);assert.equal(updates.at(-1).total,3);assert.ok(updates.some(p=>p.label.includes('one')));assert.equal(result.repositories.length,2);assert.match(result.repositories[0].diff,/value = 2/);assert.doesNotMatch(result.repositories[0].diff,/DIRTY/);assert.ok(result.repositories[0].files.includes('新增.txt'));assert.equal(result.repositories[1].b,two.row.b);assert.equal(result.context[0].text,'consumer(value)');assert.equal(result.context[0].provenance,'current-workspace');assert.match(result.context[0].hash,/^[a-f0-9]{64}$/);const md=markdown(result);assert.match(md,/未调用模型/);assert.match(md,/差异文本 SHA-256/);assert.match(md,/新增/);const found=await discover(cwd);assert.equal(found.repositories.length,2);});
+test('Git branch labels survive explicit hashes and empty versions in reports and exports',async t=>{
+ const cwd=await fixture(t),{row,git}=await gitRepo(cwd,'one');
+ const branchA='release/旧版.cpp',branchB='release/新版.ts';
+ await git(['branch',branchA,row.a]);await git(['branch',branchB,row.b]);
+ for(const versions of [{a:row.a,b:row.b},{a:'',b:''},{a:row.a,b:''}]){
+  const snapshot=await collect(cwd,{repositories:[{...row,...versions,branchA:versions.a?' '+branchA+' ':branchA,branchB:versions.b?' '+branchB+' ':branchB}]});
+  const repo=snapshot.repositories[0];assert.equal(repo.branchA,branchA);assert.equal(repo.branchB,branchB);
+  assert.equal(repo.a,row.a);assert.equal(repo.b,row.b);
+  const expected=markdownText(branchA+' @ '+row.a)+' → '+markdownText(branchB+' @ '+row.b);
+  assert.ok(markdown(snapshot).includes(expected));
+  const report=markdown(snapshot,'## 改动内容\n变更',route,{structured:true,evidenceManifest:{originalSourceBytes:0,fullManifestFiles:0,files:[]}});
+  assert.ok(report.includes(expected));assert.ok(reportDownloadText(report,'analysis').includes(expected));
+ }
+ const withoutBranch=await collect(cwd,{repositories:[row]});assert.match(markdown(withoutBranch),/未指定分支 @ /);
+});
 test('empty diff is explicit; nested Git subdirectory cannot masquerade as root',async t=>{const cwd=await fixture(t);const {row,root}=await gitRepo(cwd,'one');const result=await collect(cwd,{repositories:[{...row,b:row.a}]});assert.equal(result.repositories[0].files.length,0);await mkdir(path.join(root,'sub'));await assert.rejects(collect(cwd,{repositories:[{...row,path:'one/sub'}]}),/根目录/);});
 test('large source remains complete while binary and sensitive changed files fail closed',async t=>{const cwd=await fixture(t);const {row,root,git}=await gitRepo(cwd,'one');await writeFile(path.join(cwd,'huge.txt'),'x'.repeat(128*1024+1));assert.equal((await collect(cwd,{repositories:[row],contextPaths:['huge.txt']})).context[0].text.length,128*1024+1);await writeFile(path.join(cwd,'binary.txt'),Buffer.from([0,1,2]));await assert.rejects(collect(cwd,{repositories:[row],contextPaths:['binary.txt']}),/二进制/);await writeFile(path.join(root,'.env'),'SECRET');await git(['add','.env']);await git(['commit','-m','sensitive']);await assert.rejects(collect(cwd,{repositories:[{...row,b:'HEAD'}]}),/敏感路径/);});
 test('bounded runner rejects output overflow and abort',async t=>{const cwd=await fixture(t);await assert.rejects(run(process.execPath,['-e','console.log("x".repeat(20000))'],{cwd,maxBytes:100}),/上限/);const ac=new AbortController();ac.abort();await assert.rejects(run(process.execPath,['-e',''],{cwd,signal:ac.signal}));});

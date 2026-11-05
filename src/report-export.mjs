@@ -57,7 +57,7 @@ export function reportDownloadText(markdown,kind){
   if(details)continue;
   const heading=line.match(/^ {0,3}(#{1,2}) +(.+?)\s*#*$/);
   if(heading){active=heading[1].length===2&&buckets.has(heading[2])?heading[2]:null;continue;}
-  if(active&&!/^本报告为单次摘要：|^本地清单含 |^已处理证据 |^模型：/.test(line))buckets.get(active).push(readerLine(line));
+  if(active&&!/^本报告为单次摘要：|^本地清单含 |^已处理证据 |^模型：/.test(line))buckets.get(active).push(active==='本次比较范围'?line:readerLine(line));
  }
  return sections.map(title=>'## '+title+'\n\n'+(buckets.get(title).join('\n').trim()||'未提供可对外展示的内容，待确认。')).join('\n\n')+'\n';
 }

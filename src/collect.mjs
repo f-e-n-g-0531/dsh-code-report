@@ -233,6 +233,8 @@ async function collectRepository(cwd,row,request,budget,result,onEntry,remoteCon
  if(row.type==='git'){
   if(row.gitMode!==undefined&&!['remote','local'].includes(row.gitMode))throw new Error('无效 Git 来源模式');
   repo.gitSource=row.gitMode==='remote'?'remote':'local';
+  repo.branchA=typeof row.branchA==='string'?row.branchA.trim():'';
+  repo.branchB=typeof row.branchB==='string'?row.branchB.trim():'';
   if(repo.gitSource==='remote'){
    await withRemoteRepository(root,{remote:row.gitRemote??'origin',signal:budget.signal,onProgress},async(temporary,source)=>{
     budget.check();repo.remote=source.remote;repo.observedAt=source.observedAt;

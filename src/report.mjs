@@ -10,7 +10,12 @@ function hasInterfaceHeading(analysis){let fenced=false,marker='',length=0;for(c
 export function interfaceSection(analysis){if(!analysis)return INTERFACE_NO_MODEL;return hasInterfaceHeading(analysis)?'':INTERFACE_INCOMPLETE;}
 const ANALYSIS_MISSING='**状态：仅完成采集，尚未生成发布报告。**\n\n未调用模型。本文件只记录比较范围、文件清单与校验信息，不包含改动解释、业务影响或 QA 测试计划。请勿把它当作发布结论。\n\n如需发布报告，请返回插件，在当前证据仍有效时核对模型与发送范围，勾选本次发送许可，再点击“开始执行 · 生成报告”。导出本文件本身不会调用模型。';
 const LOCAL_ROUTE='模式：本地证据报告（未发送模型）';
-const releaseScopeLines=repositories=>repositories.map(r=>'- **'+inline(r.path)+'** ('+inline(r.type)+')：'+inline(r.type==='svn'?r.branchA+' @ r'+r.a:r.requestedA)+' → '+inline(r.type==='svn'?r.branchB+' @ r'+r.b:r.requestedB)+'；固定端点 '+inline(r.a)+' → '+inline(r.b)+'；'+r.files.length+' 个变更路径'+(r.type==='git'?'；来源 '+(r.gitSource==='remote'?'远端 '+inline(r.remote)+'；观察于 '+inline(r.observedAt)+'（固定快照）':'本地离线引用（不代表远端最新）'):''));
+const comparisonEndpoint=(r,side)=>{
+ const branch=r['branch'+side],fixed=r[side.toLowerCase()];
+ if(r.type==='svn')return branch+' @ r'+fixed;
+ return (branch||'未指定分支')+' @ '+fixed;
+};
+const releaseScopeLines=repositories=>repositories.map(r=>'- **'+inline(r.path)+'** ('+inline(r.type)+')：'+inline(comparisonEndpoint(r,'A'))+' → '+inline(comparisonEndpoint(r,'B'))+'；固定端点 '+inline(r.a)+' → '+inline(r.b)+'；'+r.files.length+' 个变更路径'+(r.type==='git'?'；来源 '+(r.gitSource==='remote'?'远端 '+inline(r.remote)+'；观察于 '+inline(r.observedAt)+'（固定快照）':'本地离线引用（不代表远端最新）'):''));
 const sourceLines=context=>context.map(c=>'- '+inline(c.path)+'；'+(c.provenance==='version-A'||c.provenance==='version-B'?inline(c.repository)+'；固定版本 '+inline(c.revision)+'（'+c.provenance+'）':'当前工作区快照')+'；编码 '+inline(c.encoding??'未记录')+(c.encodingWarning?'；解码提示 '+inline(c.encodingWarning):'')+'；原始字节 SHA-256 '+inline(c.rawHash??c.hash));
 const limitationLines=limitations=>[...limitations.map(x=>'- '+inline(x)),'- 模型输出为待人工复核的推断，不代表测试通过、缺陷证明或发布批准。'];
 const routeLine=route=>route?'模型：'+inline(route.provider)+' / '+inline(route.model):LOCAL_ROUTE;
@@ -21,7 +26,7 @@ export function markdown(snapshot,analysis,route,{structured=false,evidenceManif
  const renderedAnalysis=analysis?(structured?analysis:fence(analysis,'text')):ANALYSIS_MISSING;
  const heading=analysis?'# '+inline(snapshot.title):'# 采集证据清单（未分析）';
  const out=evidenceManifest
-  ? [heading,'','## 本次比较范围','',...snapshot.repositories.map(r=>'- **'+inline(r.path)+'**：'+inline(r.type==='svn'?r.branchA+' @ r'+r.a:r.requestedA)+' → '+inline(r.type==='svn'?r.branchB+' @ r'+r.b:r.requestedB)+'（'+r.files.length+' 个变更路径）'),'',renderedAnalysis,'',interfaceSection(analysis),'','<details>','<summary>采集附录：固定版本、完整文件清单与限制</summary>','','## 发布范围','',...releaseScopeLines(snapshot.repositories),'',routeLine(route),'','## 附带源码','',...(snapshot.context.length?sourceLines(snapshot.context):['未添加补充源码。']),'','## 覆盖范围与限制','',...limitationLines(snapshot.limitations),'','## 差异证据']
+  ? [heading,'','## 本次比较范围','',...snapshot.repositories.map(r=>'- **'+inline(r.path)+'**：'+inline(comparisonEndpoint(r,'A'))+' → '+inline(comparisonEndpoint(r,'B'))+'（'+r.files.length+' 个变更路径）'),'',renderedAnalysis,'',interfaceSection(analysis),'','<details>','<summary>采集附录：固定版本、完整文件清单与限制</summary>','','## 发布范围','',...releaseScopeLines(snapshot.repositories),'',routeLine(route),'','## 附带源码','',...(snapshot.context.length?sourceLines(snapshot.context):['未添加补充源码。']),'','## 覆盖范围与限制','',...limitationLines(snapshot.limitations),'','## 差异证据']
   : [heading,'','生成时间：'+inline(snapshot.createdAt),'','## 发布范围','',...releaseScopeLines(snapshot.repositories),'','## 改动内容、对外接口、影响范围与 QA 测试建议','',renderedAnalysis,'',interfaceSection(analysis),'',routeLine(route),'','## 附带源码','',...sourceLines(snapshot.context),'','## 覆盖范围与限制','',...limitationLines(snapshot.limitations),'','## 差异证据'];
  for(const r of snapshot.repositories)for(const line of excludedPathLines(r))out.push(line);
  if(evidenceManifest){

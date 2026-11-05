@@ -36,11 +36,14 @@ test('remote collection uses fresh main/develop and isolated version context wit
  const localRefs=await listRefs(f.cwd,'local',undefined,{gitMode:'local'});assert.ok(!localRefs.some(ref=>ref.endsWith('/develop')));
  const remoteRefs=await listRefs(f.cwd,'local',undefined,{gitMode:'remote',gitRemote:'origin'});assert.ok(remoteRefs.includes('refs/heads/develop'));
  const snapshot=await collect(f.cwd,{repositories:[f.row],versionContexts:[{repository:'local',side:'B',path:'中文.txt'},{repository:'local',side:'A',path:'api.txt'}]});
- const repo=snapshot.repositories[0];assert.equal(repo.a,f.main);assert.equal(repo.b,f.develop);assert.equal(repo.gitSource,'remote');assert.equal(repo.remote,'origin');assert.ok(Number.isFinite(Date.parse(repo.observedAt)));
+ const repo=snapshot.repositories[0];assert.equal(repo.branchA,'main');assert.equal(repo.branchB,'develop');assert.equal(repo.a,f.main);assert.equal(repo.b,f.develop);assert.equal(repo.gitSource,'remote');assert.equal(repo.remote,'origin');assert.ok(Number.isFinite(Date.parse(repo.observedAt)));
  assert.match(repo.diff,/REMOTE DEVELOP/);assert.doesNotMatch(repo.diff,/LOCAL BASE|DIRTY LOCAL/);
  assert.equal(snapshot.context[0].text,'中文 新\n');assert.equal(snapshot.context[0].hash,hash(gbk));assert.equal(snapshot.context[0].encoding,'gb18030');assert.equal(snapshot.context[0].provenance,'version-B');assert.equal(snapshot.context[0].revision,f.develop);
  assert.equal(snapshot.context[1].text,'REMOTE MAIN\n');assert.equal(snapshot.context[1].revision,f.main);
  for(const ref of ['origin/develop','refs/remotes/origin/develop','refs/heads/develop']){const s=await collect(f.cwd,{repositories:[{...f.row,branchB:ref}]});assert.equal(s.repositories[0].b,f.develop);}
+ const pinned=await collect(f.cwd,{repositories:[{...f.row,a:f.main,b:f.develop}]});
+ assert.equal(pinned.repositories[0].branchA,'main');assert.equal(pinned.repositories[0].branchB,'develop');
+ assert.equal(pinned.repositories[0].a,f.main);assert.equal(pinned.repositories[0].b,f.develop);
  const local=await collect(f.cwd,{repositories:[{...f.row,gitMode:'local',branchB:'main'}]});assert.equal(local.repositories[0].a,f.base);assert.equal(local.repositories[0].b,f.base);
  const legacy={...f.row,branchB:'main'};delete legacy.gitMode;assert.equal((await collect(f.cwd,{repositories:[legacy]})).repositories[0].a,f.base);
  await assert.rejects(collect(f.cwd,{repositories:[{...f.row,gitMode:'local'}]}),error=>/local/.test(error.message)&&/B/.test(error.message)&&/develop/.test(error.message));
