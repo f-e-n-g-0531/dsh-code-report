@@ -13,6 +13,7 @@ const temp=await mkdtemp(path.join(tmpdir(),'dsh-report-install-'));
 try{
  await writeFile(path.join(temp,'package.json'),'{"private":true}');npm(['install','--ignore-scripts','--omit=dev','--no-audit','--no-fund',archive],temp);
  const installed=path.join(temp,'node_modules',...pkg.name.split('/'));const manifest=JSON.parse(await readFile(path.join(installed,'package.json'),'utf8'));assert.equal(manifest.version,pkg.version);
+ for(const [language,title]of [['zh-CN','发布报告'],['en','Release Reports']]){const locale=JSON.parse(await readFile(path.join(installed,'locale',language+'.json'),'utf8'));assert.equal(locale.meta.title,title);assert.equal(typeof locale.meta.description,'string');assert.equal(manifest.exports['./locale/'+language+'.json'],'./locale/'+language+'.json');}
  const plugin=await import(pathToFileURL(path.join(installed,'index.mjs')));let handler;
  assert.ok(plugin.inject.includes('webServer'));let route;const ctx={effect:fn=>fn(),webServer:{register(value){route=value;return()=>{};}},connection:{register(owner,channel,fn){assert.equal(owner,ctx);assert.equal(channel,'/code-report-rpc');handler=fn;return owner.effect(()=>owner.webServer.register({kind:'prefix',path:channel}));}}};plugin.apply(ctx);assert.equal(typeof handler,'function');assert.equal(route.path,'/code-report-rpc');assert.equal((await handler('runtime-info',{})).ok,true);
  const provenance=JSON.parse(await readFile(path.join(installed,'dist/build-provenance.json'),'utf8'));

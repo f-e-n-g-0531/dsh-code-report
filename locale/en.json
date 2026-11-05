@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Release Reports",
+    "description": "Compare Git/SVN versions across repositories and generate release reports with interface impact and QA scope."
+  }
+}

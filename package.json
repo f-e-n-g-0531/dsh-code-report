@@ -1,14 +1,16 @@
 {
   "name": "@feng0531/dsh-code-report",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": false,
   "type": "module",
-  "description": "Multi-repository Git/SVN release reports for DeepSeek Harness",
+  "description": "比较多个 Git/SVN 项目的版本差异，生成改动、接口影响与 QA 测试范围报告。",
   "main": "./index.mjs",
   "exports": {
     ".": "./index.mjs",
     "./client": "./dist/client.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/en.json": "./locale/en.json",
+    "./locale/zh-CN.json": "./locale/zh-CN.json"
   },
   "files": [
     "index.mjs",
@@ -16,6 +18,7 @@
     "dist/client.js",
     "dist/build-provenance.json",
     "cordis.patch.yml",
+    "locale/",
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
