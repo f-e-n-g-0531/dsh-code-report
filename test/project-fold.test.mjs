@@ -12,7 +12,8 @@ test('all project cards render collapsed with accessible controls and retained c
  const html=renderToStaticMarkup(React.createElement(Cards,{rows,scanState:'done'}));
  assert.equal((html.match(/data-expanded="false"/g)||[]).length,2);assert.equal((html.match(/aria-expanded="false"/g)||[]).length,2);assert.equal((html.match(/hidden=""/g)||[]).length,6);
  for(let index=0;index<rows.length;index++){const n=index+1;assert.ok(html.includes('aria-label="展开项目 '+n+'"'));assert.ok(html.includes('aria-controls="cr-project-config-'+index+' cr-project-a-'+index+' cr-project-b-'+index+'"'));assert.ok(html.includes('aria-label="纳入项目 '+n+'"'));assert.ok(html.includes('aria-label="移除项目 '+n+'"'));}
- for(const value of ['client','server','v1','v2','main','release','10','20','trunk','branches/release'])assert.ok(html.includes('value="'+value+'"'),value);
+ assert.ok(!html.includes('aria-label="项目路径 1"'));assert.ok(!html.includes('aria-label="版本 A 1"'));
+ for(const value of ['v1','v2','main','release','10','20','trunk','branches/release'])assert.ok(html.includes(value),value);
  assert.ok(html.includes('cr-project-name">client'));assert.ok(html.includes('cr-project-name">server'));
 });
 test('collapsed invalid project keeps visible error count and error-location action',()=>{const rows=[{path:'',type:'git',enabled:true,a:'',b:'',branchA:'',branchB:''}];const html=renderToStaticMarkup(React.createElement(Cards,{rows,scanState:'done'}));assert.ok(html.includes('定位首个错误项目'));assert.ok(html.includes('cr-project-error'));assert.ok(html.includes('未填写项目路径'));assert.ok(html.includes('data-expanded="false"'));});

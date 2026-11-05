@@ -30,6 +30,12 @@ const heading=line=>line.match(/^(#{1,6})\s+(.+)$/);
 const list=line=>line.match(/^\s*(?:([-+*])\s+|(\d+)\.\s+)(.+)$/);
 const cells=line=>line.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(value=>value.trim());
 const separator=line=>/^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+// Keep appendix bodies out of both the parser and the DOM until native details opens.
+function ReportAppendix({summary,lines,depth}){
+ const [open,setOpen]=React.useState(false);
+ const content=React.useMemo(()=>open?blocks(lines,{depth}):null,[open,lines,depth]);
+ return <details className="cr-report-appendix" open={open} onToggle={event=>setOpen(event.currentTarget.open)}><summary>{summary}</summary>{content}</details>;
+}
 function blocks(lines,{depth=0}={}){
  const result=[];let i=0;
  while(i<lines.length){
@@ -53,7 +59,7 @@ function blocks(lines,{depth=0}={}){
     if(!activeFence){if(current.trim()==='<details>')count++;if(current.trim()==='</details>'){count--;if(count===0){i++;break;}}}
     nested.push(current);i++;
    }
-   result.push(<details className="cr-report-appendix" key={key}><summary>{summary}</summary>{blocks(nested,{depth:depth+1})}</details>);continue;
+   result.push(<ReportAppendix key={key} summary={summary} lines={nested} depth={depth+1}/>);continue;
   }
   if(title){
    result.push(React.createElement('h'+title[1].length,{key},inline(title[2])));i++;continue;
@@ -77,6 +83,8 @@ function blocks(lines,{depth=0}={}){
  }
  return result;
 }
-export default function ReportDocument({markdown}){
- return <article className="cr-report cr-report-document" aria-label="报告正文">{blocks(String(markdown??'').split(/\r?\n/))}</article>;
-}
+export default React.memo(function ReportDocument({markdown}){
+ const text=String(markdown??'');
+ const content=React.useMemo(()=>blocks(text.split(/\r?\n/)),[text]);
+ return <article className="cr-report cr-report-document" aria-label="报告正文">{content}</article>;
+});
