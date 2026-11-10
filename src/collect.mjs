@@ -131,14 +131,14 @@ function boundedExec(root, budget, checkpoint = () => {}, options = {}) {
  };
 }
 
-export async function listRefs(cwd, repoPath, signal, {gitMode,gitRemote} = {}) {
+export async function listRefs(cwd, repoPath, signal, {gitMode,gitRemote,sshDirectory} = {}) {
  if (gitMode !== undefined && !['remote','local'].includes(gitMode)) throw new Error('无效 Git 来源模式');
  const root = await inside(cwd, repoPath, {root:true});
  const budget = createCollectionBudget({signal});
  const exec = boundedExec(root, budget);
  const top = (await exec('git', ['rev-parse', '--show-toplevel'])).trim();
  if (await realpath(top) !== root) throw new Error('请指定 Git 仓库根目录');
- if (gitMode === 'remote') return listRemoteRefs(root,{remote:gitRemote??'origin',signal});
+ if (gitMode === 'remote') return listRemoteRefs(root,{remote:gitRemote??'origin',signal,sshDirectory});
  const refs = await exec('git', ['for-each-ref', '--format=%(refname)', '--sort=refname', 'refs/heads', 'refs/tags', 'refs/remotes']);
  budget.check();
  return refs.split('\n').map(value => value.replace(/\r$/, '')).filter(Boolean);
@@ -236,7 +236,7 @@ async function collectRepository(cwd,row,request,budget,result,onEntry,remoteCon
   repo.branchA=typeof row.branchA==='string'?row.branchA.trim():'';
   repo.branchB=typeof row.branchB==='string'?row.branchB.trim():'';
   if(repo.gitSource==='remote'){
-   await withRemoteRepository(root,{remote:row.gitRemote??'origin',signal:budget.signal,onProgress},async(temporary,source)=>{
+   await withRemoteRepository(root,{remote:row.gitRemote??'origin',signal:budget.signal,onProgress,sshDirectory:row.sshDirectory},async(temporary,source)=>{
     budget.check();repo.remote=source.remote;repo.observedAt=source.observedAt;
     repo.identity={gitSource:'remote',remote:source.remote,observedAt:source.observedAt};
     await gitEvidence(boundedExec(temporary,budget,checkpoint),temporary,repo,normalizeRemoteRef(a,source.remote),normalizeRemoteRef(b,source.remote),{temporary:true});

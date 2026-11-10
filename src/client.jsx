@@ -209,10 +209,10 @@ export function apply(ctx){
     if(!signal.aborted&&mounted.current){setPreview(previous=>({...previous,analysisPlan:value.analysisPlan,planError:null}));setPlanDirty(false);}
    });
   };
-  const loadRefs=async(repositoryPath,signal,{gitMode='remote',gitRemote='origin'}={})=>{
+  const loadRefs=async(repositoryPath,signal,{gitMode='remote',gitRemote='origin',sshDirectory}={})=>{
    if(compatibility||updateController.getSnapshot().updating||updateController.getSnapshot().barrier)throw new Error('后台或更新状态尚不可用');
    const lease=lifecycle.acquireBusiness(gitMode==='remote'?'读取远端 refs':'读取本地 refs',session);
-   try{return (await rpc('refs',{sessionId:session.id,repositoryPath,gitMode,gitRemote},signal)).refs;}finally{lease.release();}
+   try{return (await rpc('refs',{sessionId:session.id,repositoryPath,gitMode,gitRemote,sshDirectory},signal)).refs;}finally{lease.release();}
   };
   return <section className="cr-root"><style>{css}</style>
    <header className="cr-hero"><div className="cr-hero-title"><span className="cr-hero-mark" aria-hidden="true">▤</span><div><small>RELEASE WORKSPACE <span>· v{version}</span></small><h1>发布报告配置</h1><p>从版本差异到发布决策，让每一次交付都有据可依。</p></div></div><div className="cr-actions cr-header-actions"><button disabled={!session||!!busy||updating} onClick={store}>保存配置</button><button disabled={!session||!!busy||updating||!!pendingRecovery} onClick={restore}>恢复已保存</button></div></header>

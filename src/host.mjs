@@ -193,7 +193,7 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
   };
   const endpoints={
     discover:({payload,cwd,signal,update})=>scan(cwd,signal,payload.scan,update),
-    refs:async({payload,cwd,signal})=>({refs:await refs(cwd,payload.repositoryPath,signal,{gitMode:payload.gitMode,gitRemote:payload.gitRemote})}),
+    refs:async({payload,cwd,signal})=>({refs:await refs(cwd,payload.repositoryPath,signal,{gitMode:payload.gitMode,gitRemote:payload.gitRemote,sshDirectory:payload.sshDirectory})}),
     preview:async({payload,cwd,signal,update})=>{
       const snapshot=await capture(cwd,payload.request,signal,update);
       await assertSession(payload,cwd,signal);signal.throwIfAborted();

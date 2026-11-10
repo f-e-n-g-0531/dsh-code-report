@@ -1,5 +1,5 @@
 export function scanMessage(state){return state==='scanning'?'正在扫描工作区内的 Git / SVN 项目…':state==='failed'?'项目扫描失败，尚未确认项目数量。请查看上方错误，恢复连接后重新扫描。':state==='cancelled'?'项目扫描已取消，可重新扫描或手动添加。':state==='completed'?'当前扫描范围未发现项目，可手动添加。':'尚未扫描项目，请先打开带工作目录的会话。';}
-export const fresh=()=>({path:'.',type:'git',a:'',b:'',branchA:'',branchB:'',gitMode:'remote',gitRemote:'origin',enabled:true});
+export const fresh=()=>({path:'.',type:'git',a:'',b:'',branchA:'',branchB:'',gitMode:'remote',gitRemote:'origin',sshDirectory:'',enabled:true});
 export function mergeRepositories(previous,discovered){
  const rows=previous.map(row=>({...row}));
  for(const found of discovered){
@@ -19,12 +19,14 @@ export function repositoryIssues(rows){
  return issues;
 }
 export const validGitRemote=value=>typeof value==='string'&&value.length<=256&&/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(value);
+export const validSshDirectory=value=>value===undefined||(typeof value==='string'&&value.length<=2048&&!/[\u0000-\u001f\u007f-\u009f]/.test(value));
 function missingFields(row){
  const missing=[];
  if(!row.path.trim())missing.push('项目路径');
  if(row.type==='git'){
   if(!['remote','local'].includes(row.gitMode??'remote'))missing.push('有效 Git 读取方式');
   if((row.gitMode??'remote')==='remote'&&!validGitRemote(row.gitRemote??'origin'))missing.push('有效 Git 远端配置名（非 URL）');
+  if(!validSshDirectory(row.sshDirectory))missing.push('有效 SSH 目录（最多 2048 字符且不含控制字符）');
   if(!row.a.trim()&&!row.branchA.trim())missing.push('Git A 分支（版本留空时必填）');
   if(!row.b.trim()&&!row.branchB.trim())missing.push('Git B 分支（版本留空时必填）');
  }

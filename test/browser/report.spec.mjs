@@ -33,6 +33,21 @@ async function collect(page){await capture(page).click();await expect(report(pag
 async function route(page){await page.getByRole('checkbox',{name:'使用 DSH 默认模型',exact:true}).uncheck();await page.getByRole('textbox',{name:'DSH 提供方 ID',exact:true}).fill('fixture');await page.getByRole('textbox',{name:'模型 ID',exact:true}).fill('mock');}
 async function analyze(page){await route(page);await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告');}
 
+test('custom SSH directory saves, restores and reaches refs and capture without model calls',async({page})=>{
+ await open(page);await selectGit(page);
+ const directory="D:/SSH keys/中文/.ssh";
+ const input=page.getByRole('textbox',{name:'SSH 目录（可选） 1',exact:true});
+ await input.fill(directory);await page.getByRole('button',{name:'保存配置',exact:true}).click();
+ await input.fill('');await page.getByRole('button',{name:'恢复已保存',exact:true}).click();
+ await expect(input).toHaveValue(directory);
+ await page.getByRole('button',{name:'读取远端分支/标签',exact:true}).click();
+ await expect.poll(async()=>((await stats(page)).calls.findLast(call=>call.endpoint==='refs'))?.payload.sshDirectory).toBe(directory);
+ await collect(page);
+ const snapshot=await stats(page);expect(snapshot.calls.find(call=>call.endpoint==='preview-start').payload.request.repositories[0].sshDirectory).toBe(directory);expect(snapshot.modelCalls).toBe(0);
+ await page.getByRole('combobox',{name:'Git 读取方式 1',exact:true}).selectOption('local');
+ await expect(input).toHaveCount(0);
+});
+
 test('DSH default model needs no manual IDs and remains pinned until recapture',async({page})=>{
  await open(page);await selectGit(page);await collect(page);await expect(page.getByRole('checkbox',{name:'使用 DSH 默认模型',exact:true})).toBeChecked();await expect(page.getByRole('textbox',{name:'DSH 提供方 ID',exact:true})).toHaveCount(0);await expect(page.getByText('default-fixture / default-mock',{exact:true})).toBeVisible();await expect(generate(page)).toBeDisabled();expect((await stats(page)).modelCalls).toBe(0);await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告');const calls=(await stats(page)).calls.filter(c=>c.endpoint==='generate');expect(calls).toHaveLength(1);expect(calls[0].payload.route).toEqual({mode:'default',provider:'default-fixture',model:'default-mock'});
 });

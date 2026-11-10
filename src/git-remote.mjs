@@ -114,29 +114,29 @@ function parseAdvertisement(text) {
   return {refs: refs.sort(), headTarget, headId};
 }
 
-async function advertisement(directory, address, remote, signal, authenticationRoot) {
-  return safely(remote, '查询引用', signal, async () => parseAdvertisement(await runGitRemote(['ls-remote', '--symref', '--', address, 'HEAD', 'refs/heads/*', 'refs/tags/*'], {cwd: directory, signal, authenticationRoot})));
+async function advertisement(directory, address, remote, signal, authenticationRoot, sshDirectory) {
+  return safely(remote, '查询引用', signal, async () => parseAdvertisement(await runGitRemote(['ls-remote', '--symref', '--', address, 'HEAD', 'refs/heads/*', 'refs/tags/*'], {cwd: directory, signal, authenticationRoot, sshDirectory})));
 }
 
 /** Fresh remote-only refs; no checkout, source-ref update, or local fallback. */
-export async function listRemoteRefs(root, {remote = 'origin', signal} = {}) {
+export async function listRemoteRefs(root, {remote = 'origin', signal, sshDirectory} = {}) {
   const {address, format, authenticationRoot} = await configuration(root, remote, signal);
   return temporary(remote, signal, async directory => {
     // A bare root prevents discovery of an ancestor repository or its local configuration.
     await safely(remote, '初始化隔离仓库', signal, () => runGitRead(['init', '--bare', '--template=', '--object-format=' + format, directory], {cwd: directory, signal}));
-    return (await advertisement(directory, address, remote, signal, authenticationRoot)).refs;
+    return (await advertisement(directory, address, remote, signal, authenticationRoot, sshDirectory)).refs;
   });
 }
 
 /** Fully fetch advertised branches/tags into a disposable bare repository. */
-export async function withRemoteRepository(root, {remote = 'origin', signal, onProgress = () => {}} = {}, fn) {
+export async function withRemoteRepository(root, {remote = 'origin', signal, sshDirectory, onProgress = () => {}} = {}, fn) {
   if (typeof fn !== 'function') throw new TypeError('缺少远端读取回调');
   const {address, format, authenticationRoot} = await configuration(root, remote, signal);
   return temporary(remote, signal, async directory => {
     await safely(remote, '初始化隔离仓库', signal, () => runGitRead(['init', '--bare', '--template=', '--object-format=' + format, directory], {cwd: directory, signal}));
     onProgress({phase: 'remote-fetch', label: '远端 ' + remote + '：抓取完整分支与标签（不修改工作区）'});
-    const observed = await advertisement(directory, address, remote, signal, authenticationRoot);
-    await safely(remote, '抓取', signal, () => runGitRemote(['fetch', '--no-recurse-submodules', '--no-write-fetch-head', '--no-auto-maintenance', '--no-tags', '--', address, '+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*'], {cwd: directory, signal, authenticationRoot}));
+    const observed = await advertisement(directory, address, remote, signal, authenticationRoot, sshDirectory);
+    await safely(remote, '抓取', signal, () => runGitRemote(['fetch', '--no-recurse-submodules', '--no-write-fetch-head', '--no-auto-maintenance', '--no-tags', '--', address, '+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*'], {cwd: directory, signal, authenticationRoot, sshDirectory}));
     if (observed.headId) {
       await safely(remote, '固定远端 HEAD', signal, async () => {
         if (observed.headTarget) {

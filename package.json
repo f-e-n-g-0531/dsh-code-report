@@ -1,6 +1,6 @@
 {
   "name": "@feng0531/dsh-code-report",
-  "version": "1.0.5",
+  "version": "1.1.0",
   "private": false,
   "type": "module",
   "description": "比较多个 Git/SVN 项目的版本差异，生成改动、接口影响与 QA 测试范围报告。",

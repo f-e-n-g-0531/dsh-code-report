@@ -29,11 +29,11 @@ function RepositoryRow({row,index,issues,warning,change,remove,loadRefs,refsDisa
  const [refs,setRefs]=useState([]),[loading,setLoading]=useState(false),[error,setError]=useState('');
  const request=useRef(null),mounted=useRef(true);
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;request.current?.abort();};},[]);
- useEffect(()=>{request.current?.abort();setRefs([]);setError('');setLoading(false);},[row.path,row.type,row.gitMode,row.gitRemote]);
+ useEffect(()=>{request.current?.abort();setRefs([]);setError('');setLoading(false);},[row.path,row.type,row.gitMode,row.gitRemote,row.sshDirectory]);
  const refreshRefs=async()=>{
   if(!loadRefs||loading)return;
   request.current?.abort();const ac=new AbortController();request.current=ac;setLoading(true);setError('');
-  try{const value=await loadRefs(row.path,ac.signal,{gitMode:row.gitMode??'remote',gitRemote:row.gitRemote??'origin'});if(!ac.signal.aborted&&mounted.current)setRefs(value);}
+  try{const value=await loadRefs(row.path,ac.signal,{gitMode:row.gitMode??'remote',gitRemote:row.gitRemote??'origin',sshDirectory:row.sshDirectory??''});if(!ac.signal.aborted&&mounted.current)setRefs(value);}
   catch(error){if(!ac.signal.aborted&&mounted.current)setError(error.message);}
   finally{if(!ac.signal.aborted&&mounted.current)setLoading(false);}
  };
@@ -42,7 +42,7 @@ function RepositoryRow({row,index,issues,warning,change,remove,loadRefs,refsDisa
   <td className="cr-project-select"><label className="cr-selection"><input type="checkbox" checked={row.enabled} aria-label={'纳入项目 '+(index+1)} onChange={event=>change(index,'enabled',event.target.checked)}/><span>项目 {String(index+1).padStart(2,'0')}</span></label><span className={'cr-vcs-badge cr-'+row.type}>{row.type.toUpperCase()}</span><button type="button" className="cr-project-toggle" aria-label={(expanded?'收起项目 ':'展开项目 ')+(index+1)} aria-expanded={expanded} aria-controls={['cr-project-config-'+index,'cr-project-a-'+index,'cr-project-b-'+index].join(' ')} onClick={toggle}><span aria-hidden="true">{expanded?'▾':'▸'}</span><span className="cr-project-heading"><span className="cr-project-name">{row.path||'未填写项目路径'}</span>{!expanded&&<span className="cr-project-comparison" aria-label={'项目版本对比 '+(index+1)}>{comparisonSummary(row)}</span>}</span><span className="cr-project-toggle-hint">{expanded?'收起':'展开'}</span></button>{!!issues.length&&<span className="cr-project-error">{issues.length} 项错误</span>}</td>
   <td className="cr-project-config" id={'cr-project-config-'+index} hidden={!expanded}>
    {expanded&&<><div className="cr-project-fields"><label className="cr-project-path">项目路径<input value={row.path} aria-label={'项目路径 '+(index+1)} aria-invalid={issues.length>0} aria-describedby={issues.length?issueId:undefined} placeholder="相对于工作区" onChange={event=>change(index,'path',event.target.value)}/></label><label>版本控制<select value={row.type} aria-label={'VCS '+(index+1)} onChange={event=>change(index,'type',event.target.value)}><option value="git">Git</option><option value="svn">SVN</option></select></label>
-   {row.type==='git'&&<><label>读取方式<select aria-label={'Git 读取方式 '+(index+1)} value={row.gitMode??'remote'} onChange={event=>change(index,'gitMode',event.target.value)}><option value="remote">远端实时读取</option><option value="local">本地离线</option></select></label>{remote&&<label>远端配置名<input aria-label={'Git 远端名 '+(index+1)} value={row.gitRemote??'origin'} placeholder="origin（非 URL）" onChange={event=>change(index,'gitRemote',event.target.value)}/></label>}</>}
+   {row.type==='git'&&<><label>读取方式<select aria-label={'Git 读取方式 '+(index+1)} value={row.gitMode??'remote'} onChange={event=>change(index,'gitMode',event.target.value)}><option value="remote">远端实时读取</option><option value="local">本地离线</option></select></label>{remote&&<><label>远端配置名<input aria-label={'Git 远端名 '+(index+1)} value={row.gitRemote??'origin'} placeholder="origin（非 URL）" onChange={event=>change(index,'gitRemote',event.target.value)}/></label><label>SSH 目录（可选）<input aria-label={'SSH 目录（可选） '+(index+1)} aria-describedby={'cr-ssh-hint-'+index} value={row.sshDirectory??''} maxLength={2048} placeholder="留空使用现有 Git SSH 设置" onChange={event=>change(index,'sshDirectory',event.target.value)}/></label><p className="cr-hint" id={'cr-ssh-hint-'+index}>自定义目录中的 config、known_hosts 和默认身份文件用于 SSH；留空沿用现有 Git SSH 设置。</p></>}</>}
    </div>
    {!!issues.length&&<ul className="cr-row-issues" id={issueId}>{issues.map((text,i)=><li key={i}>{text}</li>)}</ul>}
    {warning&&<p className="cr-card-hint">{warning}</p>}

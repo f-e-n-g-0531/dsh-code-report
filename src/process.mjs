@@ -1,4 +1,5 @@
 import {spawn} from 'node:child_process';
+import {sshDirectoryCommand} from './ssh-directory.mjs';
 // Keep only a diagnostic prefix of stderr; stdout evidence is never truncated.
 const STDERR_DIAGNOSTIC_BYTES = 16 * 1024;
 export function isolatedEnvironment(source = process.env) {
@@ -27,8 +28,10 @@ export function runGitRead(args, options = {}) {
  * Configured credential/SSH programs and explicit SSH environment overrides are user-trusted
  * executable code, not an OS sandbox. Relative command paths retain the transport temp cwd. */
 export async function runGitRemote(args, options = {}) {
-  const {authenticationRoot, ...transportOptions} = options;
+  const {authenticationRoot, sshDirectory, ...transportOptions} = options;
+  options.signal?.throwIfAborted();
   if (authenticationRoot !== undefined && (typeof authenticationRoot !== 'string' || !authenticationRoot)) throw new Error('无效认证配置根目录');
+  const sshCommand = await sshDirectoryCommand(sshDirectory, authenticationRoot ?? transportOptions.cwd);
   const source = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
   const safe = ['-c','core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'),'-c','core.fsmonitor=false'];
   const configuration = await execute('git', [...safe,'config','--null','--list','--includes'], {...transportOptions,cwd:authenticationRoot ?? transportOptions.cwd,raw:false,onStdoutBytes:undefined}, source);
@@ -44,6 +47,11 @@ export async function runGitRemote(args, options = {}) {
   for (const [key,value] of Object.entries(process.env)) {
     const canonical = process.platform === 'win32' ? key.toUpperCase() : key;
     if (['GIT_SSH_COMMAND','GIT_SSH','GIT_SSH_VARIANT'].includes(canonical)) env[canonical] = value;
+  }
+  if (sshCommand) {
+    delete env.GIT_SSH;
+    env.GIT_SSH_COMMAND = sshCommand;
+    env.GIT_SSH_VARIANT = 'ssh';
   }
   retained.forEach(([key,value],index) => { env['GIT_CONFIG_KEY_' + index] = key; env['GIT_CONFIG_VALUE_' + index] = value; });
   const protocols = ['-c','protocol.allow=never', ...['file','http','https','ssh','git'].flatMap(name => ['-c','protocol.' + name + '.allow=always']),'-c','protocol.ext.allow=never'];

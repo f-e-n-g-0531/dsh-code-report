@@ -3,6 +3,12 @@ import assert from 'node:assert/strict';
 import {apply,inject} from '../index.mjs';
 import {createClientRpc} from '../src/client-rpc.mjs';
 import {createHandler} from '../src/host.mjs';
+test('refs RPC forwards per-repository SSH directory unchanged',async()=>{
+ let observed;
+ const handler=createHandler({sessions:{get:()=>({header:{cwd:process.cwd()}})}},{refs:async(...args)=>{observed=args;return ['refs/heads/main'];}});
+ const result=await handler('refs',{sessionId:'ssh-session',repositoryPath:'.',gitMode:'remote',gitRemote:'upstream',sshDirectory:'G:/SSH keys/.ssh'},new AbortController().signal);
+ assert.equal(result.ok,true);assert.deepEqual(observed[3],{gitMode:'remote',gitRemote:'upstream',sshDirectory:'G:/SSH keys/.ssh'});
+});
 test('host registration declares webServer and registers route through plugin owner',async()=>{
  let handler,route;const allowed=new Set(inject);assert.ok(allowed.has('webServer'));
  const values={effect:fn=>fn(),webServer:{register(value){route=value;}},connection:{register(owner,channel,fn){handler=fn;return owner.effect(()=>owner.webServer.register({kind:'prefix',path:channel}));}}};
