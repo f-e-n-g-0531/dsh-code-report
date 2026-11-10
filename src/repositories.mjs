@@ -26,7 +26,7 @@ function missingFields(row){
  if(row.type==='git'){
   if(!['remote','local'].includes(row.gitMode??'remote'))missing.push('有效 Git 读取方式');
   if((row.gitMode??'remote')==='remote'&&!validGitRemote(row.gitRemote??'origin'))missing.push('有效 Git 远端配置名（非 URL）');
-  if(!validSshDirectory(row.sshDirectory))missing.push('有效 SSH 目录（最多 2048 字符且不含控制字符）');
+  if(!validSshDirectory(row.sshDirectory))missing.push('有效 SSH 私钥文件或目录（最多 2048 字符且不含控制字符）');
   if(!row.a.trim()&&!row.branchA.trim())missing.push('Git A 分支（版本留空时必填）');
   if(!row.b.trim()&&!row.branchB.trim())missing.push('Git B 分支（版本留空时必填）');
  }

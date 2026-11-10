@@ -17,7 +17,7 @@ function harness(row,loadRefs){
  return {changes,render(next=row){cursor=refCursor=effectCursor=0;const tree=element.type({...element.props,row:next,expanded:true,loadRefs,change:(...args)=>changes.push(args)});for(const effect of effects)if(effect.pending){effect.pending=false;effect.fn();}return nodes(tree);}};
 }
 const button=all=>all.find(node=>node.type==='button'&&String(node.props.children).includes('读取远端'));
-const sshInput=all=>all.find(node=>node.type==='input'&&node.props['aria-label']==='SSH 目录（可选） 1');
+const sshInput=all=>all.find(node=>node.type==='input'&&node.props['aria-label']==='SSH 私钥文件或目录（可选） 1');
 test('SSH directory defaults and discovery preserve each repository setting without mutation',()=>{
  assert.equal(fresh().sshDirectory,'');
  const previous=[{...fresh(),path:'one',sshDirectory:'G:/SSH keys'}];
@@ -25,13 +25,13 @@ test('SSH directory defaults and discovery preserve each repository setting with
  assert.equal(merged[0].sshDirectory,'G:/SSH keys');assert.equal(merged[1].sshDirectory,'');assert.notEqual(merged[0],previous[0]);
  const valid={...fresh(),a:'main',b:'release'};
  for(const sshDirectory of [undefined,'','G:/SSH keys','x'.repeat(2048)])assert.deepEqual(repositoryIssues([{...valid,sshDirectory}]),[]);
- for(const sshDirectory of [null,123,'x'.repeat(2049),'a\nb','a\0b','a\u007fb'])assert.match(repositoryIssues([{...valid,sshDirectory}]).join(' '),/SSH 目录/);
+ for(const sshDirectory of [null,123,'x'.repeat(2049),'a\nb','a\0b','a\u007fb'])assert.match(repositoryIssues([{...valid,sshDirectory}]).join(' '),/SSH 私钥文件或目录/);
 });
 test('SSH directory input is remote Git only, accessible, and forwards edits',()=>{
  const row={...fresh(),sshDirectory:'G:/SSH keys'};const h=harness(row);let all=h.render();
  const input=sshInput(all);assert.equal(input.props.value,row.sshDirectory);assert.equal(input.props.maxLength,2048);
- const hint=all.find(node=>node.props?.id===input.props['aria-describedby']);assert.match(hint.props.children,/config、known_hosts.*默认身份文件.*留空.*现有 Git SSH/);
- input.props.onChange({target:{value:'G:/Other SSH'}});assert.deepEqual(h.changes,[[0,'sshDirectory','G:/Other SSH']]);
+ const hint=all.find(node=>node.props?.id===input.props['aria-describedby']);assert.match(hint.props.children,/留空.*现有 Git SSH.*私钥文件.*默认 config.*known_hosts.*覆盖仓库 SSH/);
+ input.props.onChange({target:{value:'G:/Other SSH/fork_ssh_key'}});assert.deepEqual(h.changes,[[0,'sshDirectory','G:/Other SSH/fork_ssh_key']]);
  assert.equal(sshInput(h.render({...row,gitMode:'local'})),undefined);
  assert.equal(sshInput(h.render({...row,type:'svn'})),undefined);
  assert.equal(sshInput(h.render({...row,sshDirectory:undefined})).props.value,'');

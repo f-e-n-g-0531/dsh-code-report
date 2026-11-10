@@ -24,16 +24,16 @@ test('legacy Git rows migrate remote-first while explicit offline mode and remot
 });
 test('SSH directory configuration is optional, workspace-scoped and round-trips without rewriting paths',()=>{
  let raw;const storage={setItem(k,v){raw=v;},getItem(){return raw;}};
- for(const sshDirectory of ['', 'G:\\SSH keys\\团队', '/home/user/.ssh', 'x'.repeat(2048)]){
+ for(const sshDirectory of ['', 'G:\\SSH keys\\团队', '/home/user/.ssh', 'G:/SSH keys/fork_ssh_key', 'x'.repeat(2048)]){
   const value={...config(),rows:[{...fresh(),sshDirectory}]};
   saveConfiguration(storage,'x',value);assert.deepEqual(loadConfiguration(storage,'x'),value);
  }
  const legacy=config();delete legacy.rows[0].sshDirectory;
  saveConfiguration(storage,'x',legacy);assert.equal(loadConfiguration(storage,'x').rows[0].sshDirectory,'');
  for(const sshDirectory of [null,42,{},'x'.repeat(2049),...Array.from({length:32},(_,i)=>'path'+String.fromCharCode(i)), '\u007f', '\u0085', '\u009f']){
-  assert.throws(()=>saveConfiguration(storage,'x',{...config(),rows:[{...fresh(),sshDirectory}]}),/SSH 目录/);
+  assert.throws(()=>saveConfiguration(storage,'x',{...config(),rows:[{...fresh(),sshDirectory}]}),/SSH 私钥文件或目录/);
   const invalid={...config(),rows:[{...fresh(),sshDirectory}]};raw=JSON.stringify(invalid);
-  assert.throws(()=>loadConfiguration(storage,'x'),/SSH 目录/);
+  assert.throws(()=>loadConfiguration(storage,'x'),/SSH 私钥文件或目录/);
  }
 });
 test('bulk fill targets selected VCS only, preserves blanks and supports empty-only overwrite',()=>{const rows=[{...fresh(),a:'main'},{...fresh(),enabled:false},{...fresh(),type:'svn',branchA:'trunk'}];const filled=bulkVersions(rows,{type:'git',a:'v1',b:'HEAD'});assert.equal(filled[0].a,'main');assert.equal(filled[0].b,'HEAD');const branches=bulkVersions(rows,{type:'git',branchA:'main',branchB:'release'});assert.equal(branches[0].branchA,'main');assert.equal(branches[0].branchB,'release');assert.deepEqual(branches[1],rows[1]);assert.deepEqual(branches[2],rows[2]);assert.deepEqual(filled[1],rows[1]);assert.deepEqual(filled[2],rows[2]);assert.equal(bulkVersions(rows,{type:'git',a:'v1',emptyOnly:false})[0].a,'v1');const svn=bulkVersions(rows,{type:'svn',a:'r1',b:'r2',branchA:'branch',branchB:'release'});assert.equal(svn[2].branchA,'trunk');assert.equal(svn[2].branchB,'release');assert.deepEqual(rows[0],{...fresh(),a:'main'});});

@@ -33,10 +33,9 @@ async function collect(page){await capture(page).click();await expect(report(pag
 async function route(page){await page.getByRole('checkbox',{name:'使用 DSH 默认模型',exact:true}).uncheck();await page.getByRole('textbox',{name:'DSH 提供方 ID',exact:true}).fill('fixture');await page.getByRole('textbox',{name:'模型 ID',exact:true}).fill('mock');}
 async function analyze(page){await route(page);await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告');}
 
-test('custom SSH directory saves, restores and reaches refs and capture without model calls',async({page})=>{
+for(const directory of ['D:/SSH keys/中文/.ssh','D:/SSH keys/中文/fork_ssh_key'])test('custom SSH path saves, restores and reaches refs and capture without model calls: '+directory,async({page})=>{
  await open(page);await selectGit(page);
- const directory="D:/SSH keys/中文/.ssh";
- const input=page.getByRole('textbox',{name:'SSH 目录（可选） 1',exact:true});
+ const input=page.getByRole('textbox',{name:'SSH 私钥文件或目录（可选） 1',exact:true});
  await input.fill(directory);await page.getByRole('button',{name:'保存配置',exact:true}).click();
  await input.fill('');await page.getByRole('button',{name:'恢复已保存',exact:true}).click();
  await expect(input).toHaveValue(directory);

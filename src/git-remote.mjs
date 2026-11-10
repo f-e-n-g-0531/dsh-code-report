@@ -16,7 +16,10 @@ function remoteName(remote) {
 /** Only fixed diagnostic categories cross the RPC boundary; raw Git stderr may contain secrets. */
 export function remoteFailureDiagnostic(error) {
   const message=typeof error?.message==='string'?error.message:'';
+  if(error?.code==='code-report/ssh-directory' || /^(?:SSH 目录配置无效|相对 SSH 目录需要仓库根目录|SSH 路径不存在或不可访问|SSH 路径必须是目录或私钥文件|SSH 目录不存在或不可读取|无法读取 SSH 目录配置)$/.test(message)) return {kind:'ssh-configuration',hint:'SSH 路径配置无效、不存在或不可访问；请检查目录或私钥文件及当前运行用户的访问权限'};
+  if(error?.code==='code-report/ssh-identity' || message==='SSH 私钥文件不可读取') return {kind:'ssh-identity',hint:'SSH 私钥文件不可用；请填写私钥而非 .pub 公钥，并检查当前运行用户的文件访问权限'};
   const rules=[
+    ['ssh-configuration',/bad configuration option|terminating,? .*bad configuration options|(?:can.t|cannot|could not) open (?:user )?config(?:uration)? file|bad owner or permissions on .*config|(?:config|configuration)[^\r\n]*: (?:permission denied|no such file or directory)/i,'SSH 配置无法解析或读取；请检查 SSH config 语法、路径和访问权限'],
     ['ssh-identity',/identity file .*not accessible|no such identity|load key .*|bad permissions|unprotected private key/i,'SSH 密钥无法读取或格式/权限不正确；请检查当前仓库 core.sshCommand 指定的私钥，建议使用绝对路径'],
     ['ssh-publickey',/permission denied[^\n]*(?:publickey|keyboard-interactive)|no supported authentication methods|no authentication methods available|no more authentication methods to try/i,'SSH 公钥认证被拒绝；请确认当前仓库指定的密钥已在服务器授权，并可由 DSH 运行用户使用'],
     ['ssh-host-key',/host key verification failed|remote host identification has changed|authenticity of host .*can.t be established|no .*host key is known/i,'SSH 主机密钥未受信任或已变化；请在终端核验服务器指纹并配置 known_hosts，不会自动跳过主机校验'],

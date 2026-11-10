@@ -24,7 +24,7 @@
 
 [安装与准备](<#安装与准备>) · [快速上手](<#快速上手>) · [完整使用说明](<#完整使用说明>) · [故障排查](<#故障排查>) · [开发、发布与许可](<#开发发布与许可>)
 
-> 本文对应 v1.1.0。版本变化见[发布说明](<https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/RELEASE-NOTES.md>)；发布不自动安装或重启当前 DSH。
+> 本文对应 v1.1.1。版本变化见[发布说明](<https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/RELEASE-NOTES.md>)；发布不自动安装或重启当前 DSH。
 
 ## 安装与准备
 
@@ -35,13 +35,13 @@
 优先使用 DSH 自带的“插件”页面安装 npm 包，填写以下包名与版本：
 
 ~~~text
-@feng0531/dsh-code-report@1.1.0
+@feng0531/dsh-code-report@1.1.1
 ~~~
 
 也可使用已配置好的 DSH 命令行。确认当前 profile 名称后再执行；profile 是插件安装环境，不是会话名或工作区路径。例如，只有确认使用 desktop 环境时才运行：
 
 ~~~sh
-dsh plugin --profile desktop add @feng0531/dsh-code-report@1.1.0
+dsh plugin --profile desktop add @feng0531/dsh-code-report@1.1.1
 ~~~
 
 安装会修改对应环境，先备份配置。命令行安装还需满足 DSH 自身的包管理器要求。安装后保存工作，手动完全退出并重新启动 DSH，再刷新原页面。**只刷新页面不会重载旧后台。** 发布新版本不会自动升级或重启你的环境。
@@ -81,7 +81,7 @@ dsh plugin --profile desktop add @feng0531/dsh-code-report@1.1.0
 | --- | --- |
 | 项目路径 | 相对于会话工作目录；根目录填 "."，例如 client 或 server |
 | Git 读取方式 / 远端名 | 默认“远端实时读取”，远端配置名默认 origin（不是 URL）；显式选“本地离线”才仅用本地对象 |
-| SSH 目录（可选） | Git 远端模式专用，例如 `D:/keys/.ssh`；支持 `~` 和相对于源仓库根目录的路径，留空沿用现有认证设置 |
+| SSH 私钥文件或目录（可选） | Git 远端模式专用，可直接填 `D:/keys/fork_ssh_key` 私钥文件，或 `D:/keys/.ssh` 目录；支持 `~` 和相对于源仓库根目录的路径，留空沿用现有认证设置 |
 | Git 分支 A/B | 版本留空时必填；远端模式使用远端已有分支，如 main、develop 或 origin/develop，无需在本地创建对应分支 |
 | Git 版本 A/B（可选） | 留空取所选来源中对应分支最新提交；显式版本优先，可填标签、SHA 或 HEAD~1 等历史表达式，所需对象须在该来源可读 |
 | SVN 分支 A/B | 相对于 SVN 仓库根目录，例如 trunk、branches/release；"." 表示当前工作副本的仓库路径 |
@@ -89,7 +89,7 @@ dsh plugin --profile desktop add @feng0531/dsh-code-report@1.1.0
 
 Git 默认可点击“读取远端分支/标签”，查询该配置远端当时的引用；采集时会重新获取，列表不保证与后续采集相同。选择“远端实时读取”即允许访问该配置远端，不另设网络勾选；查询和采集会联网，并可能需要现有的非交互认证。远端名填写 origin 等配置名称，不填写 URL、密码或令牌。认证沿用源仓库有效的 credential/http、core.sshCommand 与 ssh.variant 配置，以及明确设置的 GIT_SSH_COMMAND、GIT_SSH、GIT_SSH_VARIANT；源仓库 local 认证设置也在范围内。仓库和用户已配置且信任的 credential helper / SSH 程序可能执行，插件不是 OS 沙箱。相对 -i 路径不会自动改写，仍相对临时目录解析；建议使用绝对路径或已配置的 SSH 身份，不要将密钥路径、私钥或令牌粘贴到报告字段。逐行错误会标出缺失内容，重复项目须先移除。
 
-指定 SSH 目录后，本次远端查询和抓取使用 OpenSSH，覆盖现有 `core.sshCommand`、`GIT_SSH_COMMAND` / `GIT_SSH` 和 SSH variant，但不改写这些配置。读取该目录的 `config`（若存在）、`known_hosts` 及存在的常见 `id_*` 私钥；自定义私钥名请在 `config` 中用绝对 `IdentityFile` 路径指定。`~`、相对 IdentityFile / Include 等仍按 OpenSSH 自身规则解释，不自动相对新目录重定位。仅保存目录路径，不读取私钥内容到报告或发送给模型；SSH 配置属于受信任配置，可能启动 ProxyCommand 等程序。不会关闭主机指纹校验；未信任的主机需先在插件外核验，密码或私钥口令不会交互询问（可预先使用 ssh-agent）。本地离线和 SVN 不使用此设置。
+指定 SSH 私钥文件或目录后，本次远端查询和抓取使用 OpenSSH，覆盖现有 `core.sshCommand`、`GIT_SSH_COMMAND` / `GIT_SSH` 和 SSH variant，但不改写这些配置。文件模式通过 `-i` 指定该私钥并设置 `IdentitiesOnly=yes`，保留 OpenSSH 默认 `config` / `known_hosts`；不要填写 `.pub` 公钥。目录模式读取该目录的 `config`（若存在）、`known_hosts` 及存在的常见 `id_*` 私钥；自定义私钥可直接填文件路径，无需改名或复制，也可在 `config` 中用绝对 `IdentityFile` 路径指定。`~`、相对 IdentityFile / Include 等仍按 OpenSSH 自身规则解释，不自动相对新目录重定位。仅保存所填路径，不读取私钥内容到报告或发送给模型；SSH 配置属于受信任配置，可能启动 ProxyCommand 等程序。不会关闭主机指纹校验；未信任的主机需先在插件外核验，密码或私钥口令不会交互询问（可预先使用 ssh-agent）。本地离线和 SVN 不使用此设置。
 
 Git 示例：远端名 origin，A 分支 main、B 分支 develop，两侧版本留空，比较远端这两个分支的最新提交。origin/develop、refs/remotes/origin/develop 会按所选远端归一化为远端分支；标签可填 refs/tags/v1.0.0，历史版本可填已抓取历史中的 SHA、HEAD~1。HEAD 指远端 HEAD，不替换为本地当前分支。
 

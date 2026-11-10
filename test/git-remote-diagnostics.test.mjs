@@ -5,6 +5,9 @@ import {remoteFailureDiagnostic} from '../src/git-remote.mjs';
 test('remote failures expose only fixed actionable diagnostic categories, never raw credentials', () => {
   const secret='https://private-user:private-token@secret-host/private-repo';
   const samples=[
+    ['ssh-configuration','/private/config: line 1: Bad configuration option: invalidoption'],
+    ['ssh-configuration',"Can't open user config file /private/config: Permission denied"],
+    ['ssh-configuration','Bad owner or permissions on /private/.ssh/config'],
     ['ssh-identity','Warning: Identity file /private/keyfile not accessible: No such file or directory.'],
     ['ssh-identity','Load key /private/keyfile: invalid format'],
     ['ssh-identity','WARNING: UNPROTECTED PRIVATE KEY FILE!'],

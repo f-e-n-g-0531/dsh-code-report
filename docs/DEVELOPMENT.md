@@ -58,7 +58,9 @@ normalizeRemoteRef 仅将匹配所选远端的 origin/name、refs/remotes/origin
 
 配置预检清除继承的 GIT_*；只有网络进程重新保留显式 GIT_SSH_COMMAND、GIT_SSH、GIT_SSH_VARIANT，其他 GIT_ 注入仍清除。本地 runGitRead 维持严格隔离不变。URL rewrite、hooks、remote uploadpack 与 ext/任意 remote helper 不继承，认证白名单不是复制全部源仓库配置。仓库 local 认证程序与用户 global 认证程序一样是用户信任的可执行代码；不能承诺不执行 helper 或提供 OS 网络/进程沙箱。相对 -i 或命令路径不改写，仍按临时 cwd 执行，建议绝对路径或 SSH 配置；公网认证组合另行验收。
 
-remoteFailureDiagnostic(error) 只返回固定 kind/hint：SSH 身份/公钥/主机密钥、DNS、代理、连接、TLS、HTTP/通用认证、仓库权限、缺失工具及 unknown。safeFailure 维持 code-report/git-remote，在 Error 上附 diagnostic 分类，但不保证宿主 RPC 保留该属性；UI 可见的是固定中文指导。不拼接原始 stderr/stdout/error，不公开 URL、凭据或密钥路径，不自动关闭主机或证书校验。分类用于排查，不是根因证明，未匹配时保留泛化提示。网络 execute 使用 killTree:true：POSIX 独立进程组先 TERM、随后 KILL，Windows 使用 taskkill /T /F，等待自有传输进程树停止及 close 后才返回，由上层 finally 清理临时目录。取消语义是停止本地自有传输进程树并清理临时目录；不保证远端服务器撤销请求，不等于服务器端事务回滚。
+SSH 输入沿用 sshDirectory 字段兼容旧配置；空白沿用现有认证，文件以绝对 -i、IdentitiesOnly=yes 和 BatchMode=yes 指定自定义私钥且保留默认 config / known_hosts，目录沿用目录内配置与默认身份规则。只检查元数据，不读私钥内容；文件不可用与路径配置错误以固定安全诊断返回，不回显输入路径。
+
+remoteFailureDiagnostic(error) 只返回固定 kind/hint：SSH 路径配置/配置语法、身份/公钥/主机密钥、DNS、代理、连接、TLS、HTTP/通用认证、仓库权限、缺失工具及 unknown。safeFailure 维持 code-report/git-remote，在 Error 上附 diagnostic 分类，但不保证宿主 RPC 保留该属性；UI 可见的是固定中文指导。不拼接原始 stderr/stdout/error，不公开 URL、凭据或密钥路径，不自动关闭主机或证书校验。分类用于排查，不是根因证明，未匹配时保留泛化提示。网络 execute 使用 killTree:true：POSIX 独立进程组先 TERM、随后 KILL，Windows 使用 taskkill /T /F，等待自有传输进程树停止及 close 后才返回，由上层 finally 清理临时目录。取消语义是停止本地自有传输进程树并清理临时目录；不保证远端服务器撤销请求，不等于服务器端事务回滚。
 
 本地离线模式、业务元数据及临时仓库内的只读差异/源码使用 runGitRead：清除继承 GIT_*，设置 GIT_NO_LAZY_FETCH=1、空 GIT_ALLOW_PROTOCOL 和 protocol.allow=never；缺对象失败，不自动联网补取。普通 run 供测试建仓等用途，不代替两类专用 runner。Git patch 显式固定前缀、行标记、word diff、算法与 hunk 相关选项，不宣称隔离所有仓库配置。
 
