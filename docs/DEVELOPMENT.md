@@ -50,7 +50,7 @@ npm run test:install
 
 Git 行字段 gitMode 为 remote/local，gitRemote 为远端配置名。UI 新建及旧配置缺字段均默认 remote/origin；选择远端模式即允许访问该配置远端，不另加网络 checkbox。UI 始终显式发送模式；旧 RPC 未提供 gitMode 时，后端兼容为 local，不把这一兼容默认用于新界面。切换模式或远端名清 refs、preview 和 consent，保留 A/B。
 
-远端模式先验证业务 root、读取唯一的原始 remote.<name>.url 与 sha1/sha256 格式；地址仅内部使用，不在返回值或错误中回显。配置名不是 URL。listRemoteRefs 用 ls-remote --symref 查询分支和标签，去重并排除 peeled tag；后续采集重新查询，在独立临时 bare 仓库完整 fetch heads、tags 及可达历史，不依赖业务 object store。支持 file/http/https/ssh/git、scp 和本地路径地址，拒绝 ext:: 与任意 remote helper。withRemoteRepository 回调仅给 {remote,observedAt,source:"remote"}，finally 清理临时目录，不 checkout/pull/merge，不修改业务 objects/refs/worktree；失败不回退本地。完整历史消耗网络、临时磁盘和时间，仍受系统资源限制。
+远端模式先验证业务 root、读取唯一的原始 remote.<name>.url 与 sha1/sha256 格式；地址仅内部使用，不在返回值或错误中回显。配置名不是 URL。listRemoteRefs 用 ls-remote --symref 查询分支和标签，去重并排除 peeled tag；后续采集重新查询，在独立临时 bare 仓库完整 fetch heads、tags 及可达历史，不依赖业务 object store。支持 file/http/https/ssh/git、scp 和本地路径地址，拒绝 ext:: 与任意 remote helper。withRemoteRepository 回调接收临时仓库目录和 {remote,observedAt,source:"remote"}；第二参数仅含来源元数据，不含原始远端地址。finally 清理临时目录，不 checkout/pull/merge，不修改业务 objects/refs/worktree；失败不回退本地。完整历史消耗网络、临时磁盘和时间，仍受系统资源限制。
 
 normalizeRemoteRef 仅将匹配所选远端的 origin/name、refs/remotes/origin/name（以 origin 为例）映射为 refs/heads/name；其他 main/develop、标签、SHA 和 HEAD~ 表达式保持 Git 解析，标签可用 refs/tags/name 避免歧义。HEAD 先按远端广告观察，再校验抓取后的目标 hash 相同；移动时失败并要求重采。其他分支取 fetch 时版本，observedAt 是抓取完成后的观察时间，不承诺所有远端引用或跨项目原子一致。A/B SHA、差异及固定版本源码在临时仓库内读取，临时目录释放后生成只使用快照，不重新访问 Git 远端。
 
