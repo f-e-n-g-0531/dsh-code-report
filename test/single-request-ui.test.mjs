@@ -19,7 +19,7 @@ test('single-request preview separates complete local statistics from partial mo
  const html=renderPreview();
  for(const text of ['单次输入预算','单次摘要分析 · 非模型全文覆盖','本地完整统计','369000000','1250','17','1233','211','已发送文件也不代表其全文已发送','一次模型请求','失败不会自动重试','一次请求可能计费'])assert.ok(html.includes(text),text);
  assert.ok(html.includes('实际发送正文片段 9 个'));assert.ok(html.includes('完全未发送文件专属证据 1233 个'));assert.ok(html.includes('非原始网络字节'));
- assert.ok(html.includes('aria-label="单次输入预算"'));assert.ok(html.includes('min="4000"'));assert.ok(html.includes('max="64000"'));
+ assert.ok(html.includes('aria-label="单次输入预算"'));assert.ok(html.includes('min="4000"'));assert.ok(!html.includes('max="64000"'));assert.ok(html.includes('按所选模型容量自动规划'));
  assert.ok(!html.includes('分批调用可能多次计费'));assert.ok(!html.includes('按顺序调用模型'));
  assert.match(html,/<input type="checkbox"\s*\/>/);
 });

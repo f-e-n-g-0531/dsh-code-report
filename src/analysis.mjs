@@ -21,23 +21,29 @@ function payloadFor(snapshot, evidence) {
 }
 
 /** Conservative serialized UTF-8 byte estimate, not tokens or adapter-specific wire size. */
-export function estimatedInputBytes(payload) {
-  const contentBytes = utf8(JSON.stringify({system: ANALYSIS_SYSTEM, messages: [{role: 'user', content: [{type: 'text', text: JSON.stringify(payload)}]}], tools: [], maxTokens: 8192}));
+export function estimatedInputBytes(payload, maxTokens = 8192) {
+  const contentBytes = utf8(JSON.stringify({system: ANALYSIS_SYSTEM, messages: [{role: 'user', content: [{type: 'text', text: JSON.stringify(payload)}]}], tools: [], maxTokens}));
   // Reserve 6 serialized bytes per UTF-16 code unit for both <=200-character route IDs.
   return contentBytes + 2 * 200 * 6 + 32;
 }
 
-export function createAnalysisPlan(snapshot, {inputBudget = 24000, strategy = 'full'} = {}) {
+export function createAnalysisPlan(snapshot, {inputBudget = 24000, strategy = 'full', capacity = null} = {}) {
   if (!['full', 'single-request'].includes(strategy)) throw fail('analysis-input', '未知分析策略');
-  if (!Number.isInteger(inputBudget) || inputBudget < 4000 || inputBudget > 64000) {
-    throw fail('analysis-input', '模型输入估算预算必须是 4000–64000 字节整数，不是 token 数');
+  if (!Number.isSafeInteger(inputBudget) || inputBudget < 4000) {
+    throw fail('analysis-input', '模型输入估算预算必须是至少 4000 的安全整数（字节，非 token）');
   }
-  const overhead = estimatedInputBytes(payloadFor(snapshot, []));
+  const overhead = estimatedInputBytes(payloadFor(snapshot, []),capacity?.outputTokens??8192);
   if (overhead + 512 >= inputBudget) throw fail('analysis-plan', '标题或限制元数据超过分析预算，请提高预算或缩小范围');
   // Double JSON escaping can expand control characters; reserve room for item metadata too.
   const index = strategy === 'single-request'
-    ? buildSingleRequestEvidence(snapshot, {inputBudget, estimate: items => estimatedInputBytes(payloadFor(snapshot, items))})
+    ? buildSingleRequestEvidence(snapshot, {inputBudget, estimate: items => capacity&&items.length*192>Math.max(0,capacity.outputTokens-Math.min(8192,Math.floor(capacity.outputTokens/2)))?Number.MAX_SAFE_INTEGER:estimatedInputBytes(payloadFor(snapshot, items),capacity?.outputTokens??8192)})
     : createEvidenceIndex(snapshot, {maxTextBytes: Math.max(64, Math.floor((inputBudget - overhead - 512) / 8))});
+  // Capacity-derived output guard: reserve room for conclusions/reasoning and
+  // approximately 192 serialized bytes per evidence disposition. This is a
+  // planning heuristic, not a guarantee that model output will fit.
+  const outputTokens=capacity?.outputTokens??8192;
+  const dispositionBudget=Math.max(0,outputTokens-Math.min(8192,Math.floor(outputTokens/2)));
+  if(capacity&&dispositionBudget<192)throw fail('analysis-plan','输出预算不足以容纳证据处置与结论，请检查模型输出配置');
   const groups = [];
   let group = {items: [], inputBytes: overhead};
   for (const item of index.items) {
@@ -49,7 +55,7 @@ export function createAnalysisPlan(snapshot, {inputBudget = 24000, strategy = 'f
     if (overhead + itemBytes > inputBudget) {
       throw fail('analysis-plan', '单条证据元数据超过预算，请提高预算或缩小范围；未截断证据');
     }
-    if (group.items.length && (group.inputBytes + 1 + itemBytes > inputBudget || (strategy === 'full' && group.items.length >= 32))) {
+    if (group.items.length && (group.inputBytes + 1 + itemBytes > inputBudget || (capacity&&strategy==='full'&&(group.items.length+1)*192>dispositionBudget))) {
       groups.push(group);
       group = {items: [], inputBytes: overhead};
     }
@@ -60,7 +66,7 @@ export function createAnalysisPlan(snapshot, {inputBudget = 24000, strategy = 'f
   const payloads = groups.map(group => payloadFor(snapshot, group.items));
   const payloadHashes = payloads.map(payload => evidenceHash(JSON.stringify(payload)));
   if (strategy === 'single-request' && payloads.length !== 1) throw fail('analysis-plan', '单次摘要必须恰好一份模型输入，未自动拆分或派发');
-  const id = 'plan-' + evidenceHash(JSON.stringify([ANALYSIS_PLAN_VERSION, EVIDENCE_FORMAT_VERSION, index.snapshotHash, inputBudget, ANALYSIS_SYSTEM, payloadHashes, ...(strategy === 'single-request' ? [strategy] : [])]));
+  const id = 'plan-' + evidenceHash(JSON.stringify([ANALYSIS_PLAN_VERSION, EVIDENCE_FORMAT_VERSION, index.snapshotHash, inputBudget, ANALYSIS_SYSTEM, payloadHashes, ...(strategy === 'single-request' ? [strategy] : []), ...(capacity ? [capacity] : [])]));
   const batches = groups.map(({items, inputBytes}, offset) => {
     const payload = payloads[offset];
     const batch = {payloadHash: payloadHashes[offset], id: 'batch-' + evidenceHash(id + ':' + offset).slice(0, 32), evidenceIds: items.map(item => item.id), inputBytes};
@@ -78,7 +84,7 @@ export function createAnalysisPlan(snapshot, {inputBudget = 24000, strategy = 'f
     return strategy === 'single-request' ? file : {...file, sentMetadata: metadataKeys.has(key), sentText: textKeys.has(key)};
   });
   const fullCoverage = strategy === 'full' ? {originalSourceBytes: snapshot.repositories.reduce((n, repo) => n + utf8(repo.diff), 0) + snapshot.context.reduce((n, item) => n + utf8(item.text), 0), fullManifestFiles: files.length, sentFileCount: files.filter(file => file.sentMetadata).length, sentTextFileCount: files.filter(file => file.sentText).length, omittedFileCount: files.filter(file => !file.sentMetadata).length} : {};
-  const plan = {id, strategy, mode: strategy, formatVersion: ANALYSIS_PLAN_VERSION, evidenceVersion: EVIDENCE_FORMAT_VERSION, inputBudget, estimated: true, batches, coverage: {...index.coverage, ...fullCoverage, total: index.items.length, excluded: index.excluded, files}};
+  const plan = {id, strategy, mode: strategy, formatVersion: ANALYSIS_PLAN_VERSION, evidenceVersion: EVIDENCE_FORMAT_VERSION, inputBudget, ...(capacity?{capacity}:{}), estimated: true, batches, coverage: {...index.coverage, ...fullCoverage, total: index.items.length, excluded: index.excluded, files}};
   Object.defineProperty(plan, 'snapshotHash', {value: index.snapshotHash, enumerable: false});
   return plan;
 }
@@ -307,7 +313,7 @@ export async function analyzeReport(llm, route, snapshot, {signal, plan, complet
   try {
     signal?.throwIfAborted();
     validateRoute(route);
-    currentPlan = createAnalysisPlan(snapshot, {inputBudget: plan?.inputBudget ?? 24000, strategy: plan?.strategy ?? 'full'});
+    currentPlan = createAnalysisPlan(snapshot, {inputBudget: plan?.inputBudget ?? 24000, strategy: plan?.strategy ?? 'full', capacity: plan?.capacity??null});
     if (plan && (plan.id !== currentPlan.id || (plan.snapshotHash && plan.snapshotHash !== snapshotHash(snapshot)))) {
       throw fail('analysis-plan', '分析计划与当前证据不一致，请重新规划并确认');
     }
@@ -325,7 +331,7 @@ export async function analyzeReport(llm, route, snapshot, {signal, plan, complet
       if (accepted.has(batch.id)) continue;
       signal?.throwIfAborted();
       const stream = llm.stream({provider: route.provider, model: route.model, system: ANALYSIS_SYSTEM,
-        messages: [{role: 'user', content: [{type: 'text', text: JSON.stringify(batch.snapshot)}]}], tools: [], maxTokens: 8192, signal});
+        messages: [{role: 'user', content: [{type: 'text', text: JSON.stringify(batch.snapshot)}]}], tools: [], maxTokens: currentPlan.capacity?.outputTokens??8192, signal});
       const analysis = validateAnalysis(await consumeStructuredAnalysis(stream, signal), batch.evidenceIds, {requireDispositions: currentPlan.strategy !== 'single-request', evidence: batch.snapshot.evidence, publicApiPaths: snapshot.publicApiPaths ?? []});
       accepted.set(batch.id, {formatVersion: ANALYSIS_PLAN_VERSION, payloadHash: batch.payloadHash, planId: currentPlan.id, batchId: batch.id, provider: route.provider, model: route.model, analysis});
       onProgress({phase: 'analyzing', completed: accepted.size, total: currentPlan.batches.length, label: '已完成 ' + accepted.size + ' / ' + currentPlan.batches.length + ' 个分析分片（不代表耗时比例）'});

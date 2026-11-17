@@ -256,5 +256,6 @@ test('estimated budget includes escaped JSON, system and limitations; no silent 
   assert.ok(plan.batches.every(batch => batch.inputBytes <= plan.inputBudget));
   assert.throws(() => createAnalysisPlan(source, {inputBudget: 3999}), /4000/);
   assert.throws(() => createAnalysisPlan({...source, limitations: ['x'.repeat(10000)]}, {inputBudget: 4000}), /元数据/);
-  assert.throws(() => createAnalysisPlan(source, {inputBudget: 64001}), /64000/);
+  assert.ok(createAnalysisPlan(source, {inputBudget: 64001}).batches.length>=1);
+  assert.throws(() => createAnalysisPlan(source, {inputBudget: Number.MAX_SAFE_INTEGER+1}), /安全整数/);
 });

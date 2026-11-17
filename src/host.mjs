@@ -1,5 +1,6 @@
 import {randomUUID,createHash} from 'node:crypto';
 import {snapshotJsonBytes} from './snapshot-json.mjs';
+import {modelCapacity} from './model-capacity.mjs';
 import {runtimeInfo,checkUpdate} from './updates.mjs';
 import {collect,discover,listRefs} from './collect.mjs';
 import {createAnalysisPlan,analyzeReport,markdown} from './report.mjs';
@@ -119,7 +120,7 @@ function createProgressStore(ctx,now,backendInstanceId){
 }
 function publicPlan(plan){
   if(!plan)return null;
-  return {id:plan.id,strategy:plan.strategy,mode:plan.mode,formatVersion:plan.formatVersion,evidenceVersion:plan.evidenceVersion,inputBudget:plan.inputBudget,estimated:plan.estimated,batches:plan.batches.map(({id,evidenceIds,inputBytes})=>({id,evidenceIds,inputBytes})),coverage:plan.coverage};
+  return {id:plan.id,strategy:plan.strategy,mode:plan.mode,formatVersion:plan.formatVersion,evidenceVersion:plan.evidenceVersion,inputBudget:plan.inputBudget,estimated:plan.estimated,capacity:plan.capacity??null,modelRoute:plan.modelRoute??null,batches:plan.batches.map(({id,evidenceIds,inputBytes})=>({id,evidenceIds,inputBytes})),coverage:plan.coverage};
 }
 // ctx.get is an optional Cordis lookup: unlike required injection it keeps old hosts usable.
 function defaultModelRoute(ctx){
@@ -198,16 +199,28 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
       const snapshot=await capture(cwd,payload.request,signal,update);
       await assertSession(payload,cwd,signal);signal.throwIfAborted();
       const previewId=randomUUID(),time=now(),bytes=snapshotJsonBytes(snapshot);let analysisPlan=null,planError=null;
-      try{analysisPlan=plan(snapshot,{strategy:payload.request?.analysisStrategy??'full'});}catch(error){planError={code:'code-report/plan-invalid',message:error.message};}
       const defaults=defaultModelRoute(ctx);
+      try{
+        const selected=payload.route?generationRoute(payload.route,defaults):defaults.defaultRoute;
+        const capacity=await modelCapacity(ctx.llm,selected);
+        analysisPlan=plan(snapshot,{inputBudget:capacity.inputBudget,strategy:payload.request?.analysisStrategy??'full',capacity});
+        analysisPlan.capacity=capacity;analysisPlan.modelRoute=selected?{provider:selected.provider,model:selected.model}:null;
+      }catch(error){planError={code:'code-report/plan-invalid',message:error.message};}
+      await assertSession(payload,cwd,signal);signal.throwIfAborted();
       previews.add(previewId,{snapshot,cwd,sessionId:payload.sessionId,time,bytes,used:false,plan:analysisPlan,completed:new Map(),routeKey:null,...structuredClone(defaults)});
       return {...defaults,previewId,expiresAt:time+PREVIEW_TTL,bytes,repositories:snapshot.repositories.map(({diff,...r})=>r),context:snapshot.context.map(({text,...c})=>c),limitations:snapshot.limitations,markdown:markdown(snapshot,null,null,{evidenceManifest:plan===defaultAnalysisPlan?(analysisPlan?.coverage??localManifest(snapshot)):analysisPlan?.strategy==='single-request'?analysisPlan.coverage:null}),analysisPlan:publicPlan(analysisPlan),planError};
     },
     'analysis-plan':async({payload,cwd,signal})=>{
       const p=previews.claim(payload,cwd);signal.throwIfAborted();
-      if(!Number.isInteger(payload.inputBudget)||payload.inputBudget<4000||payload.inputBudget>64000)throw problem('input','输入预算应为 4000–64000 字节；这是保守估算，不是 token 数');
+      if(payload.inputBudget!==undefined&&(!Number.isSafeInteger(payload.inputBudget)||payload.inputBudget<4000))throw problem('input','输入预算应为至少 4000 的安全整数（字节，非 token）');
       if(payload.strategy!==undefined&&!['full','single-request'].includes(payload.strategy))throw problem('input','未知分析策略');
-      const next=plan(p.snapshot,{inputBudget:payload.inputBudget,strategy:payload.strategy??p.plan?.strategy??'full'});
+      const selected=payload.route?generationRoute(payload.route,p):p.plan?.modelRoute??p.defaultRoute;
+      const capacity=await modelCapacity(ctx.llm,selected);
+      const inputBudget=payload.inputBudget??capacity.inputBudget;
+      if(inputBudget>capacity.inputBudget)throw problem('model-capacity','输入预算超过当前模型容量估算，请使用自动预算或降低预算');
+      const next=plan(p.snapshot,{inputBudget,strategy:payload.strategy??p.plan?.strategy??'full',capacity});
+      next.capacity=capacity;next.modelRoute=selected?{provider:selected.provider,model:selected.model}:null;
+      await assertSession(payload,cwd,signal);signal.throwIfAborted();previews.claim(payload,cwd);
       p.plan=next;p.completed=new Map();p.routeKey=null;
       return {analysisPlan:publicPlan(next),expiresAt:p.time+PREVIEW_TTL,defaultRoute:p.defaultRoute?{...p.defaultRoute}:null,defaultRouteError:p.defaultRouteError?{...p.defaultRouteError}:null};
     },
@@ -215,7 +228,15 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
       const p=previews.claim(payload,cwd);
       if(payload.sendToModel!==true)throw problem('consent-required','需要明确确认向所选模型发送源码');
       if(!p.plan||payload.planId!==p.plan.id)throw problem('plan-mismatch','分析计划已变化或不可用，请重新确认发送范围');
+      const approvedPlan=p.plan;
       const route=generationRoute(payload.route,p),key=routeKey(route);
+      if(p.plan.capacity?.source==='host-model'){
+        if(routeKey(p.plan.modelRoute)!==key)throw problem('plan-mismatch','所选模型已变化，请更新分析计划并重新确认');
+        const capacity=await modelCapacity(ctx.llm,route);
+        if(JSON.stringify(capacity)!==JSON.stringify(p.plan.capacity))throw problem('plan-mismatch','模型容量配置已变化，请更新分析计划并重新确认');
+      }
+      await assertSession(payload,cwd,signal);signal.throwIfAborted();previews.claim(payload,cwd);
+      if(p.plan!==approvedPlan)throw problem('plan-mismatch','分析计划已变化，请重新确认');
       if(p.routeKey!==key){p.completed=new Map();p.routeKey=key;}
       signal.throwIfAborted();progress.authorize(operation);p.used=true;
       // Recheck authority before every model dispatch, not only before the first batch.
@@ -224,7 +245,13 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
         await assertSession(payload,cwd,signal);signal.throwIfAborted();
         if(!dispatched&&now()-p.time>=PREVIEW_TTL)throw problem('preview-expired','预览已过期，请重新采集');
         if(p.plan.strategy==='single-request'&&dispatched)throw problem('analysis-plan','单次摘要禁止隐式第二次模型请求；失败后须重新明确确认');
-        dispatched=true;if(operation)operation.dispatchCount++;yield* ctx.llm.stream(input);
+        if(p.plan.capacity?.source==='host-model'){
+          const current=await modelCapacity(ctx.llm,route);
+          if(JSON.stringify(current)!==JSON.stringify(p.plan.capacity))throw problem('plan-mismatch','模型容量配置已变化，请更新分析计划并重新确认');
+        }
+        await assertSession(payload,cwd,signal);signal.throwIfAborted();
+        if(!dispatched&&now()-p.time>=PREVIEW_TTL)throw problem('preview-expired','预览已过期，请重新采集');
+        dispatched=true;if(operation)operation.dispatchCount++;yield* ctx.llm.stream({...input,maxTokens:p.plan.capacity?.outputTokens??input.maxTokens});
       }};
       update({phase:'analyzing',label:'正在分析固定快照；分片内部进度不可量化',completed:p.completed.size,total:p.plan.batches.length});
       try{

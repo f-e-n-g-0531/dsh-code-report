@@ -73,7 +73,7 @@ export function apply(ctx){
   const [busy,setBusy]=useState(''),[error,setError]=useState(''),[progress,setProgress]=useState(null),[progressWarning,setProgressWarning]=useState('');
   const [scanState,setScanState]=useState('idle'),[scanError,setScanError]=useState(''),[scanWarnings,setScanWarnings]=useState([]),[visited,setVisited]=useState(null);
   const [analysisStrategy,setAnalysisStrategy]=useState(saved?.analysisStrategy||'full'),[publicApiPaths,setPublicApiPaths]=useState(saved?.publicApiPaths||'');
-  const [inputBudget,setInputBudget]=useState('64000'),[planDirty,setPlanDirty]=useState(false),[now,setNow]=useState(Date.now);
+  const [inputBudget,setInputBudget]=useState(''),[planDirty,setPlanDirty]=useState(false),[now,setNow]=useState(Date.now);
   const initialScanStarted=useRef(false),controller=useRef(null),mounted=useRef(true);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;controller.current?.abort();};},[]);
   useEffect(()=>{
@@ -177,8 +177,8 @@ export function apply(ctx){
    if(captureReason)return;
    return perform('采集版本差异',async signal=>{
     setPreview(null);setConsent(false);setPlanDirty(false);
-    const value=await capturePreview({rpc,signal,onProgress:value=>{if(mounted.current&&!signal.aborted)setProgress(value);},onWarning:value=>{if(mounted.current&&!signal.aborted)setProgressWarning(value);},payload:{sessionId:session.id,request:{title,analysisStrategy,repositories:rows.filter(row=>row.enabled).map(({enabled,...row})=>row),contextPaths:context.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),versionContexts,publicApiPaths:parsedPublicApiPaths,allowSvnNetwork:network,allowBatches:true}}});
-    if(!signal.aborted&&mounted.current){setNow(Date.now());setPreview(value);setAnalysisStrategy(value.analysisPlan?.strategy||'full');setInputBudget(String(value.analysisPlan?.inputBudget||64000));keepResult({markdown:value.markdown,stale:false,kind:'local'});}
+    const value=await capturePreview({rpc,signal,onProgress:value=>{if(mounted.current&&!signal.aborted)setProgress(value);},onWarning:value=>{if(mounted.current&&!signal.aborted)setProgressWarning(value);},payload:{sessionId:session.id,...(!useDefaultModel?{route:{provider:provider.trim(),model:model.trim()}}:{}),request:{title,analysisStrategy,repositories:rows.filter(row=>row.enabled).map(({enabled,...row})=>row),contextPaths:context.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),versionContexts,publicApiPaths:parsedPublicApiPaths,allowSvnNetwork:network,allowBatches:true}}});
+    if(!signal.aborted&&mounted.current){setNow(Date.now());setPreview(value);setAnalysisStrategy(value.analysisPlan?.strategy||'full');setInputBudget('');keepResult({markdown:value.markdown,stale:false,kind:'local'});}
    });
   };
   const generateReason=generationBlocker({preview,now,compatibility,busy:busy||(globalBusy?'其他任务执行中':''),consent,provider,model,useDefaultModel,pendingRecovery})||(planDirty?'分析策略或输入预算已变化，请先更新分析计划。':'');
@@ -202,12 +202,12 @@ export function apply(ctx){
    try{lifecycle.abandon(session);setAbandonConfirmed(false);setConsent(false);setError('已标记放弃恢复，但未知任务的安全屏障继续保留；请核对到宿主明确停止或完成，不能据此重新派发或安装。');}
    catch(error){setError(error.message);}
   };
-  const budgetValid=/^\d+$/.test(inputBudget)&&Number(inputBudget)>=4000&&Number(inputBudget)<=64000;
+  const budgetValid=inputBudget===''||(/^\d+$/.test(inputBudget)&&Number.isSafeInteger(Number(inputBudget))&&Number(inputBudget)>=4000);
   const replan=()=>{
    setConsent(false);
    if(!preview||expired||!budgetValid||globalBusy)return;
    return perform('更新分析计划',async signal=>{
-    const value=await tracked('analysis-plan',{sessionId:session.id,previewId:preview.previewId,inputBudget:Number(inputBudget),strategy:analysisStrategy},signal);
+    const value=await tracked('analysis-plan',{sessionId:session.id,previewId:preview.previewId,...(inputBudget===''?{}:{inputBudget:Number(inputBudget)}),route:useDefaultModel?{mode:'default',...preview.defaultRoute}:{provider:provider.trim(),model:model.trim()},strategy:analysisStrategy},signal);
     if(!signal.aborted&&mounted.current){setPreview(previous=>({...previous,analysisPlan:value.analysisPlan,planError:null}));setPlanDirty(false);}
    });
   };
@@ -244,7 +244,7 @@ export function apply(ctx){
      <div className="cr-actions cr-execute"><button className="cr-primary" disabled={!!captureReason} aria-describedby={captureReason?'cr-capture-reason':undefined} onClick={capture}>开始执行 · 采集差异</button>{captureReason&&<span id="cr-capture-reason" role="status" aria-live="polite">{captureReason}</span>}{busy&&<><span role="status">{busy}…</span><button onClick={()=>controller.current?.abort()}>取消</button></>}</div>
      {lifecycleState.paid&&!ownTask&&<p className="cr-stale" role="status">其他会话有模型任务执行中或结果未知；本插件实例暂停新业务和安装。请回原会话恢复。此互斥不覆盖其他标签页或客户端。</p>}
      {pendingRecovery&&<section className="cr-stale" aria-label="报告恢复"><p role="status">{pendingRecovery.message} 恢复只读取已有报告，不调用模型、不再次计费。任务归属保留在当前插件实例，切换会话仅分离视图，不取消模型。恢复标识按会话及工作区暂存；刷新、重载或更换客户端不保证恢复，请先下载。</p><button disabled={recovering} onClick={recover}>恢复已完成报告</button><button onClick={()=>lifecycle.cancel(session)}>取消模型任务</button><label className="cr-check"><input type="checkbox" checked={abandonConfirmed} disabled={!!busy} onChange={event=>setAbandonConfirmed(event.target.checked)}/>我确认标记放弃恢复；未知任务屏障仍保留，不解锁新业务或安装</label><button disabled={!!busy||!abandonConfirmed||pendingRecovery.status==='running'} onClick={abandonRecovery}>放弃恢复</button></section>}
-     {preview&&<PreviewSection preview={preview} busy={busy||(globalBusy?'等待任务核对':'')} expired={expired} useDefaultModel={useDefaultModel} setUseDefaultModel={setUseDefaultModel} provider={provider} model={model} consent={consent} setProvider={setProvider} setModel={setModel} setConsent={setConsent} generateReason={generateReason} onGenerate={generate} onCapture={capture} analysisStrategy={analysisStrategy} onStrategy={value=>{setAnalysisStrategy(value);setConsent(false);setPlanDirty(true);}} inputBudget={inputBudget} budgetValid={budgetValid} planDirty={planDirty} onBudget={value=>{setInputBudget(value);setConsent(false);setPlanDirty(true);}} onReplan={replan} compatibility={compatibility} now={now}/>}
+     {preview&&<PreviewSection preview={preview} busy={busy||(globalBusy?'等待任务核对':'')} expired={expired} useDefaultModel={useDefaultModel} setUseDefaultModel={value=>{setUseDefaultModel(value);setPlanDirty(true);}} provider={provider} model={model} consent={consent} setProvider={value=>{setProvider(value);setPlanDirty(true);}} setModel={value=>{setModel(value);setPlanDirty(true);}} setConsent={setConsent} generateReason={generateReason} onGenerate={generate} onCapture={capture} analysisStrategy={analysisStrategy} onStrategy={value=>{setAnalysisStrategy(value);setConsent(false);setPlanDirty(true);}} inputBudget={inputBudget} budgetValid={budgetValid} planDirty={planDirty} onBudget={value=>{setInputBudget(value);setConsent(false);setPlanDirty(true);}} onReplan={replan} compatibility={compatibility} now={now}/>}
      {progress&&<ProgressSection progress={progress}/>}{progressWarning&&<p className="cr-error" role="status">{progressWarning}</p>}
      {error&&error!==scanError&&<p className="cr-error" role="alert">{error}</p>}
      {latestAnalysis&&result?.kind!=='analysis'&&<p className="cr-stale">上一份成功模型报告仍保留，与当前草稿可能不同。<button onClick={()=>keepResult({...latestAnalysis,stale:true})}>查看上一份模型报告</button><button onClick={()=>downloadMarkdown(latestAnalysis.markdown,latestAnalysis.kind)}>下载上一份模型报告</button></p>}
@@ -271,12 +271,13 @@ function PreviewSection({preview,busy,expired,useDefaultModel=true,setUseDefault
   <ul className="cr-preview-repos">{preview.repositories.map((row,index)=><li key={index}><strong>{row.path}</strong> · {row.type} · {row.files.length} 个变更路径<br/><code>{sideLabel(row,'A')} → {sideLabel(row,'B')}</code>{row.type==='git'&&<p>{row.gitSource==='remote'?'远端实时读取 · '+(row.remote||'origin')+' · 观察时间 '+(row.observedAt||'未记录')+'（本次快照，之后不自动更新）':row.gitSource==='local'?'本地离线读取':'Git 来源未记录'}</p>}<br/>差异解码 {row.diffEncoding||'未记录'} · 原始字节 SHA-256 {row.rawDiffHash||'未记录'}</li>)}</ul>
   <LazyDetails key={preview.previewId} summary="查看源码上下文及限制">{()=><><p className="cr-hint">以下为本次实际附带的文件清单（目录已展开）；请核对来源与排除限制后再授权模型。</p><ul aria-label="实际源码文件清单">{preview.context.map((item,index)=><li key={index}>{item.repository?item.repository+' / ':''}{item.path} · {item.provenance==='version-A'?'版本 A':item.provenance==='version-B'?'版本 B':'当前工作区'} {item.revision||''} · 编码 {item.encoding||'未记录'} · 原始字节 SHA-256 {item.rawHash||item.hash}</li>)}</ul><ul aria-label="源码及采集限制">{preview.limitations.map((text,index)=><li key={index}>{text}</li>)}</ul></>}</LazyDetails>
   <label>分析策略<select aria-label="分析策略" value={analysisStrategy|| (single?'single-request':'full')} onChange={event=>onStrategy(event.target.value)}><option value="full">全量差异分片（默认，可能多次计费）</option><option value="single-request">快速摘要（抽样，不完整）</option></select></label>
-  <div className="cr-budget-row"><label>{single?'单次输入预算（保守字节估算，非 token）':'单片输入预算（保守字节估算，非 token）'}<input aria-label={single?'单次输入预算':'单片输入预算'} type="number" min={4000} max={64000} value={inputBudget} onChange={event=>onBudget(event.target.value)}/></label>
+  <div className="cr-budget-row"><label>{single?'单次输入预算（保守字节估算，非 token）':'单片输入预算（保守字节估算，非 token）'}<input aria-label={single?'单次输入预算':'单片输入预算'} type="number" min={4000} max={plan?.capacity?.inputBudget} placeholder="留空：按所选模型容量自动规划" value={inputBudget} onChange={event=>onBudget(event.target.value)}/></label>
   <button disabled={expired||!budgetValid||!!compatibility} onClick={onReplan}>更新分析计划</button></div>
-  {!budgetValid&&<p role="alert">输入预算必须是 4000–64000 的整数。</p>}{planDirty&&<p role="status">分析策略或预算已变更，请更新分析计划并重新确认。</p>}
+  {plan?.capacity&&<p className="cr-hint" role="status">预算来源：{plan.capacity.source==='host-model'?'所选模型配置':'兼容回退'}；上下文 {plan.capacity.contextWindow??'未知'} token；本次输出预留 {plan.capacity.outputTokens} token；安全余量 {plan.capacity.safetyTokens??'未知'} token；自动输入预算 {plan.capacity.inputBudget} 字节；当前计划 {plan.inputBudget} 字节。{plan.capacity.warning}</p>}
+  {!budgetValid&&<p role="alert">预算留空按模型自动规划；手动值必须是至少 4000 的安全整数。</p>}{planDirty&&<p role="status">分析策略或预算已变更，请更新分析计划并重新确认。</p>}
   {preview.planError&&<p className="cr-error" role="alert">分析计划尚不可用：{preview.planError.message}。可调整预算重新规划；本地证据清单仍可下载。</p>}
   {single?<SingleRequestCoverage coverage={coverage}/>:<p className="cr-guide" role="status">全量差异分片：发送已采集的全部文本差异和所选上下文，不按头文件前缀抽样；不代表完整调用图或模型已正确理解。计划 {plan?.batches?.length??0} 次模型请求，每片可能计费；只有明确确认后执行，失败不自动重试。</p>}
-  <p className="cr-hint">{single?'本计划仅一次模型请求，发送预算内本地摘要和明确选择的片段，不是全部正文；失败不会自动重试。更换模型路由、更新分析计划或再次明确确认后重试可能再次计费。':'本计划 '+(plan?.batches?.length??0)+' 片，按顺序调用模型，可能产生多次费用；失败重试仅复用宿主保留的同计划、同路由已完成分片，每次仍须确认。更换模型路由或更新分析计划将重跑全部分片，可能再次计费。'}4000–64000 仅为合法输入范围，不保证一定可规划；4000 等较小预算可能连系统提示和元数据都容不下，此时请提高预算或缩小范围。字节估算也不能保证适配所有模型。</p>
+  <p className="cr-hint">{single?'本计划仅一次模型请求，发送预算内本地摘要和明确选择的片段，不是全部正文；失败不会自动重试。更换模型路由、更新分析计划或再次明确确认后重试可能再次计费。':'本计划 '+(plan?.batches?.length??0)+' 片，按顺序调用模型，可能产生多次费用；失败重试仅复用宿主保留的同计划、同路由已完成分片，每次仍须确认。更换模型路由或更新分析计划将重跑全部分片，可能再次计费。'}预算留空按所选模型上下文自动规划，扣除输出预留和安全余量；手动预算仅可降低。每片不再因达到 32 条证据而强制拆分。保守字节估算不是精确 token 数，也不保证服务端一定接受。</p>
   <label className="cr-check"><input type="checkbox" checked={useDefaultModel} onChange={event=>{setUseDefaultModel(event.target.checked);setConsent(false);}}/>使用 DSH 默认模型</label>
   {useDefaultModel?<p className="cr-hint" role="status">{preview.defaultRoute?<>本次模型：<strong>{preview.defaultRoute.provider} / {preview.defaultRoute.model}</strong>。来自 DSH 默认模型配置，已随本次采集固定；无需重复填写。修改宿主默认模型后请重新采集。</>:<>未能读取 DSH 默认模型；请在宿主配置默认模型后重新采集，或取消“使用 DSH 默认模型”手动指定。不会自动选择其他模型。</>}</p>:<div className="cr-route"><label>DSH 提供方 ID<input value={provider} placeholder="已在 DSH 配置的 provider ID" onChange={event=>{setProvider(event.target.value);setConsent(false);}}/></label><label>模型 ID<input value={model} placeholder="该提供方支持的 model ID" onChange={event=>{setModel(event.target.value);setConsent(false);}}/></label></div>}
   <p className="cr-hint">默认使用宿主配置，不跟随会话临时切换的聊天模型；只有确认发送并点击生成才调用模型。取消默认选项可手动覆盖，不修改宿主配置。</p>

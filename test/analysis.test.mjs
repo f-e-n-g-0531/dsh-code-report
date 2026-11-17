@@ -21,7 +21,7 @@ test('linear packing matches reference JSON packing and preserves payload and pl
     const index = createEvidenceIndex(source, {maxTextBytes: Math.max(64, Math.floor((inputBudget - overhead - 512) / 8))});
     const groups = []; let group = [];
     for (const item of index.items) {
-      if (group.length && (estimatedInputBytes(payloadFor([...group, item])) > inputBudget || group.length >= 32)) { groups.push(group); group = []; }
+      if (group.length && (estimatedInputBytes(payloadFor([...group, item])) > inputBudget)) { groups.push(group); group = []; }
       group.push(item);
     }
     if (group.length) groups.push(group);

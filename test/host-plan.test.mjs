@@ -33,7 +33,7 @@ test('expiry cannot be extended by replanning and expired preview never dispatch
 });
 test('replan is bound to current session, validates budget and invalidates old plan',async()=>{
   const f=fixture(),p=await preview(f);
-  for(const inputBudget of [3999,64001,8000.5,'8000'])assert.equal((await f.handler('analysis-plan',{sessionId:'s',previewId:p.previewId,inputBudget})).error.code,'code-report/input');
+  for(const inputBudget of [3999,Number.MAX_SAFE_INTEGER+1,8000.5,'8000'])assert.equal((await f.handler('analysis-plan',{sessionId:'s',previewId:p.previewId,inputBudget})).error.code,'code-report/input');
   assert.equal((await f.handler('analysis-plan',{sessionId:'other',previewId:p.previewId,inputBudget:8000})).ok,false);
   assert.equal((await f.handler('analysis-plan',{sessionId:'s',previewId:p.previewId,inputBudget:8000})).ok,true);
   assert.equal((await f.handler('generate',send(p))).error.code,'code-report/plan-mismatch');assert.equal(f.calls(),0);

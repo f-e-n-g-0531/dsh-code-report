@@ -19,7 +19,7 @@ function prefix(text, limit) {
 /** Full local manifest, bounded model excerpts. This is a digest, never full-source coverage. */
 export function buildSingleRequestEvidence(snapshot,{inputBudget,estimate}={}) {
   if(!snapshot || !Array.isArray(snapshot.repositories) || !Array.isArray(snapshot.context))throw failure('无效摘要快照');
-  if(!Number.isInteger(inputBudget)||inputBudget<4000||inputBudget>64000||typeof estimate!=='function')throw failure('单次摘要需要 4000–64000 字节预算与请求估算器');
+  if(!Number.isSafeInteger(inputBudget)||inputBudget<4000||typeof estimate!=='function')throw failure('单次摘要需要至少 4000 字节的安全整数预算与请求估算器');
   const manifest=[],excluded=[],repositories=[],contexts=[],lanes=[];
   let originalSourceBytes=0,unassignedSourceBytes=0;
   snapshot.repositories.forEach((repository,index)=>{
