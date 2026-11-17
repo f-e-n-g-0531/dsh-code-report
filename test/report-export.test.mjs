@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import {reportDownloadText} from '../src/report-export.mjs';
 import {markdownText} from '../src/markdown-text.mjs';
 import {renderReadableAnalysis} from '../src/readable-analysis.mjs';
+import {markdown} from '../src/report.mjs';
 const titles=['本次比较范围','改动内容','对外接口变更','影响范围','QA 测试范围'];
 
 for(const escaped of [false,true])test('public endpoints survive source cleanup '+(escaped?'after markdownText':'as raw Markdown'),()=>{
  const endpoints=['https://api.example.com/v1/client.js','http://example.com/api.hpp?file=src/loader.cpp&next=/api/user.ts#result','/api/client.js','/v1/user.ts?file=src/api.cpp&mode=fast','//cdn.example.com/sdk.js','/api_user','https://example.com/get?q=(src/query.cpp)&next=public.js','/api?q=(src/query.cpp)&next=public.js'];
- const sources=['src/loader.cpp','D:\\private\\api.hpp','C3SkinInterface.h','src/my_api.ts'];
+ const sources=['src/loader.cpp','D:\\private\\api.hpp','D:\\api.hpp','C3SkinInterface.h','src/my_api.ts'];
  const encode=escaped?markdownText:text=>text;
  const lines=[...endpoints.flatMap(endpoint=>[endpoint,'`'+endpoint+'`','[API]('+endpoint+')']),...sources.flatMap(source=>[source,'`'+source+'`']),endpoints[0]+'；源码 src/mixed_private.cpp 需清理。'];
  const copy=reportDownloadText('## 对外接口变更\n'+lines.map(text=>'- '+encode(text)).join('\n'),'analysis');
@@ -45,12 +46,60 @@ test('real readable-analysis rendering preserves escaped endpoint contracts with
  assert.ok(rendered.includes('SECRET_SOURCE'));
 });
 test('reader export contains exactly five ordered sections and no preamble or internal appendices',()=>{
- const original='# 标题\n模型：private\n## 本次比较范围\n项目A：版本a → b\n## 改动内容\n改动\n## 对外接口变更\n接口待确认\n## 影响范围\n- 功能 [1](#evidence-1)\n## QA 测试范围\n测试显示\n## 未知和待确认\nPRIVATE_UNKNOWN\n<details>\n<summary>技术附录：证据与覆盖记录</summary>\nSECRET_SOURCE\n</details>\n<details>\n<summary>采集附录：固定版本、完整文件清单与限制</summary>\nPRIVATE_PATH\n</details>';
- const copy=reportDownloadText(original,'analysis');assert.deepEqual([...copy.matchAll(/^## (.*)$/gm)].map(x=>x[1]),titles);assert.doesNotMatch(copy,/附录|SECRET_|PRIVATE_|#evidence-|模型：|# 标题/);assert.match(copy,/接口待确认/);assert.ok(original.includes('SECRET_SOURCE'));
+ const original='# 标题\n模型：private\n## 本次比较范围\n项目A：版本a → b\n## 改动内容\n改动\n## 对外接口变更\n接口待确认\n## 影响范围\n- 功能 [1](#evidence-1)\n## QA 测试范围\n测试显示\n## 未知和待确认\n- 测试入口尚待确认\n<details>\n<summary>技术附录：证据与覆盖记录</summary>\nSECRET_SOURCE\n</details>\n<details>\n<summary>采集附录：固定版本、完整文件清单与限制</summary>\nPRIVATE_PATH\n</details>';
+ const copy=reportDownloadText(original,'analysis');assert.deepEqual([...copy.matchAll(/^## (.*)$/gm)].map(x=>x[1]),titles);assert.doesNotMatch(copy,/附录|SECRET_|PRIVATE_|#evidence-|模型：|# 标题/);assert.match(copy,/接口待确认/);assert.match(copy,/### 待补充与待确认\n\n- 测试入口尚待确认/);assert.ok(original.includes('SECRET_SOURCE'));
 });
 test('local evidence and unknown results remain byte exact',()=>{for(const kind of ['local','unknown',undefined]){const text='a\r\n<details>raw';assert.equal(reportDownloadText(text,kind),text);}});
 test('source paths, raw code blocks and nested details do not escape into the reader report',()=>{
  const input='## 改动内容\n删除 src/loader.cpp 和 C3SkinInterface.h；接口 Foo 和 /api_user 保留。\n路径 D:\\private\\api.hpp\n编码 src&#47;api.cpp\n```text\n## QA 测试范围\nRAW_CODE\n```\n<details>\n<summary>内部</summary>\n<details>\nSECRET\n</details>\n</details>\n## QA 测试范围\n测试功能';
  const copy=reportDownloadText(input,'analysis');assert.doesNotMatch(copy,/loader|SkinInterface|private|api[.]|RAW_CODE|SECRET|details/);assert.match(copy,/接口 Foo 和 \/api_user 保留/);assert.match(copy,/测试功能/);
+});
+test('single summary coverage warning is retained in comparison scope without internal counts',()=>{
+ const plan={strategy:'single-request',batches:[{id:'batch',evidenceIds:[],snapshot:{evidence:[]}}],coverage:{fullManifestFiles:120,sentFileCount:3,sentTextFileCount:2,omittedFileCount:117,total:0}};
+ const analysis={changes:[],interfaces:[],impacts:[],qa:[],unknowns:[{text:'发布前仍需确认兼容性边界。',evidenceIds:[]}]};
+ const copy=reportDownloadText(renderReadableAnalysis(plan,new Map([['batch',{analysis}]])),'analysis');
+ const scope=copy.split('## 改动内容')[0];
+ assert.match(scope,/单次摘要/);assert.match(scope,/预算内/);assert.match(scope,/不是全文语义分析/);assert.match(scope,/覆盖可能不完整/);assert.match(scope,/人工复核/);
+ assert.match(copy,/发布前仍需确认兼容性边界/);
+ assert.doesNotMatch(copy,/本地清单含|117|已处理证据|附录|<details>/);
+ assert.deepEqual([...copy.matchAll(/^## (.*)$/gm)].map(match=>match[1]),titles);
+});
+for(const escaped of [false,true])test('unknowns retain meaning and safe encoding under QA without leaking source '+escaped,()=>{
+ const encode=escaped?markdownText:text=>text;
+ const endpoint='https://example.com/client.js?file=src/public.cpp&next=/api/test.ts';
+ const input='## 本次比较范围\n'+encode('对比 src/scope.cpp 的版本')+'\n## 未知和待确认\n- '+encode('尚未确认 src/private.cpp 的兼容性；入口 '+endpoint+'；<script> & 中文😀')+' [1](#evidence-1)\n## 内部记录\nHIDDEN';
+ const copy=reportDownloadText(input,'analysis');
+ assert.match(copy,/### 待补充与待确认/);assert.match(copy,/尚未确认 相关源码文件 的兼容性/);
+ assert.ok(copy.includes(encode(endpoint)));assert.ok(copy.includes(encode('<script> & 中文😀')));
+ assert.match(copy,/对比 相关源码文件 的版本/);
+ assert.doesNotMatch(copy,/private[.]cpp|scope[.]cpp|#evidence-|HIDDEN|^## 未知和待确认/m);
+});
+for(const escaped of [false,true])test('removed filenames leave readable neutral deletion sentences '+escaped,()=>{
+ const encode=escaped?markdownText:text=>text;
+ const sentence='删除 src/loader.cpp 与 C3SkinInterface.h；修改 \x60src/client.ts\x60 和 D:\\private\\api.hpp。';
+ const copy=reportDownloadText('## 改动内容\n'+encode(sentence),'analysis');
+ assert.match(copy,/删除 相关源码文件 与 相关源码文件；修改 相关源码文件 和 相关源码文件。/);
+ assert.doesNotMatch(copy,/loader|SkinInterface|client|private|删除\s+与/);
+ assert.equal(copy.match(/相关源码文件/g).length,4);
+});
+for(const strategy of ['full','single-request'])test('real report retains collection limitations in scope independently of model unknowns '+strategy,()=>{
+ const limitations=['大 diff 超过预算，src/private.cpp 未发送原文。','二进制文件未做语义分析。','上下文解码存在替换字符，需人工核对。','待核对 <script> & 中文😀；公开入口 https://example.com/client.js?file=src/public.cpp'];
+ const snapshot={title:'发布比较',repositories:[{path:'project',type:'git',branchA:'old',branchB:'new',a:'aaa',b:'bbb',files:[],diffHash:'DIFF_HASH'}],context:[],limitations};
+ const manifest={strategy,originalSourceBytes:100,fullManifestFiles:1,files:[{repository:'project',path:'src/APPENDIX_ONLY.cpp',status:'M',sentMetadata:true,sentText:true}]};
+ const analysis={changes:[],interfaces:[],impacts:[],qa:[],unknowns:[]};
+ const plan={strategy:'single-request',batches:[{id:'batch',evidenceIds:[],snapshot:{evidence:[]}}],coverage:{fullManifestFiles:1,sentFileCount:0,sentTextFileCount:0,omittedFileCount:1,total:0}};
+ const body=strategy==='single-request'?renderReadableAnalysis(plan,new Map([['batch',{analysis}]])):titles.slice(1).map(title=>'## '+title+'\n\n未提供业务结论。').join('\n\n');
+ const original=markdown(snapshot,body,{provider:'private',model:'private'},{structured:true,evidenceManifest:manifest});
+ const copy=reportDownloadText(original,'analysis'),scope=copy.split('## 改动内容')[0];
+ assert.match(scope,/### 采集覆盖限制（非业务结论）/);
+ assert.match(scope,/大 diff 超过预算，相关源码文件 未发送原文/);
+ assert.match(scope,/二进制文件未做语义分析/);assert.match(scope,/上下文解码存在替换字符，需人工核对/);
+ assert.ok(scope.includes(markdownText('待核对 <script> & 中文😀；公开入口 https://example.com/client.js?file=src/public.cpp')));
+ assert.match(scope,/模型输出为待人工复核的推断，不代表测试通过、缺陷证明或发布批准/);
+ assert.doesNotMatch(copy,/private[.]cpp|APPENDIX_ONLY|DIFF_HASH|附录|<details>|<script>|^模型：/m);
+ assert.deepEqual([...copy.matchAll(/^## (.*)$/gm)].map(match=>match[1]),titles);
+ const appendix=original.slice(original.indexOf('<summary>采集附录'));
+ for(const limitation of limitations)assert.ok(appendix.includes('- '+markdownText(limitation)));
+ if(strategy==='single-request')assert.match(scope,/单次摘要.*覆盖可能不完整/);
 });
 test('missing sections are marked unknown rather than fabricated and unrelated headings close a section',()=>{const copy=reportDownloadText('## 影响范围\n待确认\n## 内部记录\nHIDDEN','analysis');assert.doesNotMatch(copy,/HIDDEN/);assert.equal(copy.match(/^## /gm).length,5);assert.match(copy,/未提供可对外展示的内容，待确认/);});

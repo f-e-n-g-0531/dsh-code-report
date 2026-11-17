@@ -1,3 +1,4 @@
+import {withDispositions} from './analysis-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -12,7 +13,7 @@ function fixture({selection=initial,missing=false,direct=false,throws=false,depe
   const ctx={sessions:new Map([['s',{header:{cwd:'/workspace'}}]]),llm:{async *stream(input){
     calls.push(input);
     const evidence=JSON.parse(input.messages[0].content[0].text).evidence;
-    yield {type:'text-delta',text:JSON.stringify({changes:[{text:'Change requires review',evidenceIds:[evidence[0].id]}],interfaces:[],impacts:[],qa:[],unknowns:[]})};
+    yield {type:'text-delta',text:JSON.stringify(withDispositions({changes:[{text:'Change requires review',evidenceIds:[evidence[0].id]}],interfaces:[],impacts:[],qa:[],unknowns:[]}, evidence))};
     yield {type:'finish',reason:{kind:'stop'}};
   }}};
   if(direct){if(!missing)ctx.agentDefaultModel=service;}

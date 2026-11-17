@@ -1,5 +1,6 @@
 import path from 'node:path';
 import {scanOptions} from './configuration.mjs';
+import {normalizePublicApiPaths} from './public-api.mjs';
 import {realpath,open} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {XMLParser,XMLValidator} from 'fast-xml-parser';
@@ -290,6 +291,7 @@ async function readVersionContext(cwd, entry, repositories, budget, checkpoint, 
 
 export async function collect(cwd, request, signal, onProgress = () => {}) {
  validateRequest(request);
+ const publicApiPaths = request.publicApiPaths === undefined ? undefined : normalizePublicApiPaths(request.publicApiPaths, request.repositories);
  const budget = createCollectionBudget({signal});
  budget.check();
  const result = {
@@ -303,6 +305,10 @@ export async function collect(cwd, request, signal, onProgress = () => {}) {
    '源码 hash/rawHash 与差异 rawDiffHash 校验原始字节；diffHash 校验解码后 UTF-8 文本，不是原始字节哈希。',
   ],
  };
+ if (publicApiPaths !== undefined) {
+  result.publicApiPaths = publicApiPaths;
+  result.limitations.push('公开 API 路径仅为操作者声明的对外候选边界，不是历史发布或兼容性契约证明；对外影响结论仍需独立发布 / 契约证据。');
+ }
  const checkpoint = () => budget.checkpoint(result);
  budget.check();
  const expanded = await expandContextPaths(cwd, request.contextPaths || [], budget, {onProgress});

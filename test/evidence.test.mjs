@@ -103,7 +103,7 @@ test('empty diffs and current versus historical source contexts have explicit pr
 test('plans partition huge Unicode lines with no byte loss or duplicate evidence', () => {
   const huge = 'diff --git a/api.js b/api.js\n--- a/api.js\n+++ b/api.js\n@@ -1 +1 @@\n-' + '旧😀'.repeat(1600) + '\n+' + '新😀'.repeat(1600) + '\n';
   const source = snapshot(huge); source.repositories[0].files = ['api.js'];
-  const plan = createAnalysisPlan(source, {inputBudget: 8000});
+  const plan = createAnalysisPlan(source, {inputBudget: 16000});
   assert.ok(plan.batches.length > 1);
   const items = plan.batches.flatMap(batch => batch.snapshot.evidence);
   assert.equal(items.map(item => item.text).join(''), huge);
@@ -111,20 +111,20 @@ test('plans partition huge Unicode lines with no byte loss or duplicate evidence
   assert.equal(plan.coverage.total, items.length);
   for (const batch of plan.batches) {
     assert.equal(batch.inputBytes, estimatedInputBytes(batch.snapshot));
-    assert.ok(batch.inputBytes <= 8000);
+    assert.ok(batch.inputBytes <= 16000);
     assert.equal(Object.hasOwn(JSON.parse(JSON.stringify(batch)), 'snapshot'), false);
   }
-  assert.equal(createAnalysisPlan(source, {inputBudget: 8000}).id, plan.id);
-  assert.notEqual(createAnalysisPlan(source, {inputBudget: 9000}).id, plan.id);
+  assert.equal(createAnalysisPlan(source, {inputBudget: 16000}).id, plan.id);
+  assert.notEqual(createAnalysisPlan(source, {inputBudget: 17000}).id, plan.id);
 });
 
 test('giant hunk headers retain every original byte without repeated unbounded metadata', () => {
   const text = '@@ -1 +1 @@ ' + '函数😀'.repeat(2500) + '\n-a\n+b\n';
-  const plan = createAnalysisPlan(snapshot(text), {inputBudget: 8000});
+  const plan = createAnalysisPlan(snapshot(text), {inputBudget: 16000});
   const units = plan.batches.flatMap(batch => batch.snapshot.evidence).filter(item => item.provenance === 'version-diff');
   assert.equal(units.map(item => item.text).join(''), text);
   assert.ok(units.every(item => !item.hunk || item.hunk.length <= 256));
-  assert.ok(plan.batches.every(batch => batch.inputBytes <= 8000));
+  assert.ok(plan.batches.every(batch => batch.inputBytes <= 16000));
 });
 
 test('more than 8192 hunks and trusted source ranges retain every unit and byte', () => {
@@ -224,7 +224,7 @@ test('8193 scopes retain complete coverage without repeating global manifests in
   source.repositories[0].files = Array.from({length: 8193}, (_, i) => '目录-' + i);
   let titleReads = 0;
   Object.defineProperty(source, 'title', {enumerable: true, get() { titleReads++; return '证据测试'; }});
-  const plan = createAnalysisPlan(source, {inputBudget: 8000});
+  const plan = createAnalysisPlan(source, {inputBudget: 16000});
   assert.ok(titleReads <= plan.batches.length + 3, 'shared metadata is not reserialized for each candidate evidence item');
   assert.equal(plan.coverage.files.length, 8193);
   const items = plan.batches.flatMap(batch => batch.snapshot.evidence);
@@ -233,9 +233,9 @@ test('8193 scopes retain complete coverage without repeating global manifests in
   assert.equal(new Set(items.map(item => item.id)).size, items.length);
   assert.ok(plan.batches.length > 32);
   for (const batch of plan.batches) {
-    assert.deepEqual(Object.keys(batch.snapshot), ['schema', 'evidenceVersion', 'title', 'limitations', 'evidence']);
+    assert.deepEqual(Object.keys(batch.snapshot), ['schema', 'evidenceVersion', 'title', 'limitations', 'publicApiPaths', 'evidence']);
     assert.equal(batch.inputBytes, estimatedInputBytes(batch.snapshot));
-    assert.ok(batch.inputBytes <= 8000);
+    assert.ok(batch.inputBytes <= 16000);
   }
 });
 
@@ -252,7 +252,7 @@ test('8193 header-only Git blocks use exact indexed attribution including quoted
 
 test('estimated budget includes escaped JSON, system and limitations; no silent overflow', () => {
   const source = snapshot('@@ -1 +1 @@\n' + '\\\t\u0001😀'.repeat(300));
-  const plan = createAnalysisPlan(source, {inputBudget: 8000});
+  const plan = createAnalysisPlan(source, {inputBudget: 16000});
   assert.ok(plan.batches.every(batch => batch.inputBytes <= plan.inputBudget));
   assert.throws(() => createAnalysisPlan(source, {inputBudget: 3999}), /4000/);
   assert.throws(() => createAnalysisPlan({...source, limitations: ['x'.repeat(10000)]}, {inputBudget: 4000}), /元数据/);

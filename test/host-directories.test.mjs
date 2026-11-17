@@ -1,3 +1,4 @@
+import {withDispositions} from './analysis-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
@@ -18,7 +19,7 @@ test('directory preview exposes exact expanded scope and analysis sends only the
  await writeFile(path.join(cwd,'context','.env'),'do not send secret');
  const inputs=[];const ctx={sessions:new Map([['s',{header:{cwd}}]]),llm:{async *stream(input){
   inputs.push(JSON.parse(input.messages[0].content[0].text));
-  yield {type:'text-delta',text:JSON.stringify({changes:[],interfaces:[],impacts:[],qa:[],unknowns:[]})};
+  yield {type:'text-delta',text:JSON.stringify(withDispositions({changes:[],interfaces:[],impacts:[],qa:[],unknowns:[]}, JSON.parse(input.messages[0].content[0].text).evidence))};
   yield {type:'finish',reason:{kind:'stop'}};
  }}};
  const handler=createHandler(ctx),request={repositories:[{path:'repo',type:'git',a:revision,b:revision}],contextPaths:['context']};

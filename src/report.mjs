@@ -26,13 +26,13 @@ export function markdown(snapshot,analysis,route,{structured=false,evidenceManif
  const renderedAnalysis=analysis?(structured?analysis:fence(analysis,'text')):ANALYSIS_MISSING;
  const heading=analysis?'# '+inline(snapshot.title):'# 采集证据清单（未分析）';
  const out=evidenceManifest
-  ? [heading,'','## 本次比较范围','',...snapshot.repositories.map(r=>'- **'+inline(r.path)+'**：'+inline(comparisonEndpoint(r,'A'))+' → '+inline(comparisonEndpoint(r,'B'))+'（'+r.files.length+' 个变更路径）'),'',renderedAnalysis,'',interfaceSection(analysis),'','<details>','<summary>采集附录：固定版本、完整文件清单与限制</summary>','','## 发布范围','',...releaseScopeLines(snapshot.repositories),'',routeLine(route),'','## 附带源码','',...(snapshot.context.length?sourceLines(snapshot.context):['未添加补充源码。']),'','## 覆盖范围与限制','',...limitationLines(snapshot.limitations),'','## 差异证据']
+  ? [heading,'','## 本次比较范围','',...snapshot.repositories.map(r=>'- **'+inline(r.path)+'**：'+inline(comparisonEndpoint(r,'A'))+' → '+inline(comparisonEndpoint(r,'B'))+'（'+r.files.length+' 个变更路径）'),'','### 采集覆盖限制（非业务结论）','',...limitationLines(snapshot.limitations),'',renderedAnalysis,'',interfaceSection(analysis),'','<details>','<summary>采集附录：固定版本、完整文件清单与限制</summary>','','## 发布范围','',...releaseScopeLines(snapshot.repositories),'',routeLine(route),'','## 附带源码','',...(snapshot.context.length?sourceLines(snapshot.context):['未添加补充源码。']),'','## 覆盖范围与限制','',...limitationLines(snapshot.limitations),'','## 差异证据']
   : [heading,'','生成时间：'+inline(snapshot.createdAt),'','## 发布范围','',...releaseScopeLines(snapshot.repositories),'','## 改动内容、对外接口、影响范围与 QA 测试建议','',renderedAnalysis,'',interfaceSection(analysis),'',routeLine(route),'','## 附带源码','',...sourceLines(snapshot.context),'','## 覆盖范围与限制','',...limitationLines(snapshot.limitations),'','## 差异证据'];
  for(const r of snapshot.repositories)for(const line of excludedPathLines(r))out.push(line);
  if(evidenceManifest){
   out.push('', '以下为本地采集清单，不代表模型已逐文件阅读。主报告不包含全部原始差异，也不能单独还原全文。宿主固定快照为临时数据，生成完成或过期后会清理；当前界面不提供完整快照归档功能。', '本地差异文本（解码后 UTF-8） '+evidenceManifest.originalSourceBytes+' 字节；完整清单 '+evidenceManifest.fullManifestFiles+' 项。');
   for(const r of snapshot.repositories)out.push('', '### '+inline(r.path), '', '固定端点 '+inline(r.a)+' → '+inline(r.b)+'；差异文本 SHA-256 '+inline(r.diffHash)+'；原始字节 SHA-256 '+inline(r.rawDiffHash??'未记录'));
-  for(const file of evidenceManifest.files??[])out.push('- '+inline(file.repository)+' / '+inline(file.path??'(未归属)')+'；'+inline(file.status)+'；模型文件证据 '+(file.sentMetadata?'已发送':'未发送')+'；正文 '+(file.sentText?'部分已发送（不代表全文）':'未发送'));
+  for(const file of evidenceManifest.files??[])out.push('- '+inline(file.repository)+' / '+inline(file.path??'(未归属)')+'；'+inline(file.status)+'；模型文件证据 '+(file.sentMetadata?'已发送':'未发送')+'；正文 '+(file.sentText?(evidenceManifest.strategy==='single-request'?'部分已发送（不代表全文）':'已纳入全文差异分片（不是完整源码）'):'未发送或无可归属文本差异'));
   out.push('', '</details>');
  }else for(const r of snapshot.repositories)out.push(...evidenceLines(r));
  return out.join('\n')+'\n';

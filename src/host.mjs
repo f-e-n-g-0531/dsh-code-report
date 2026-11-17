@@ -149,7 +149,7 @@ function routeKey(route){
 }
 
 // Dependencies are trusted in-process test seams, never fields accepted over RPC.
-const defaultAnalysisPlan=(snapshot,options={})=>createAnalysisPlan(snapshot,{inputBudget:64000,...options,strategy:'single-request'});
+const defaultAnalysisPlan=(snapshot,options={})=>createAnalysisPlan(snapshot,{inputBudget:64000,strategy:'full',...options});
 function localManifest(snapshot){
  const files=snapshot.repositories.flatMap(r=>r.files.map(path=>({repository:r.path,path,status:'unknown',sentMetadata:false,sentText:false})));
  return {strategy:'single-request',originalSourceBytes:snapshot.repositories.reduce((n,r)=>n+Buffer.byteLength(r.diff),0)+snapshot.context.reduce((n,c)=>n+Buffer.byteLength(c.text),0),fullManifestFiles:files.length,files};
@@ -198,15 +198,16 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
       const snapshot=await capture(cwd,payload.request,signal,update);
       await assertSession(payload,cwd,signal);signal.throwIfAborted();
       const previewId=randomUUID(),time=now(),bytes=snapshotJsonBytes(snapshot);let analysisPlan=null,planError=null;
-      try{analysisPlan=plan(snapshot);}catch(error){planError={code:'code-report/plan-invalid',message:error.message};}
+      try{analysisPlan=plan(snapshot,{strategy:payload.request?.analysisStrategy??'full'});}catch(error){planError={code:'code-report/plan-invalid',message:error.message};}
       const defaults=defaultModelRoute(ctx);
       previews.add(previewId,{snapshot,cwd,sessionId:payload.sessionId,time,bytes,used:false,plan:analysisPlan,completed:new Map(),routeKey:null,...structuredClone(defaults)});
-      return {...defaults,previewId,expiresAt:time+PREVIEW_TTL,bytes,repositories:snapshot.repositories.map(({diff,...r})=>r),context:snapshot.context.map(({text,...c})=>c),limitations:snapshot.limitations,markdown:markdown(snapshot,null,null,{evidenceManifest:analysisPlan?.strategy==='single-request'?analysisPlan.coverage:plan===defaultAnalysisPlan?localManifest(snapshot):null}),analysisPlan:publicPlan(analysisPlan),planError};
+      return {...defaults,previewId,expiresAt:time+PREVIEW_TTL,bytes,repositories:snapshot.repositories.map(({diff,...r})=>r),context:snapshot.context.map(({text,...c})=>c),limitations:snapshot.limitations,markdown:markdown(snapshot,null,null,{evidenceManifest:plan===defaultAnalysisPlan?(analysisPlan?.coverage??localManifest(snapshot)):analysisPlan?.strategy==='single-request'?analysisPlan.coverage:null}),analysisPlan:publicPlan(analysisPlan),planError};
     },
     'analysis-plan':async({payload,cwd,signal})=>{
       const p=previews.claim(payload,cwd);signal.throwIfAborted();
       if(!Number.isInteger(payload.inputBudget)||payload.inputBudget<4000||payload.inputBudget>64000)throw problem('input','输入预算应为 4000–64000 字节；这是保守估算，不是 token 数');
-      const next=plan(p.snapshot,{inputBudget:payload.inputBudget});
+      if(payload.strategy!==undefined&&!['full','single-request'].includes(payload.strategy))throw problem('input','未知分析策略');
+      const next=plan(p.snapshot,{inputBudget:payload.inputBudget,strategy:payload.strategy??p.plan?.strategy??'full'});
       p.plan=next;p.completed=new Map();p.routeKey=null;
       return {analysisPlan:publicPlan(next),expiresAt:p.time+PREVIEW_TTL,defaultRoute:p.defaultRoute?{...p.defaultRoute}:null,defaultRouteError:p.defaultRouteError?{...p.defaultRouteError}:null};
     },
@@ -233,7 +234,7 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
         // Still recheck authoritative ownership without borrowing the delivery signal.
         await assertSession(payload,cwd,AbortSignal.timeout(15000));
         if(operation){operation.completedBatches=p.completed.size;operation.totalBatches=p.plan.batches.length;}
-        const value={markdown:markdown(p.snapshot,result.markdown,route,{structured:true,evidenceManifest:p.plan.strategy==='single-request'?p.plan.coverage:null}),coverage:result.coverage};
+        const value={markdown:markdown(p.snapshot,result.markdown,route,{structured:true,evidenceManifest:plan===defaultAnalysisPlan||p.plan.strategy==='single-request'?p.plan.coverage:null}),coverage:result.coverage};
         progress.finish(operation,value);previews.discard(payload.previewId);return value;
       }catch(error){
         if(error.completed instanceof Map)p.completed=error.completed;

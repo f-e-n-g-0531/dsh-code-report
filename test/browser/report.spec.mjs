@@ -130,13 +130,44 @@ test('reader report renders semantic headings tables decoded identifiers and ine
 });
 
 test('single request preview distinguishes local coverage and budgeted excerpts, replan resets consent and recovery never redispatches (contract mock)',async({page})=>{
- await open(page,{singleRequest:true,failGenerateResponse:true,resultPending:true});await selectGit(page);await collect(page);
+ await open(page,{failGenerateResponse:true,resultPending:true});await selectGit(page);await collect(page);
+ const strategy=page.getByRole('combobox',{name:'分析策略',exact:true});await expect(strategy).toHaveValue('full');
+ expect((await stats(page)).calls.find(call=>call.endpoint==='preview-start').payload.request.analysisStrategy).toBe('full');
+ await consent(page).check();await strategy.selectOption('single-request');await expect(consent(page)).not.toBeChecked();await expect(consent(page)).toBeDisabled();await expect(generate(page)).toBeDisabled();
+ expect((await stats(page)).calls.filter(call=>call.endpoint==='analysis-plan'||call.endpoint==='generate')).toHaveLength(0);
+ // The fixture does not implement planning: explicitly supply the selected strategy's mock response.
+ await page.evaluate(()=>window.fixture.configure({singleRequest:true}));await page.getByRole('button',{name:'更新分析计划',exact:true}).click();await expect(consent(page)).toBeEnabled();await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();
+ expect((await stats(page)).calls.find(call=>call.endpoint==='analysis-plan').payload).toMatchObject({sessionId:'a',strategy:'single-request',inputBudget:24000});
  const scope=page.getByRole('region',{name:'单次摘要覆盖范围',exact:true});await expect(scope).toContainText('非模型全文覆盖');await expect(scope).toContainText('本地差异文本字节 987654');await expect(scope).toContainText('已解码 UTF-8 口径，非原始网络字节');await expect(scope).toContainText('完整文件清单 12 个');await expect(scope).toContainText('发送文件专属元数据或片段 7 个');await expect(scope).toContainText('实际发送正文片段 2 个');await expect(scope).toContainText('完全未发送文件专属证据 5 个');await expect(scope).toContainText('生成物 4 个');await expect(scope).toContainText('已发送文件也不代表其全文已发送');await expect(scope).toContainText('生成物可能只发送元数据');
- const budget=page.getByRole('spinbutton',{name:'单次输入预算',exact:true});await expect(budget).toHaveValue('64000');await expect(page.getByRole('spinbutton',{name:'单片输入预算',exact:true})).toHaveCount(0);await expect(page.locator('.cr-preview-metrics')).toContainText('模型请求1');
+ const budget=page.getByRole('spinbutton',{name:'单次输入预算',exact:true});await expect(budget).toHaveValue('24000');await expect(page.getByRole('spinbutton',{name:'单片输入预算',exact:true})).toHaveCount(0);await expect(page.locator('.cr-preview-metrics')).toContainText('模型请求1');
  await route(page);await expect(consent(page)).toHaveAccessibleName(/一次请求可能计费/);await expect(consent(page)).toHaveAccessibleName(/未发送正文不属于模型全文分析/);await expect(generate(page)).toBeDisabled();await consent(page).check();await budget.fill('48000');await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();await page.getByRole('button',{name:'更新分析计划',exact:true}).click();await expect(consent(page)).toBeEnabled();await expect(budget).toHaveValue('48000');
- expect((await stats(page)).calls.filter(call=>call.endpoint==='analysis-plan').at(-1).payload.inputBudget).toBe(48000);expect((await stats(page)).modelCalls).toBe(0);await consent(page).check();await generate(page).click();
+ expect((await stats(page)).calls.filter(call=>call.endpoint==='analysis-plan').at(-1).payload).toMatchObject({inputBudget:48000,strategy:'single-request'});expect((await stats(page)).modelCalls).toBe(0);await consent(page).check();await generate(page).click();
  const recover=page.getByRole('button',{name:'恢复已完成报告',exact:true});await expect(recover).toBeVisible();expect((await stats(page)).modelCalls).toBe(1);await recover.click();await expect(recover).toBeEnabled();await page.evaluate(()=>window.fixture.configure({resultPending:false}));await recover.click();await expect(report(page)).toContainText('模型报告 a');await expect(scope).toContainText('本地完整统计不等于模型全文覆盖');await expect(scope).toContainText('完全未发送文件专属证据 5 个');
  const observed=await stats(page);expect(observed.modelCalls).toBe(1);expect(observed.calls.filter(call=>call.endpoint==='generate')).toHaveLength(1);expect(paidReads(observed.calls).length).toBeGreaterThanOrEqual(2);expect(observed.installCalls).toBe(0);
+});
+
+test('strategy can return to full only after replanning and fresh consent (contract mock)',async({page})=>{
+ await open(page,{singleRequest:true});await selectGit(page);await collect(page);
+ const strategy=page.getByRole('combobox',{name:'分析策略',exact:true});await expect(strategy).toHaveValue('single-request');await consent(page).check();
+ await strategy.selectOption('full');await expect(consent(page)).not.toBeChecked();await expect(consent(page)).toBeDisabled();await expect(generate(page)).toBeDisabled();
+ await page.evaluate(()=>window.fixture.configure({singleRequest:false,analysisBatches:3}));await page.getByRole('button',{name:'更新分析计划',exact:true}).click();
+ await expect(consent(page)).toBeEnabled();await expect(consent(page)).not.toBeChecked();await expect(consent(page)).toHaveAccessibleName(/分批调用可能多次计费/);await expect(page.locator('.cr-preview')).toContainText('计划 3 次模型请求');await expect(generate(page)).toBeDisabled();
+ const before=await stats(page);expect(before.calls.filter(call=>call.endpoint==='analysis-plan')).toHaveLength(1);expect(before.calls.find(call=>call.endpoint==='analysis-plan').payload).toMatchObject({strategy:'full',inputBudget:64000});expect(before.modelCalls).toBe(0);
+ await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告');expect((await stats(page)).modelCalls).toBe(1);
+});
+
+test('public SDK boundary textarea persists, normalizes capture and invalidates approved preview without model calls',async({page})=>{
+ await open(page);await selectGit(page);await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();
+ const boundary=page.getByRole('textbox',{name:'公共SDK边界',exact:true}),text=' client | sdk_inc/ \nclient|include/api.h\nclient|sdk_inc/';
+ await boundary.fill(text);await page.getByRole('button',{name:'保存配置',exact:true}).click();await boundary.fill('');await page.getByRole('button',{name:'恢复已保存',exact:true}).click();await expect(boundary).toHaveValue(text);
+ await collect(page);let observed=await stats(page);expect(observed.calls.find(call=>call.endpoint==='preview-start').payload.request.publicApiPaths).toEqual([{repository:'client',path:'sdk_inc/'},{repository:'client',path:'include/api.h'}]);
+ await consent(page).check();await boundary.fill('client|other/');await expect(page.getByRole('combobox',{name:'分析策略',exact:true})).toHaveCount(0);await expect(generate(page)).toHaveCount(0);
+ await collect(page);await expect(consent(page)).not.toBeChecked();observed=await stats(page);expect(observed.calls.filter(call=>call.endpoint==='preview-start')).toHaveLength(2);expect(observed.calls.filter(call=>call.endpoint==='preview-start').at(-1).payload.request.publicApiPaths).toEqual([{repository:'client',path:'other/'}]);expect(observed.modelCalls).toBe(0);expect(observed.calls.filter(call=>call.endpoint==='generate'||call.endpoint==='analysis-plan')).toHaveLength(0);
+});
+
+for(const declaration of ['client|../private.h','missing|sdk/','client|sdk/*.h','client|.env','client|sdk/|extra'])test('invalid public SDK boundary blocks capture before dispatch: '+declaration,async({page})=>{
+ await open(page);await selectGit(page);await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();await page.getByRole('textbox',{name:'公共SDK边界',exact:true}).fill(declaration);await expect(capture(page)).toBeDisabled();
+ await expect(page.getByRole('alert').filter({hasText:'公开 API 边界必须指定已选项目'})).toBeVisible();const observed=await stats(page);expect(observed.calls.filter(call=>call.endpoint==='preview-start'||call.endpoint==='generate')).toHaveLength(0);expect(observed.modelCalls).toBe(0);
 });
 
 test('reader downloads omit appendices for current and retained reports without changing internal evidence',async({page})=>{

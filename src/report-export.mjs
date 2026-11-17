@@ -30,7 +30,7 @@ function readerLine(line){
  }
  const patterns=[
   /`[^`\s]*[/\\][^`\s]*[.](?:h|hpp|hh|c|cc|cpp|cxx|cs|mjs|jsx|js|ts|tsx|shader|hlsl|glsl|cginc)`/gi,
-  /(?:[A-Za-z]:)?[\w.@~\-]+[/\\][\w.@~\/\\-]*[.](?:h|hpp|hh|c|cc|cpp|cxx|cs|mjs|jsx|js|ts|tsx|shader|hlsl|glsl|cginc)\b/gi,
+  /(?:[A-Za-z]:[/\\]|[\w.@~\-]+[/\\])[\w.@~\/\\-]*[.](?:h|hpp|hh|c|cc|cpp|cxx|cs|mjs|jsx|js|ts|tsx|shader|hlsl|glsl|cginc)\b/gi,
   /\b[A-Za-z_][A-Za-z0-9_.-]*\.(?:h|hpp|hh|c|cc|cpp|cxx|cs|mjs|jsx|js|ts|tsx|shader|hlsl|glsl|cginc)\b/gi,
  ];
  const removed=[];
@@ -39,15 +39,16 @@ function readerLine(line){
   if(!endpoints.some(endpoint=>start<endpoint.end&&end>endpoint.start))removed.push({start:offsets[start].start,end:offsets[end-1].end});
  }
  let result='',cursor=0;
- for(const range of removed.sort((a,b)=>a.start-b.start)){
-  if(range.start>cursor)result+=line.slice(cursor,range.start);
-  cursor=Math.max(cursor,range.end);
+ for(const range of removed.sort((a,b)=>a.start-b.start||b.end-a.end)){
+  if(range.start<cursor)continue;
+  result+=line.slice(cursor,range.start)+'相关源码文件';
+  cursor=range.end;
  }
  return result+line.slice(cursor);
 }
 export function reportDownloadText(markdown,kind){
  if(kind!=='analysis')return markdown;
- const buckets=new Map(sections.map(title=>[title,[]]));let active=null,fence=null,details=0;
+ const buckets=new Map(sections.map(title=>[title,[]])),unknowns=[];let active=null,fence=null,details=0,singleSummary=false;
  for(const line of markdown.split(/\r?\n/)){
   const marker=line.match(/^ {0,3}(`{3,}|~{3,})/);
   if(marker){if(!fence)fence={char:marker[1][0],length:marker[1].length};else if(marker[1][0]===fence.char&&marker[1].length>=fence.length)fence=null;continue;}
@@ -56,8 +57,13 @@ export function reportDownloadText(markdown,kind){
   if(line.trim()==='</details>'){details=Math.max(0,details-1);continue;}
   if(details)continue;
   const heading=line.match(/^ {0,3}(#{1,2}) +(.+?)\s*#*$/);
-  if(heading){active=heading[1].length===2&&buckets.has(heading[2])?heading[2]:null;continue;}
-  if(active&&!/^本报告为单次摘要：|^本地清单含 |^已处理证据 |^模型：/.test(line))buckets.get(active).push(active==='本次比较范围'?line:readerLine(line));
+  if(heading){active=heading[1].length===2&&(buckets.has(heading[2])||heading[2]==='未知和待确认')?heading[2]:null;continue;}
+  if(/^本报告为单次摘要：/.test(line)){singleSummary=true;continue;}
+  if(active&&!/^本地清单含 |^已处理证据 |^模型：/.test(line)){
+   (active==='未知和待确认'?unknowns:buckets.get(active)).push(readerLine(line));
+  }
  }
+ if(singleSummary)buckets.get('本次比较范围').push('本报告为单次摘要，仅基于预算内的摘要与选取原文片段，不是全文语义分析；覆盖可能不完整，结论与测试建议仍待人工复核。');
+ if(unknowns.some(line=>line.trim()))buckets.get('QA 测试范围').push('', '### 待补充与待确认', '', ...unknowns);
  return sections.map(title=>'## '+title+'\n\n'+(buckets.get(title).join('\n').trim()||'未提供可对外展示的内容，待确认。')).join('\n\n')+'\n';
 }

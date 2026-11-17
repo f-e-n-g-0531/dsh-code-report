@@ -28,6 +28,19 @@ test('legacy plan without strategy retains explicit multi-batch consent, not sum
  assert.ok(html.includes('单片输入预算'));assert.ok(html.includes('本计划 2 片'));
  assert.ok(html.includes('分批调用可能多次计费'));assert.ok(!html.includes('单次摘要分析 · 非模型全文覆盖'));
 });
+test('full is the default strategy and summary is an explicit alternative',()=>{
+ const html=renderPreview({preview:{...preview,analysisPlan:{strategy:'full',batches:[{id:'one'},{id:'two'}],coverage:{total:2}}}});
+ assert.match(html,/<select aria-label="分析策略"><option value="full" selected="">/);
+ assert.ok(html.includes('全量差异分片（默认，可能多次计费）'));assert.ok(html.includes('快速摘要（抽样，不完整）'));
+ assert.ok(html.includes('发送已采集的全部文本差异和所选上下文'));assert.ok(html.includes('计划 2 次模型请求'));
+ assert.ok(!html.includes('单次摘要分析 · 非模型全文覆盖'));
+});
+test('dirty strategy disables consent until replanned without changing frozen coverage claims',()=>{
+ const html=renderPreview({analysisStrategy:'full',planDirty:true});
+ assert.match(html,/<select aria-label="分析策略"><option value="full" selected="">/);
+ assert.match(html,/<input type="checkbox" disabled=""\s*\/>/);
+ assert.ok(html.includes('请更新分析计划并重新确认'));assert.ok(html.includes('单次摘要分析 · 非模型全文覆盖'));
+});
 test('single-request result coverage cannot label digest evidence as full source analysis',()=>{
  const html=renderToStaticMarkup(React.createElement(ReportSection,{result:{markdown:'report',coverage:{...coverage,total:8,processed:8,remaining:0,completedBatches:1,totalBatches:1,cited:2}}}));
  assert.ok(html.includes('已处理摘要证据 8 / 8'));assert.ok(html.includes('非模型全文覆盖'));assert.ok(html.includes('未发送的正文无法据此宣称已分析'));

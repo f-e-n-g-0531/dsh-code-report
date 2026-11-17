@@ -1,3 +1,4 @@
+import {withDispositions} from './analysis-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -112,10 +113,10 @@ test('production plan and analyzer compose with host checkpoint, paid retry, rou
   const ctx={sessions:new Map([['s',{header:{cwd:'/workspace'}}]]),llm:{async *stream(input){
     calls++;modelCalls.push(input.model);if(calls===failOn)throw new Error('response interrupted');
     const data=JSON.parse(input.messages[0].content[0].text);
-    yield {type:'text-delta',text:JSON.stringify({changes:[{text:'内容变化待确认',evidenceIds:[data.evidence[0].id]}],interfaces:[],impacts:[],qa:[],unknowns:[{text:'调用方未提供',evidenceIds:[]}]})};yield {type:'finish',reason:{kind:'stop'}};
+    yield {type:'text-delta',text:JSON.stringify(withDispositions({changes:[{text:'内容变化待确认',evidenceIds:[data.evidence[0].id]}],interfaces:[],impacts:[],qa:[],unknowns:[{text:'调用方未提供',evidenceIds:[]}]}, data.evidence))};yield {type:'finish',reason:{kind:'stop'}};
   }}};
   const handler=createHandler(ctx,{capture:async()=>source,plan:createAnalysisPlan,analyze:analyzeReport});
-  async function getPreview(){const p=await handler('preview',{sessionId:'s',request:{}});assert.equal(p.ok,true);const replanned=await handler('analysis-plan',{sessionId:'s',previewId:p.value.previewId,inputBudget:8000});assert.equal(replanned.ok,true);return {...p.value,analysisPlan:replanned.value.analysisPlan};}
+  async function getPreview(){const p=await handler('preview',{sessionId:'s',request:{}});assert.equal(p.ok,true);const replanned=await handler('analysis-plan',{sessionId:'s',previewId:p.value.previewId,inputBudget:14000});assert.equal(replanned.ok,true);return {...p.value,analysisPlan:replanned.value.analysisPlan};}
   const p=await getPreview(),count=p.analysisPlan.batches.length;assert.ok(count>2);
   const failure=await handler('generate',send(p));assert.equal(failure.ok,false);assert.equal(failure.error.details.completedBatches,1);assert.equal(failure.error.details.remainingBatches,count-1);
   assert.equal(failure.error.details.coverage.processed>0,true);failOn=0;

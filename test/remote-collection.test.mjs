@@ -1,3 +1,4 @@
+import {withDispositions} from './analysis-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,readFile,readdir,stat,rm} from 'node:fs/promises';
@@ -70,7 +71,7 @@ test('remote failures never fall back locally and malformed modes are rejected',
 
 test('host preview freezes remote evidence and sends it only after explicit consent',async t=>{
  const f=await fixture(t),before=await state(f.root),calls=[];
- const llm={async *stream(input){calls.push(input);const batch=JSON.parse(input.messages[0].content[0].text);const first=batch.evidence[0].id;yield {type:'text-delta',text:JSON.stringify({changes:[{text:'冻结差异',evidenceIds:[first]}],interfaces:[],impacts:[],qa:[],unknowns:[]})};yield {type:'finish',reason:{kind:'stop'}};}};
+ const llm={async *stream(input){calls.push(input);const batch=JSON.parse(input.messages[0].content[0].text);const first=batch.evidence[0].id;yield {type:'text-delta',text:JSON.stringify(withDispositions({changes:[{text:'冻结差异',evidenceIds:[first]}],interfaces:[],impacts:[],qa:[],unknowns:[]}, batch.evidence))};yield {type:'finish',reason:{kind:'stop'}};}};
  const rpc=createHandler({sessions:{get:()=>({header:{cwd:f.cwd}})},sessionPersistence:{},llm});
  const request={repositories:[f.row],versionContexts:[{repository:'local',side:'B',path:'中文.txt'}]};
  const response=await rpc('preview',{sessionId:'s',request});assert.equal(response.ok,true,JSON.stringify(response));const p=response.value;

@@ -1,31 +1,32 @@
 import test from 'node:test';
+import {withDispositions} from './analysis-fixture.mjs';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createAnalysisPlan, analyzeReport, analyze, markdown} from '../src/report.mjs';
-import {validateAnalysis, consumeStructuredAnalysis, estimatedInputBytes, ANALYSIS_SYSTEM} from '../src/analysis.mjs';
+import {validateAnalysis, consumeStructuredAnalysis, estimatedInputBytes, ANALYSIS_PLAN_VERSION, ANALYSIS_SYSTEM} from '../src/analysis.mjs';
 import {createEvidenceIndex, evidenceHash} from '../src/evidence.mjs';
 
 const route = {provider: 'fixture', model: 'structured'};
 const snapshot = (text = '-old\n+new\n') => ({title: 'fixture', createdAt: 'fixed', limitations: [], context: [], repositories: [{path: 'app', type: 'git', a: 'a', b: 'b', requestedA: 'a', requestedB: 'b', files: ['api.js'], diff: 'diff --git a/api.js b/api.js\n--- a/api.js\n+++ b/api.js\n@@ -1 +1 @@\n' + text, summary: 'api.js', diffHash: 'hash'}]});
 const document = id => ({changes: [{text: '参数发生变化', evidenceIds: [id]}], interfaces: [], impacts: [], qa: [{text: 'P1 前置：旧调用方；步骤：调用新接口；预期：核对返回值', evidenceIds: [id]}], unknowns: [{text: '调用方未提供，间接影响待确认', evidenceIds: []}]});
 async function* stream(value, reason = 'stop') { yield {type: 'text-delta', text: typeof value === 'string' ? value : JSON.stringify(value)}; yield {type: 'finish', reason: {kind: reason}}; }
-const model = callback => ({stream(input) { assert.deepEqual(input.tools, []); const payload = JSON.parse(input.messages[0].content[0].text); return callback(payload, input); }});
+const model = callback => ({stream(input) { assert.deepEqual(input.tools, []); const payload = JSON.parse(input.messages[0].content[0].text); const result = callback(payload, input); if (typeof result.next === 'function') { const next = result.next.bind(result); result.next = async (...args) => { const step = await next(...args); if (step.value?.type === 'text-delta') { try { step.value.text = JSON.stringify(withDispositions(JSON.parse(step.value.text), payload.evidence)); } catch {} } return step; }; return result; } return (async function* () { for await (const chunk of result) { if (chunk.type === 'text-delta') { try { chunk.text = JSON.stringify(withDispositions(JSON.parse(chunk.text), payload.evidence)); } catch {} } yield chunk; } })(); }});
 
 test('linear packing matches reference JSON packing and preserves payload and plan hashes', () => {
   const source = snapshot(('@@ -1 +1 @@\n-\\\t\u0001😀\n+新\n').repeat(120));
   source.title = '"quoted"\t😀'; source.limitations = ['slashes \\ and controls \t \u0001 \ud800'];
-  for (const inputBudget of [8000, 24000, 64000]) {
-    const payloadFor = evidence => ({schema: 2, evidenceVersion: 2, title: source.title, limitations: source.limitations, evidence});
+  for (const inputBudget of [14000, 24000, 64000]) {
+    const payloadFor = evidence => ({schema: ANALYSIS_PLAN_VERSION, evidenceVersion: 2, title: source.title, limitations: source.limitations, publicApiPaths: source.publicApiPaths ?? [], evidence});
     const overhead = estimatedInputBytes(payloadFor([]));
     const index = createEvidenceIndex(source, {maxTextBytes: Math.max(64, Math.floor((inputBudget - overhead - 512) / 8))});
     const groups = []; let group = [];
     for (const item of index.items) {
-      if (group.length && estimatedInputBytes(payloadFor([...group, item])) > inputBudget) { groups.push(group); group = []; }
+      if (group.length && (estimatedInputBytes(payloadFor([...group, item])) > inputBudget || group.length >= 32)) { groups.push(group); group = []; }
       group.push(item);
     }
     if (group.length) groups.push(group);
     const payloadHashes = groups.map(items => evidenceHash(JSON.stringify(payloadFor(items))));
-    const id = 'plan-' + evidenceHash(JSON.stringify([2, 2, index.snapshotHash, inputBudget, ANALYSIS_SYSTEM, payloadHashes]));
+    const id = 'plan-' + evidenceHash(JSON.stringify([ANALYSIS_PLAN_VERSION, 2, index.snapshotHash, inputBudget, ANALYSIS_SYSTEM, payloadHashes]));
     const plan = createAnalysisPlan(source, {inputBudget});
     assert.equal(plan.id, id);
     assert.deepEqual(plan.batches.map(batch => batch.payloadHash), payloadHashes);
@@ -36,7 +37,7 @@ test('linear packing matches reference JSON packing and preserves payload and pl
 
 test('over 32 batches cancel with exact complete coverage and explicitly resume without repeats', async () => {
   const source = snapshot(''); source.repositories[0].files = Array.from({length: 400}, (_, i) => 'directory-' + i);
-  const plan = createAnalysisPlan(source, {inputBudget: 8000}), controller = new AbortController();
+  const plan = createAnalysisPlan(source, {inputBudget: 14000}), controller = new AbortController();
   assert.ok(plan.batches.length > 33);
   let calls = 0, partial;
   const llm = model(payload => { calls++; return stream(document(payload.evidence[0].id)); });
@@ -65,7 +66,7 @@ test('over 32 batches cancel with exact complete coverage and explicitly resume 
 
 test('strict schema rejects arbitrary objects, extras, invalid references and unsupported unknown claims', () => {
   const valid = document('e1');
-  assert.deepEqual(validateAnalysis(valid, ['e1']), valid);
+  assert.deepEqual(validateAnalysis(valid, ['e1']), {...valid, evidenceDispositions: []});
   const invalid = [null, [], {}, {...valid, extra: []}, {...valid, changes: {}}, {...valid, changes: [{text: 'x', evidenceIds: ['wrong']}]}, {...valid, changes: [{text: 'x', evidenceIds: []}]}, {...valid, changes: [{text: 'x', evidenceIds: ['e1', 'e1']}]}, {...valid, changes: [{text: 'x', evidenceIds: ['e1'], url: 'evil'}]}, {...valid, changes: [{text: '', evidenceIds: ['e1']}]}, {...valid, unknowns: [{text: '确定安全', evidenceIds: []}]}];
   for (const value of invalid) assert.throws(() => validateAnalysis(value, ['e1']));
   assert.throws(() => validateAnalysis({...valid, changes: Array(201).fill(valid.changes[0])}, ['e1']));
@@ -86,18 +87,27 @@ test('structured report produces deterministic escaped Markdown and evidence ind
   assert.ok(result.markdown.includes(plan.batches[0].evidenceIds[0]));
 });
 
-test('all-empty structured output is processed but never claimed as cited or understood', async () => {
+test('all-empty full output without evidence dispositions is rejected, never silently complete', async () => {
   const source = snapshot();
-  const result = await analyzeReport(model(() => stream({changes: [], interfaces: [], impacts: [], qa: [], unknowns: []})), route, source);
+  const llm = {stream() { return stream({changes: [], interfaces: [], impacts: [], qa: [], unknowns: []}); }};
+  await assert.rejects(analyzeReport(llm, route, source), error => error.code === 'code-report/analysis-disposition' && error.completed.size === 0 && error.coverage.processed === 0);
+});
+
+test('explicit no-conclusion disposition covers every full-mode evidence without semantic claims', async () => {
+  const result = await analyzeReport(model(() => stream({changes: [], interfaces: [], impacts: [], qa: [], unknowns: []})), route, snapshot());
   assert.equal(result.coverage.cited, 0);
-  assert.equal(result.coverage.unreferencedIds.length, result.coverage.total);
-  assert.equal(result.coverage.processed, result.coverage.total);
-  assert.match(result.markdown, /已处理不等于每条证据有结论/);
-  assert.match(result.markdown, /成功 1 片；失败 0 片；未处理 0 片/);
+  assert.equal(result.coverage.disposed, result.coverage.total);
+  assert.equal(result.coverage.noConclusion, result.coverage.total);
+  assert.equal(result.coverage.semanticCompleteness, 'not-verified');
+  assert.match(result.markdown, /未得出结论/);
+  assert.match(result.markdown, /不证明语义完整/);
+  const body = result.markdown.split('## 分片覆盖与证据索引')[0];
+  assert.match(body, /已记录处置/);
+  assert.match(body.split('## 未知和待确认')[1], /未得出结论（待确认）/);
 });
 
 test('partial success is resumable only by explicit subsequent call using same plan and route', async () => {
-  const source = snapshot('旧😀'.repeat(2200)), plan = createAnalysisPlan(source, {inputBudget: 8000});
+  const source = snapshot('旧😀'.repeat(2200)), plan = createAnalysisPlan(source, {inputBudget: 14000});
   assert.ok(plan.batches.length > 1);
   let calls = 0, partial;
   const progress = [];
@@ -120,13 +130,13 @@ test('partial success is resumable only by explicit subsequent call using same p
 
 test('format versions and payload hashes bind plans and reject legacy checkpoints', async () => {
   const source = snapshot(), plan = createAnalysisPlan(source);
-  assert.equal(plan.formatVersion, 2);
+  assert.equal(plan.formatVersion, ANALYSIS_PLAN_VERSION);
   assert.equal(plan.evidenceVersion, 2);
   const {evidenceHash} = await import('../src/evidence.mjs');
   assert.equal(plan.batches[0].payloadHash, evidenceHash(JSON.stringify(plan.batches[0].snapshot)));
   const result = await analyzeReport(model(payload => stream(document(payload.evidence[0].id))), route, source, {plan});
   const [id, checkpoint] = [...result.completed][0];
-  assert.equal(checkpoint.formatVersion, 2);
+  assert.equal(checkpoint.formatVersion, ANALYSIS_PLAN_VERSION);
   assert.equal(checkpoint.payloadHash, plan.batches[0].payloadHash);
   for (const invalid of [{...checkpoint, formatVersion: 1}, {...checkpoint, payloadHash: 'old'}, Object.fromEntries(Object.entries(checkpoint).filter(([key]) => !['formatVersion', 'payloadHash'].includes(key)))]) {
     await assert.rejects(analyzeReport({}, route, source, {plan, completed: new Map([[id, invalid]])}), /不可复用/);
@@ -146,14 +156,14 @@ test('plan mismatch and already aborted calls never dispatch model', async () =>
 });
 
 test('cancel between batches preserves only validated completed batches and prevents next dispatch', async () => {
-  const controller = new AbortController(), source = snapshot('大'.repeat(12000)), plan = createAnalysisPlan(source, {inputBudget: 8000});
+  const controller = new AbortController(), source = snapshot('大'.repeat(12000)), plan = createAnalysisPlan(source, {inputBudget: 14000});
   let calls = 0;
   await assert.rejects(analyzeReport(model(payload => { calls++; return stream(document(payload.evidence[0].id)); }), route, source, {signal: controller.signal, plan, onProgress(value) { if (value.completed === 1) controller.abort(); }}), error => error.name === 'AbortError' && error.completed.size === 1);
   assert.equal(calls, 1);
 });
 
 test('abort settles a hung adapter, retains accepted batches and does not await iterator.return', async () => {
-  const source = snapshot('长'.repeat(12000)), plan = createAnalysisPlan(source, {inputBudget: 8000});
+  const source = snapshot('长'.repeat(12000)), plan = createAnalysisPlan(source, {inputBudget: 14000});
   const controller = new AbortController();
   let calls = 0, returned = 0, ready;
   const hung = new Promise(resolve => { ready = resolve; });
@@ -224,7 +234,7 @@ test('fixed evaluation fixtures validate schema, but semantics remain human revi
     if (fixture.evidenceSelector) assert.ok(selected, fixture.name + ': expected text must occur in actual selected hunk');
     const substitute = value => JSON.parse(JSON.stringify(value).replaceAll('EVIDENCE_0', ids[0]).replaceAll('EVIDENCE_HUNK', selected?.id ?? 'missing-hunk'));
     const output = substitute(fixture.output);
-    if (fixture.schemaValid) validateAnalysis(output, ids);
+    if (fixture.schemaValid) validateAnalysis(output, ids, {requireDispositions: false, evidence: plan.batches[0].snapshot.evidence});
     else assert.throws(() => validateAnalysis(output, ids), fixture.name);
     assert.ok(fixture.humanChecks.length);
   }

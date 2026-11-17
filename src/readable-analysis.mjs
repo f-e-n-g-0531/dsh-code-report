@@ -10,20 +10,20 @@ const sections = [
 
 const value = input => markdownText(input ?? '未知');
 
-const qaGroups = [
+export const qaGroups = [
   ['QA', 'QA 可执行测试'],
   ['研发专项', '研发专项验证'],
   ['待补充', '测试前待补充'],
   [null, '未分类测试建议（需人工确认执行角色与入口）'],
 ];
 
-function qaGroup(text) {
+export function qaGroup(text) {
   return /^(QA|研发专项|待补充)｜/.exec(text)?.[1] ?? null;
 }
 
 // Only split at explicit labels, retaining every character (including punctuation
 // and whitespace) in its original order. Never infer or rewrite a test contract.
-function qaParts(text) {
+export function qaParts(text) {
   const boundaries = [...text.matchAll(/测试功能[：:]|正常使用[：:]|重点观察[：:]|前置条件[：:]|操作步骤[：:]|步骤[：:]|预期(?:现象|结果)?[：:]|通过标准[：:]|回归边界[：:]|待补充[：:]/g)].map(match => match.index);
   if (!boundaries.length) return [text];
   return [text.slice(0, boundaries[0]), ...boundaries.map((start, index) => text.slice(start, boundaries[index + 1] ?? text.length))];

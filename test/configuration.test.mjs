@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {DEFAULT_SCAN,scanOptions,saveConfiguration,loadConfiguration,bulkVersions} from '../src/configuration.mjs';
+import {DEFAULT_SCAN,scanOptions,saveConfiguration,loadConfiguration,bulkVersions,cleanConfiguration} from '../src/configuration.mjs';
 import {fresh} from '../src/repositories.mjs';
 const config=()=>({schema:1,allowSvnNetwork:false,useDefaultModel:true,title:'发布报告',context:'client/api.ts',provider:'p',model:'m',scan:DEFAULT_SCAN,rows:[{...fresh(),a:'main',b:'HEAD'}]});
 test('fixed shallow scope ignores previous recursive configuration',()=>{assert.deepEqual(scanOptions(),{maxDepth:1,maxDirectories:100000});for(const old of [{maxDepth:32,maxDirectories:20000},null,{maxDepth:0}])assert.deepEqual(scanOptions(old),DEFAULT_SCAN);});
@@ -35,5 +35,16 @@ test('SSH directory configuration is optional, workspace-scoped and round-trips 
   const invalid={...config(),rows:[{...fresh(),sshDirectory}]};raw=JSON.stringify(invalid);
   assert.throws(()=>loadConfiguration(storage,'x'),/SSH 私钥文件或目录/);
  }
+});
+test('optional public API text and analysis strategy round-trip without changing legacy shape',()=>{
+ const legacy=cleanConfiguration(config());assert.equal(Object.hasOwn(legacy,'publicApiPaths'),false);assert.equal(Object.hasOwn(legacy,'analysisStrategy'),false);
+ let raw;const storage={setItem(k,v){raw=v;},getItem(){return raw;}};
+ for(const analysisStrategy of ['full','single-request']){
+  const value={...config(),publicApiPaths:'repo|include/api.h\nrepo|SDK/\n',analysisStrategy};
+  saveConfiguration(storage,'x',value);assert.deepEqual(loadConfiguration(storage,'x'),value);
+ }
+ assert.equal(cleanConfiguration({...config(),publicApiPaths:''}).publicApiPaths,'');
+ for(const publicApiPaths of [null,42,[],{}])assert.throws(()=>cleanConfiguration({...config(),publicApiPaths}),/字段无效/);
+ for(const analysisStrategy of [null,42,'',true,'automatic'])assert.throws(()=>cleanConfiguration({...config(),analysisStrategy}),/分析策略/);
 });
 test('bulk fill targets selected VCS only, preserves blanks and supports empty-only overwrite',()=>{const rows=[{...fresh(),a:'main'},{...fresh(),enabled:false},{...fresh(),type:'svn',branchA:'trunk'}];const filled=bulkVersions(rows,{type:'git',a:'v1',b:'HEAD'});assert.equal(filled[0].a,'main');assert.equal(filled[0].b,'HEAD');const branches=bulkVersions(rows,{type:'git',branchA:'main',branchB:'release'});assert.equal(branches[0].branchA,'main');assert.equal(branches[0].branchB,'release');assert.deepEqual(branches[1],rows[1]);assert.deepEqual(branches[2],rows[2]);assert.deepEqual(filled[1],rows[1]);assert.deepEqual(filled[2],rows[2]);assert.equal(bulkVersions(rows,{type:'git',a:'v1',emptyOnly:false})[0].a,'v1');const svn=bulkVersions(rows,{type:'svn',a:'r1',b:'r2',branchA:'branch',branchB:'release'});assert.equal(svn[2].branchA,'trunk');assert.equal(svn[2].branchB,'release');assert.deepEqual(rows[0],{...fresh(),a:'main'});});

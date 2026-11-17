@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 3,
   "qualityNotice": "自动测试验证结构、ID归属及固定样例所选hunk含预期原文；事实、兼容性、QA可执行性须由人工逐项核对，不将引用有效等同结论正确。EVIDENCE_HUNK替换为指定hunk真实ID。",
   "humanRubric": [
     "逐条定位A/B证据与声明是否相符",
@@ -36,8 +36,14 @@
         "changes": [],
         "interfaces": [
           {
-            "text": "query 新增 options 参数；默认值、是否必填及旧调用兼容性待确认；公开导出是对外候选依据，应测试旧单参数调用及新参数错误输入。",
+            "text": "公共SDK身份待确认；query 新增 options 参数；默认值、是否必填及旧调用兼容性待确认；公开导出是对外候选依据，应测试旧单参数调用及新参数错误输入。",
             "evidenceIds": [
+              "EVIDENCE_HUNK"
+            ],
+            "audience": "unknown",
+            "publicBasis": null,
+            "symbol": "query",
+            "declarationEvidenceIds": [
               "EVIDENCE_HUNK"
             ]
           }
@@ -85,8 +91,14 @@
         "changes": [],
         "interfaces": [
           {
-            "text": "删除公开导出的 oldApi，对外使用情况和替代接口待确认；需检索消费者并测试旧调用失败行为。",
+            "text": "公共SDK身份待确认；删除公开导出的 oldApi，对外使用情况和替代接口待确认；需检索消费者并测试旧调用失败行为。",
             "evidenceIds": [
+              "EVIDENCE_HUNK"
+            ],
+            "audience": "unknown",
+            "publicBasis": null,
+            "symbol": "oldApi",
+            "declarationEvidenceIds": [
               "EVIDENCE_HUNK"
             ]
           }

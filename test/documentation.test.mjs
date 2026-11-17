@@ -25,8 +25,28 @@ test('directory source documentation states expansion, refusal and authorization
  assert.ok(notes.includes('文件夹源码上下文'));assert.ok(notes.includes('正式发布'));
  for(const source of [readme,client,development,acceptance.split('## v0.8.0')[0],notes.split('### 验证状态')[0]]){assert.doesNotMatch(source,/最多 20 (?:个路径条目|文件)|128 KiB|默认[^。\n]{0,20}1 MiB|最多 8 MiB|最多 32 片|2000 条目、256 目录、20 层|32 MiB/);}
  assert.ok(client.includes('allowBatches:true'));assert.ok(!client.includes('setAllowBatches'));assert.ok(!client.includes('versionContexts.length+context.split'));
- assert.ok(readme.includes('4000–64000'));assert.ok(readme.includes('不设固定片数上限'));assert.ok(readme.includes('12 个项目'));
+ assert.ok(readme.includes('4000–64000'));assert.match(readme,/总证据[^\n]*不设固定[^\n]*分析片数上限/);assert.ok(readme.includes('12 个项目'));
  assert.ok(acceptance.includes('超过旧路径数量和分析片数门槛'));assert.ok(acceptance.includes('不证明真实大仓库性能'));
+});
+
+test('current analysis documentation states full default public evidence and reader export boundaries',async()=>{
+ const readme=await readFile('README.md','utf8'),development=await readFile('docs/DEVELOPMENT.md','utf8');
+ const strategy=(await readFile('docs/SINGLE-REQUEST.md','utf8')).split('## v0.10.0 验证记录')[0];
+ const acceptance=(await readFile('docs/ACCEPTANCE.md','utf8')).split('## v1.1.1：')[0];
+ for(const source of [readme,development,strategy,acceptance]){
+  assert.match(source,/full[^。\n]*64000|64000[^。\n]*full/,'full per-batch default budget');
+  assert.ok(source.includes('single-request'),'explicit sampled strategy');
+  assert.match(source,/策略[^。\n]*预算[^。\n]*(?:撤销|清除)[^。\n]*许可/,'strategy and budget changes revoke consent');
+  assert.match(source,/(?:无|不)自动(?:模型)?重试/,'no automatic paid retry');
+  assert.ok(source.includes('仓库路径|公开文件或目录/'),'candidate boundary input syntax');
+  assert.match(source,/候选[^。\n]*(?:不是历史|不证明历史)|不将候选路径当历史/,'candidate scope is not historical publication evidence');
+  for(const text of ['public-sdk','internal','unknown','摘录','语义完整','五节','未知项','占位'])assert.ok(source.includes(text),text);
+  assert.match(source,/未结论|no-conclusion/,'explicit no-conclusion dispositions');
+  assert.match(source,/schema 3|格式版本均为 3/,'schema 3 contract');
+ }
+ assert.ok(readme.includes('不证明发布已完成，也不代表已在当前 GUI 生效'));
+ assert.ok(strategy.includes('不代表已发布、已安装或验收通过'));
+ assert.ok(acceptance.includes('不代表本轮已执行或通过'));
 });
 
 test('GBK documentation distinguishes decoding, hashes and unverified history',async()=>{

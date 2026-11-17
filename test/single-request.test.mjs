@@ -84,11 +84,11 @@ test('path heuristics favor contracts and code over assets and preserve safe sco
 });
 
 test('actual analysis estimator bounds JSON escape expansion and final omission counts',async()=>{
-  const {estimatedInputBytes}=await import('../src/analysis.mjs');
+  const {estimatedInputBytes, ANALYSIS_PLAN_VERSION}=await import('../src/analysis.mjs');
   const source=snapshot([repository('app',{'api.hpp':'\x01"\\🙂'.repeat(4000)})]);
-  const exact=items=>estimatedInputBytes({schema:2,evidenceVersion:2,title:source.title,limitations:source.limitations,evidence:items});
-  const result=buildSingleRequestEvidence(source,{inputBudget:8000,estimate:exact});
-  assert.ok(exact(result.items)<=8000);
+  const exact=items=>estimatedInputBytes({schema:ANALYSIS_PLAN_VERSION,evidenceVersion:2,title:source.title,limitations:source.limitations,publicApiPaths:source.publicApiPaths??[],evidence:items});
+  const result=buildSingleRequestEvidence(source,{inputBudget:16000,estimate:exact});
+  assert.ok(exact(result.items)<=16000);
   const scope=JSON.parse(result.items[0].text);
   assert.equal(scope.sentFileCount,result.coverage.sentFileCount);
   assert.equal(scope.omittedFileCount,result.coverage.omittedFileCount);
