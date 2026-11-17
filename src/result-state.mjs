@@ -1,4 +1,5 @@
-// Results are private to one plugin instance. No source, preview or consent is persisted.
+// This view cache is private to one plugin instance. Workspace report files are
+// written by the backend; source snapshots, previews and consent are not persisted here.
 export function resultKey(session){return JSON.stringify([session?.id,session?.cwd]);}
 export function createResultStore({limit=16,maxBytes=Infinity}={}){
  const entries=new Map(),recoveries=new Map();
@@ -16,7 +17,7 @@ export function createResultStore({limit=16,maxBytes=Infinity}={}){
   },
   set(session,value){
    if(!session?.id||!session?.cwd||!value?.markdown)return;
-   const current={markdown:value.markdown,stale:value.stale===true,coverage:value.coverage,...(value.kind?{kind:value.kind}:{})};
+   const current={markdown:value.markdown,stale:value.stale===true,coverage:value.coverage,...(value.savedReport?{savedReport:{...value.savedReport}}:{}),...(value.kind?{kind:value.kind}:{})};
    const previous=entries.get(resultKey(session));
    // Keep only current output and latest successful AI output, not an unbounded history.
    const entry={current,analysis:value.kind==='analysis'?current:previous?.analysis};

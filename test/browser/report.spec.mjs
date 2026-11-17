@@ -33,6 +33,13 @@ async function collect(page){await capture(page).click();await expect(report(pag
 async function route(page){await page.getByRole('checkbox',{name:'使用 DSH 默认模型',exact:true}).uncheck();await page.getByRole('textbox',{name:'DSH 提供方 ID',exact:true}).fill('fixture');await page.getByRole('textbox',{name:'模型 ID',exact:true}).fill('mock');await page.getByRole('button',{name:'更新分析计划',exact:true}).click();await expect(consent(page)).toBeEnabled();}
 async function analyze(page){await route(page);await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告');}
 
+for(const reportSaveFailure of [false,true])test('report workspace save status survives lost response '+reportSaveFailure,async({page})=>{
+ await open(page,{reportSaveFailure,failGenerateResponse:true});await selectGit(page);await collect(page);await route(page);await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告 a');
+ if(reportSaveFailure)await expect(page.getByRole('alert').filter({hasText:'保存到工作区失败'})).toBeVisible();
+ else await expect(page.getByRole('status').filter({hasText:'报告已保存到工作区：'})).toContainText('G:/fixture/a/dsh-code-report-reports/report.md');
+ expect((await stats(page)).modelCalls).toBe(1);await expect(page.getByRole('button',{name:'下载 .md 文件',exact:true})).toBeEnabled();
+});
+
 test('configuration load and save use current workspace RPC, not browser storage',async({page})=>{
  await open(page);await selectGit(page);const title=page.getByRole('textbox',{name:'报告标题',exact:true});
  await title.fill('工作目录 A');await page.getByRole('button',{name:'保存配置',exact:true}).click();

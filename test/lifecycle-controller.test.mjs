@@ -14,8 +14,8 @@ test('paid operation identity and atomic lease are registered before RPC; detach
  const operation=lifecycle.startGenerate(a,{planId:'plan',sendToModel:true});
  assert.equal(observed.snapshot.paid.operationId,operation.operationId);assert.equal(results.getRecovery(a).operationId,operation.operationId);
  detach();assert.throws(()=>lifecycle.acquireInstall());assert.throws(()=>lifecycle.acquireBusiness('refs',b));
- delivery.resolve({markdown:'paid A'});await operation.promise;
- assert.equal(results.get(a).markdown,'paid A');assert.equal(results.get(b),null);assert.equal(results.getRecovery(a),null);
+ delivery.resolve({markdown:'paid A',savedReport:{status:'saved',path:'G:/a/dsh-code-report-reports/report.md'}});await operation.promise;
+ assert.equal(results.get(a).savedReport.path,'G:/a/dsh-code-report-reports/report.md');assert.equal(results.get(a).markdown,'paid A');assert.equal(results.get(b),null);assert.equal(results.getRecovery(a),null);
  assert.equal(lifecycle.getSnapshot().lease,null);assert.ok(notifications>1);
 });
 test('explicit cancellation preserves unknown identity and reconciliation uses independent signal',async()=>{

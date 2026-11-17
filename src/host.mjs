@@ -5,6 +5,7 @@ import {runtimeInfo,checkUpdate} from './updates.mjs';
 import {loadWorkspaceConfiguration,saveWorkspaceConfiguration} from './workspace-configuration.mjs';
 import {collect,discover,listRefs} from './collect.mjs';
 import {createAnalysisPlan,analyzeReport,markdown} from './report.mjs';
+import {saveWorkspaceReport} from './workspace-report.mjs';
 
 const PREVIEW_TTL=10*60*1000,PROGRESS_TTL=10*60*1000;
 const PREVIEW_LIMIT=16,PROGRESS_LIMIT=64,ACTIVE_LIMIT=2;
@@ -162,7 +163,7 @@ function localManifest(snapshot){
  const files=snapshot.repositories.flatMap(r=>r.files.map(path=>({repository:r.path,path,status:'unknown',sentMetadata:false,sentText:false})));
  return {strategy:'single-request',originalSourceBytes:snapshot.repositories.reduce((n,r)=>n+Buffer.byteLength(r.diff),0)+snapshot.context.reduce((n,c)=>n+Buffer.byteLength(c.text),0),fullManifestFiles:files.length,files};
 }
-export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,plan=defaultAnalysisPlan,analyze=analyzeReport,now=()=>Date.now()}={}){
+export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,plan=defaultAnalysisPlan,analyze=analyzeReport,saveReport=saveWorkspaceReport,now=()=>Date.now()}={}){
   const backendInstanceId=randomUUID();
   const previews=createPreviewStore(ctx,now),progress=createProgressStore(ctx,now,backendInstanceId),activeCaptures=new Set();let active=0;
   const assertSession=async(payload,cwd,signal)=>{if(await sessionCwd(ctx,payload.sessionId,signal)!==cwd)throw problem('session-changed','会话目录已变更');};
@@ -269,6 +270,9 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
         await assertSession(payload,cwd,AbortSignal.timeout(15000));
         if(operation){operation.completedBatches=p.completed.size;operation.totalBatches=p.plan.batches.length;}
         const value={markdown:markdown(p.snapshot,result.markdown,route,{structured:true,evidenceManifest:plan===defaultAnalysisPlan||p.plan.strategy==='single-request'?p.plan.coverage:null}),coverage:result.coverage};
+        // Persistence failure must never turn a validated paid result into a model retry.
+        try{value.savedReport=await saveReport(cwd,value.markdown,{assertCurrent:()=>assertSession(payload,cwd,AbortSignal.timeout(15000))});}
+        catch{value.savedReport={status:'failed',message:'报告已生成，但保存到工作区失败；请检查目录权限或磁盘空间并下载报告，不要重新生成。'};}
         progress.finish(operation,value);previews.discard(payload.previewId);return value;
       }catch(error){
         if(error.completed instanceof Map)p.completed=error.completed;

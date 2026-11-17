@@ -17,7 +17,7 @@ export function createLifecycleController({rpc,results,randomId=()=>crypto.rando
  }
  function finishCompleted(operation,value){
   if(paid!==operation)return;
-  results.set(operation.session,{markdown:value.markdown,coverage:value.coverage,stale:false,kind:'analysis'});
+  results.set(operation.session,{markdown:value.markdown,coverage:value.coverage,...(value.savedReport?{savedReport:value.savedReport}:{}),stale:false,kind:'analysis'});
   results.setRecovery(operation.session,null);
   paid=null;lease=null;lastFailure=null;
   lastCompleted={sessionKey:operation.sessionKey,operationId:operation.operationId};publish();
