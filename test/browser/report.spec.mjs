@@ -62,7 +62,9 @@ test('workspace configuration save failure is shown without claiming success',as
 for(const width of [390,1280])test('SSH help tooltip is hidden by default and supports hover keyboard and touch '+width,async({page})=>{
  await page.setViewportSize({width,height:900});await open(page);await selectGit(page);
  const trigger=page.getByRole('button',{name:'SSH 配置说明 1',exact:true}),tip=page.locator('#cr-ssh-hint-0');
- await expect(tip).toBeHidden();await trigger.hover();await expect(tip).toBeVisible();
+ const heading=page.locator('#cr-row-0 .cr-ssh-heading'),label=heading.locator('label'),input=page.getByRole('textbox',{name:'SSH 私钥文件或目录（可选） 1',exact:true});
+ await expect(tip).toBeHidden();await label.hover();await expect(tip).toBeHidden();await heading.hover({position:{x:2,y:2}});await expect(tip).toBeHidden();await input.hover();await expect(tip).toBeHidden();
+ await trigger.hover();await expect(tip).toBeVisible();await label.hover();await expect(tip).toBeHidden();await trigger.hover();await expect(tip).toBeVisible();
  await tip.hover();await expect(tip).toBeVisible();await expect(tip).toContainText('默认 config 和 known_hosts');
  const box=await tip.boundingBox();expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(width);
  await page.mouse.move(0,0);await expect(tip).toBeHidden();await trigger.focus();await expect(tip).toBeVisible();
