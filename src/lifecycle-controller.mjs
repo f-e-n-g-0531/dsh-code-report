@@ -7,7 +7,7 @@ export function createLifecycleController({rpc,results,randomId=()=>crypto.rando
  let snapshot={revision,lease:null,paid:null,lastCompleted:null,lastFailure:null};
  const publish=()=>{
   snapshot={revision:++revision,lease:lease?{kind:lease.kind,label:lease.label,sessionKey:lease.sessionKey}:null,
-   paid:paid?{operationId:paid.operationId,sessionKey:paid.sessionKey,session:paid.session,status:paid.status,message:paid.message}:null,lastCompleted,lastFailure};
+   paid:paid?{operationId:paid.operationId,sessionKey:paid.sessionKey,session:paid.session,status:paid.status,message:paid.message,forceRequested:paid.forceRequested===true,forceCancelling:paid.forceCancelling===true}:null,lastCompleted,lastFailure};
   for(const listener of listeners){try{listener(snapshot);}catch{/* A detached view cannot affect ownership. */}}
  };
  function acquire(kind,label,session){
@@ -55,6 +55,20 @@ export function createLifecycleController({rpc,results,randomId=()=>crypto.rando
   cancel(session){
    if(!paid||paid.sessionKey!==resultKey(session))return;
    markUnknown(paid,'已请求取消；取消不证明模型未执行或未计费，请只读核对结果。');paid.controller.abort();
+  },
+  forceCancel(session){
+   if(!paid||paid.sessionKey!==resultKey(session))return Promise.resolve();
+   const operation=paid;if(operation.forcePromise)return operation.forcePromise;
+   operation.forceRequested=true;operation.forceCancelling=true;
+   markUnknown(operation,'已强制中断前端等待并请求后台取消；停止与计费尚待核对，安全屏障保留。');
+   operation.controller.abort();
+   operation.forcePromise=(async()=>{
+    try{await rpc('generate-cancel',{sessionId:operation.session.id,operationId:operation.operationId},AbortSignal.timeout(5000));}
+    catch{markUnknown(operation,'强制取消请求未获确认；不能判定后台已停止或未计费，请只读恢复。');}
+    try{return await reconcile(operation);}catch{markUnknown(operation,'强制取消后核对暂不可用；任务身份与安全屏障保留，请只读恢复。');return {status:'unknown'};}
+    finally{operation.forceCancelling=false;operation.forcePromise=null;if(paid===operation)publish();}
+   })();
+   return operation.forcePromise;
   },
   abandon(session){
    if(!paid||paid.sessionKey!==resultKey(session))return;

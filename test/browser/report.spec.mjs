@@ -477,8 +477,10 @@ test('detached paid response loss retains same operation for read-only recovery'
  const proof=await assertPaidProof(page);expect(proof.generateAborts).toBe(0);const paid=proof.calls.find(call=>call.endpoint==='generate');const reads=paidReads(proof.calls);expect(reads.length).toBeGreaterThan(0);expect(reads.every(call=>call.payload.operationId===paid.payload.operationId&&call.payload.sessionId==='a')).toBe(true);
 });
 
-test('explicit paid cancellation retains unknown identity and later completion restores without dispatch',async({page})=>{
- await startHeldAnalysis(page);await page.getByRole('button',{name:'取消模型任务',exact:true}).click();
+test('header force cancellation retains unknown identity and later completion restores without dispatch',async({page})=>{
+ await startHeldAnalysis(page);const force=page.locator('.cr-header-actions').getByRole('button',{name:'强制取消',exact:true});await expect(force).toBeEnabled();await force.click();
+ await expect(page.locator('.cr-header-actions').getByRole('button',{name:'重试强制取消',exact:true})).toBeEnabled();
+ await expect.poll(async()=>(await stats(page)).calls.filter(call=>call.endpoint==='generate-cancel').length).toBe(1);
  await expect(page.getByRole('button',{name:'恢复已完成报告',exact:true})).toBeVisible();await expect(capture(page)).toBeDisabled();
  const before=await assertPaidProof(page);expect(before.generateAborts).toBe(1);const operation=before.calls.find(call=>call.endpoint==='generate').payload.operationId;
  await page.getByRole('checkbox',{name:'我确认标记放弃恢复；未知任务屏障仍保留，不解锁新业务或安装',exact:true}).check();await page.getByRole('button',{name:'放弃恢复',exact:true}).click();await expect(capture(page)).toBeDisabled();await expect(generate(page)).toBeDisabled();

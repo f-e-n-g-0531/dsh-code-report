@@ -34,6 +34,7 @@ function modelTransport(work,signal){
 async function rpc(channel,endpoint,payload,signal){
  calls.push({channel,endpoint,payload:structuredClone(payload)});
  if(endpoint==='runtime-info')return ok(info());
+ if(endpoint==='generate-cancel')return ok({operationId:payload.operationId,cancelRequested:true,status:'pending'});
  if(endpoint==='preview-cancel'){const task=captureTasks.get(payload.operationId);if(!task||task.sessionId!==payload.sessionId)return fail('采集任务不存在');task.status='stopped';task.error={code:'code-report/capture-stopped',message:'fixture 采集已取消'};if(task.value)previews.delete(task.value.previewId);return ok({operationId:payload.operationId,status:'stopped'});}
  if(endpoint==='result'){
   const capture=captureTasks.get(payload.operationId);if(capture&&capture.sessionId===payload.sessionId){if(settings.failCaptureResultOnce){settings.failCaptureResultOnce=false;throw new Error('fixture capture result response lost');}return ok({status:capture.status,...(capture.status==='completed'?{result:capture.value}:{}),...(capture.error?{error:capture.error}:{})});}

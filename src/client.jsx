@@ -92,12 +92,12 @@ export function apply(ctx){
    if(!ownTask)return;
    const ac=new AbortController();let timer,failures=0;
    const poll=async()=>{
-    try{const value=await rpc('progress',{sessionId:session.id,operationId:ownTask.operationId},ac.signal);if(!ac.signal.aborted){setProgress(value);setProgressWarning('');failures=0;}}
+    try{const value=await rpc('progress',{sessionId:session.id,operationId:ownTask.operationId},ac.signal);if(!ac.signal.aborted){setProgress(ownTask.forceRequested?{phase:'cancel-requested',label:'已请求强制取消；后台状态核对中，不代表未计费'}:value);setProgressWarning('');failures=0;}}
     catch(error){if(!ac.signal.aborted&&++failures>=2)setProgressWarning('进度连接暂时失联；任务身份仍保留，请只读恢复。'+error.message);}
     if(!ac.signal.aborted)timer=setTimeout(poll,500);
    };
    timer=setTimeout(poll,250);return()=>{ac.abort();clearTimeout(timer);};
-  },[ownTask?.operationId]);
+  },[ownTask?.operationId,ownTask?.forceRequested]);
   const keepResult=value=>{results.set(session,value);setResult(value);setLatestAnalysis(results.getAnalysis(session));};
   const clearResult=()=>{
    if(result?.kind==='analysis')results.clearAnalysis(session);else results.clearCurrent(session);
@@ -197,6 +197,11 @@ export function apply(ctx){
    try{await lifecycle.recover(session);}catch(error){if(mounted.current)setError(error.message);}
    finally{if(mounted.current)setRecovering(false);}
   };
+  const forceCancel=()=>{
+   setConsent(false);
+   if(ownTask){void lifecycle.forceCancel(session);setProgress({phase:'cancel-requested',label:'已请求强制取消；后台停止与计费仍需核对'});}
+   else if(controller.current){controller.current.abort();setProgress({phase:'cancel-requested',label:'已请求强制取消；等待后台确认停止，不代表已撤回远端请求'});}
+  };
   const abandonRecovery=()=>{
    if(!abandonConfirmed||busy)return;
    try{lifecycle.abandon(session);setAbandonConfirmed(false);setConsent(false);setError('已标记放弃恢复，但未知任务的安全屏障继续保留；请核对到宿主明确停止或完成，不能据此重新派发或安装。');}
@@ -217,7 +222,7 @@ export function apply(ctx){
    try{return (await rpc('refs',{sessionId:session.id,repositoryPath,gitMode,gitRemote,sshDirectory},signal)).refs;}finally{lease.release();}
   };
   return <section className="cr-root"><style>{css}</style>
-   <header className="cr-hero"><div className="cr-hero-title"><span className="cr-hero-mark" aria-hidden="true">▤</span><div><small>RELEASE WORKSPACE <span>· v{version}</span></small><h1>发布报告配置</h1><p>从版本差异到发布决策，让每一次交付都有据可依。</p></div></div><div className="cr-actions cr-header-actions"><button disabled={!session||!!busy||updating} onClick={store}>保存配置</button><button disabled={!session||!!busy||updating||!!pendingRecovery} onClick={restore}>恢复已保存</button></div></header>
+   <header className="cr-hero"><div className="cr-hero-title"><span className="cr-hero-mark" aria-hidden="true">▤</span><div><small>RELEASE WORKSPACE <span>· v{version}</span></small><h1>发布报告配置</h1><p>从版本差异到发布决策，让每一次交付都有据可依。</p></div></div><div className="cr-actions cr-header-actions"><button type="button" className="cr-danger-ghost" disabled={!ownTask&&!busy||!!ownTask?.forceCancelling||updating} onClick={forceCancel} title="立即中断前端等待并请求后台取消；不保证撤回远端请求或免计费，未知状态仍须核对">{ownTask?.forceCancelling?'强制取消中…':ownTask?.forceRequested?'重试强制取消':'强制取消'}</button><button disabled={!session||!!busy||updating} onClick={store}>保存配置</button><button disabled={!session||!!busy||updating||!!pendingRecovery} onClick={restore}>恢复已保存</button></div></header>
    <nav className="cr-stage-nav" aria-label="报告工作流程"><div className="cr-stage" data-state={workflow[0]} aria-current={workflow[0]==='active'?'step':undefined}><span className="cr-stage-number">01</span><div><strong>配置发布范围</strong><span>项目与版本端点</span></div></div><div className="cr-stage" data-state={workflow[1]} aria-current={workflow[1]==='active'?'step':undefined}><span className="cr-stage-number">02</span><div><strong>核对差异证据</strong><span>固定快照 · 确认发送</span></div></div><div className="cr-stage" data-state={workflow[2]} aria-current={workflow[2]==='active'?'step':undefined}><span className="cr-stage-number">03</span><div><strong>生成与导出</strong><span>{ownTask?(ownTask.status==='running'?'模型分析进行中':'任务状态待核对'):hasCurrentReport&&!preview?'报告已生成，可下载':'影响分析与 QA 建议'}</span></div></div></nav>
    <details className="cr-update-details"><summary>插件版本与更新 · {version}</summary><UpdatePanel rpc={rpc} manager={ctx.remote?.pluginManager} reportBusy={!!busy||!!lifecycleState.paid||lifecycleState.lease?.kind==='business'} controller={updateController} updateState={updateState}/></details>
    {configNotice&&<p className="cr-hint" role="status">{configNotice}</p>}

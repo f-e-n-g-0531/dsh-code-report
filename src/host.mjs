@@ -116,7 +116,13 @@ function createProgressStore(ctx,now,backendInstanceId){
     }else if(!terminal(item))item.controller.abort();
     return {operationId:item.id,cancelled:true,status:terminal(item)?item.value.phase:'pending'};
   };
-  return {begin,authorize,update,read,finish,stop,result,execution,cancel};
+  const cancelGenerate=async(payload,signal)=>{
+    const item=await owned(payload,signal,'result-unavailable');signal?.throwIfAborted();
+    if(item.endpoint!=='generate')throw problem('input','任务不是模型分析');
+    if(!terminal(item))item.controller?.abort();
+    return {operationId:item.id,cancelRequested:true,status:terminal(item)?item.value.phase:'pending',execution:execution(item)};
+  };
+  return {begin,authorize,update,read,finish,stop,result,execution,cancel,cancelGenerate};
 }
 function publicPlan(plan){
   if(!plan)return null;
@@ -275,6 +281,7 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
   return async(endpoint,payload,signal)=>{
     if(endpoint==='runtime-info')return respond(()=>{const info=runtimeInfo();return {...info,backendInstanceId,capabilities:{...info.capabilities,asyncPreview:true}};});
     if(endpoint==='preview-start')return respond(()=>startPreview(payload,signal));
+    if(endpoint==='generate-cancel')return respond(()=>progress.cancelGenerate(payload,signal));
     if(endpoint==='preview-cancel')return respond(()=>progress.cancel(payload,signal,(previewId,sessionId)=>previews.release({previewId,sessionId},signal)));
     if(endpoint==='check-update')return respond(()=>checkUpdate({signal}));
     if(endpoint==='release-preview')return respond(()=>previews.release(payload,signal));
@@ -292,6 +299,10 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
         const started=progress.begin(payload.operationId,payload.sessionId,cwd,endpoint,fingerprint);
         if(started.replay)return {ok:true,value:started.replay};
         operation=started.operation;
+        if(endpoint==='generate'){
+          operation.controller=new AbortController();
+          signal=AbortSignal.any([signal,operation.controller.signal]);
+        }
       }
       if(active>ACTIVE_LIMIT)throw problem('busy','报告任务繁忙，请稍后重试');
       const update=value=>progress.update(operation,value);
@@ -303,6 +314,6 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
       progress.stop(operation,error);
       if(operation)error.details={...error.details,execution:progress.execution(operation)};
       return failure(error);
-    }finally{active--;}
+    }finally{active--;if(operation)delete operation.controller;}
   };
 }
