@@ -214,12 +214,14 @@ test('model text and reasoning share exact 256 KiB byte output budget including 
   await assert.rejects(consumeStructuredAnalysis(over), /256 KiB/);
 });
 
-test('legacy direct analyze API remains Markdown-compatible and version context labels are accurate', async () => {
+test('legacy direct analyze API remains Markdown-compatible without listing version context metadata', async () => {
   const text = '## 对外接口变更\n待确认';
   assert.equal(await analyze({stream: () => stream(text)}, route, {}), text);
   const source = snapshot(); source.context = [{path: 'api.js', repository: 'app', revision: 'fixed-a', provenance: 'version-A', hash: 'hash', text: 'old'}];
   const result = markdown(source);
-  assert.match(result, /固定版本 fixed-a（version-A）/);
+  assert.doesNotMatch(result, /附带源码|固定版本 fixed-a（version-A）/);
+  assert.equal(source.context[0].revision, 'fixed-a');
+  assert.equal(source.context[0].provenance, 'version-A');
   assert.ok(!result.includes('api.js；当前工作区快照'));
 });
 

@@ -18,7 +18,7 @@ test('GBK source preview shows raw provenance and only approved decoded bytes re
  const response=await handler('preview',{sessionId:'s',operationId:'encoding-preview',request:{repositories:[{path:'repo',type:'git',a:revision,b:revision}],contextPaths:['repo/source.cpp']}});
  assert.equal(response.ok,true,JSON.stringify(response));const p=response.value;const item=p.context[0];
  assert.equal(item.encoding,'gb18030');assert.equal(item.hash,createHash('sha256').update(raw).digest('hex'));assert.equal(item.rawHash,item.hash);assert.ok(!Object.hasOwn(item,'text'));
- assert.match(p.markdown,/编码 gb18030/);assert.match(p.markdown,/原始字节 SHA-256/);assert.ok(p.limitations.some(s=>s.includes('GB18030')));assert.equal(inputs.length,0);
+ assert.doesNotMatch(p.markdown,/附带源码|编码 gb18030/);assert.ok(!p.markdown.includes(item.hash));assert.ok(p.limitations.some(s=>s.includes('GB18030')));assert.equal(inputs.length,0);
  const payload={sessionId:'s',operationId:'encoding-consent',previewId:p.previewId,planId:p.analysisPlan.id,route:{provider:'fixture',model:'mock'},sendToModel:false};
  assert.equal((await handler('generate',payload)).error.code,'code-report/consent-required');assert.equal(inputs.length,0);
  await writeFile(path.join(root,'source.cpp'),'unapproved');

@@ -20,7 +20,15 @@ for(const theme of ['light','dark'])for(const width of [380,768,1280])test('visu
  }
  const overflow=await page.evaluate(()=>({page:document.documentElement.scrollWidth,viewport:innerWidth,root:document.querySelector('.cr-root').scrollWidth,rootWidth:document.querySelector('.cr-root').clientWidth}));
  if(!before&&width===380)expect(await page.locator('.cr-workspace-bar').evaluate(element=>element.getBoundingClientRect().height),'compact mobile workspace bar').toBeLessThan(120);
- if(!before){expect(overflow.page).toBeLessThanOrEqual(overflow.viewport+2);expect(overflow.root).toBeLessThanOrEqual(overflow.rootWidth+2);}
+ if(!before){
+  expect(overflow.page).toBeLessThanOrEqual(overflow.viewport+2);expect(overflow.root).toBeLessThanOrEqual(overflow.rootWidth+2);
+  const settings=page.locator('#cr-row-0 .cr-ssh-settings'),hint=settings.locator('.cr-ssh-hint');
+  await expect(hint.locator('li')).toHaveCount(4);
+  const box=await settings.boundingBox(),fields=await page.locator('#cr-row-0 .cr-project-fields').boundingBox(),input=await settings.locator('input').boundingBox(),help=await hint.boundingBox();
+  expect(Math.abs(box.width-fields.width),'SSH settings span the complete form grid').toBeLessThanOrEqual(2);
+  expect(help.y,'guidance follows the SSH input').toBeGreaterThanOrEqual(input.y+input.height);
+  expect(Math.abs(help.x-input.x),'guidance aligns with the SSH input').toBeLessThanOrEqual(2);
+ }
  // Computed foreground/background contrast including alpha compositing, not a theme-name assertion.
  const measureContrast=()=>{
   const canvas=document.createElement('canvas');canvas.width=canvas.height=1;const context=canvas.getContext('2d',{willReadFrequently:true});

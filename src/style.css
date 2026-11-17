@@ -104,6 +104,9 @@
 .cr-root .cr-project-config{grid-area:config;margin:14px 0 18px}
 .cr-root .cr-project-fields{display:grid;grid-template-columns:minmax(0,2fr) minmax(72px,.6fr) minmax(140px,1fr) minmax(90px,.7fr);gap:12px;align-items:end}
 .cr-root .cr-project-path input{font-family:ui-monospace,"Cascadia Code",monospace}
+.cr-root .cr-ssh-settings{grid-column:1/-1;min-width:0}
+.cr-root .cr-ssh-hint{display:grid;gap:4px;list-style:none;margin:8px 0 0;padding:0;line-height:1.7}
+.cr-root .cr-ssh-hint strong{font-weight:600}
 .cr-root .cr-source-notice{margin-top:14px;padding:10px 12px;border:1px solid var(--cr-border);border-radius:7px;background:var(--cr-raised);font-size:11px;color:var(--cr-muted)}
 .cr-root .cr-source-notice[data-remote=true]{border-left:3px solid var(--cr-blue)}
 .cr-root .cr-source-notice>p{margin:0;font-size:11px;color:var(--cr-text)}

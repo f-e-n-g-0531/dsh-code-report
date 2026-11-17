@@ -128,8 +128,9 @@ test('source contexts above 20 files, 128 KiB each and 8 MiB total collect witho
  assert.ok(snapshot.context.every(item => item.text.length === 256 * 1024 + 1));
  assert.ok(Buffer.byteLength(JSON.stringify(snapshot)) > 8 * MIB);
  const report = markdown(snapshot);
- for (const name of contextPaths) assert.ok(report.includes(name), name);
- assert.equal((report.match(/当前工作区快照；编码 utf-8；原始字节 SHA-256/g) || []).length, 33);
+ for (const name of contextPaths) assert.ok(!report.includes(name), name);
+ assert.doesNotMatch(report, /附带源码|当前工作区快照；编码 utf-8；原始字节 SHA-256/);
+ assert.ok(snapshot.context.every(item => item.encoding === 'utf-8' && /^[a-f0-9]{64}$/.test(item.rawHash)));
 });
 
 test('live command abort and remaining deadline stop active children before settling', async () => {
