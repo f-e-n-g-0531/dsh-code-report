@@ -33,6 +33,44 @@ async function collect(page){await capture(page).click();await expect(report(pag
 async function route(page){await page.getByRole('checkbox',{name:'使用 DSH 默认模型',exact:true}).uncheck();await page.getByRole('textbox',{name:'DSH 提供方 ID',exact:true}).fill('fixture');await page.getByRole('textbox',{name:'模型 ID',exact:true}).fill('mock');await page.getByRole('button',{name:'更新分析计划',exact:true}).click();await expect(consent(page)).toBeEnabled();}
 async function analyze(page){await route(page);await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告');}
 
+test('configuration load and save use current workspace RPC, not browser storage',async({page})=>{
+ await open(page);await selectGit(page);const title=page.getByRole('textbox',{name:'报告标题',exact:true});
+ await title.fill('工作目录 A');await page.getByRole('button',{name:'保存配置',exact:true}).click();
+ await expect(page.getByRole('status').filter({hasText:'已保存到当前工作目录'})).toBeVisible();
+ expect(await page.evaluate(()=>localStorage.length)).toBe(0);
+ await title.fill('未保存');await page.getByRole('button',{name:'恢复已保存',exact:true}).click();await expect(title).toHaveValue('工作目录 A');
+ await page.evaluate(()=>window.fixture.switchSession('b'));await expect(title).toHaveValue('版本发布报告');
+ await page.evaluate(()=>window.fixture.switchSession('a'));await expect(title).toHaveValue('工作目录 A');
+ const snapshot=await stats(page);expect(snapshot.calls.filter(c=>c.endpoint==='configuration-save')).toHaveLength(1);expect(snapshot.calls.filter(c=>c.endpoint==='configuration-load').length).toBeGreaterThanOrEqual(4);expect(snapshot.modelCalls).toBe(0);
+});
+
+test('restoring workspace configuration blocks preview edits and paid generation until settled',async({page})=>{
+ await open(page);await selectGit(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
+ await expect(page.getByRole('status').filter({hasText:'已保存到当前工作目录'})).toBeVisible();
+ await collect(page);await route(page);await consent(page).check();await expect(generate(page)).toBeEnabled();
+ await page.evaluate(()=>window.fixture.configure({holdConfigurationLoad:true}));await page.getByRole('button',{name:'恢复已保存',exact:true}).click();
+ await expect(generate(page)).toBeDisabled();await expect(page.getByRole('textbox',{name:'模型 ID',exact:true})).toBeDisabled();await expect(consent(page)).toBeDisabled();
+ expect((await stats(page)).modelCalls).toBe(0);await page.evaluate(()=>window.fixture.releaseConfiguration());
+ await expect(page.getByRole('button',{name:'恢复已保存',exact:true})).toBeEnabled();await expect(consent(page)).toHaveCount(0);expect((await stats(page)).modelCalls).toBe(0);
+});
+
+test('workspace configuration save failure is shown without claiming success',async({page})=>{
+ await open(page,{failConfigurationSave:true});await selectGit(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
+ await expect(page.getByRole('status').filter({hasText:'保存失败：工作目录配置保存失败'})).toBeVisible();
+});
+
+for(const width of [390,1280])test('SSH help tooltip is hidden by default and supports hover keyboard and touch '+width,async({page})=>{
+ await page.setViewportSize({width,height:900});await open(page);await selectGit(page);
+ const trigger=page.getByRole('button',{name:'SSH 配置说明 1',exact:true}),tip=page.locator('#cr-ssh-hint-0');
+ await expect(tip).toBeHidden();await trigger.hover();await expect(tip).toBeVisible();
+ await tip.hover();await expect(tip).toBeVisible();await expect(tip).toContainText('默认 config 和 known_hosts');
+ const box=await tip.boundingBox();expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(width);
+ await page.mouse.move(0,0);await expect(tip).toBeHidden();await trigger.focus();await expect(tip).toBeVisible();
+ await page.keyboard.press('Escape');await expect(tip).toBeHidden();await trigger.click();await expect(tip).toBeVisible();
+ await page.getByRole('textbox',{name:'SSH 私钥文件或目录（可选） 1',exact:true}).focus();await expect(tip).toBeHidden();
+ expect((await stats(page)).modelCalls).toBe(0);
+});
+
 for(const directory of ['D:/SSH keys/中文/.ssh','D:/SSH keys/中文/fork_ssh_key'])test('custom SSH path saves, restores and reaches refs and capture without model calls: '+directory,async({page})=>{
  await open(page);await selectGit(page);
  const input=page.getByRole('textbox',{name:'SSH 私钥文件或目录（可选） 1',exact:true});

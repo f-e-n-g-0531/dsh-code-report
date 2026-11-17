@@ -24,10 +24,12 @@ for(const theme of ['light','dark'])for(const width of [380,768,1280])test('visu
   expect(overflow.page).toBeLessThanOrEqual(overflow.viewport+2);expect(overflow.root).toBeLessThanOrEqual(overflow.rootWidth+2);
   const settings=page.locator('#cr-row-0 .cr-ssh-settings'),hint=settings.locator('.cr-ssh-hint');
   await expect(hint.locator('li')).toHaveCount(4);
-  const box=await settings.boundingBox(),fields=await page.locator('#cr-row-0 .cr-project-fields').boundingBox(),input=await settings.locator('input').boundingBox(),help=await hint.boundingBox();
+  await expect(hint).toBeHidden();
+  const box=await settings.boundingBox(),fields=await page.locator('#cr-row-0 .cr-project-fields').boundingBox();
   expect(Math.abs(box.width-fields.width),'SSH settings span the complete form grid').toBeLessThanOrEqual(2);
-  expect(help.y,'guidance follows the SSH input').toBeGreaterThanOrEqual(input.y+input.height);
-  expect(Math.abs(help.x-input.x),'guidance aligns with the SSH input').toBeLessThanOrEqual(2);
+  await settings.getByRole('button',{name:'SSH 配置说明 1',exact:true}).focus();await expect(hint).toBeVisible();
+  const help=await hint.boundingBox();expect(help.x).toBeGreaterThanOrEqual(0);expect(help.x+help.width).toBeLessThanOrEqual(width);
+  await page.keyboard.press('Escape');await expect(hint).toBeHidden();
  }
  // Computed foreground/background contrast including alpha compositing, not a theme-name assertion.
  const measureContrast=()=>{

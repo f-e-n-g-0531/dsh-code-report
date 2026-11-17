@@ -116,7 +116,13 @@ function execute(command, args, {cwd, signal, maxBytes, timeoutMs, onStdoutBytes
       clearTimeout(forceTimer);
       if (stopped) return reject(failure);
       if (signal?.aborted) return reject(signal.reason);
-      if (code !== 0) return reject(new Error(command + ' 读取失败: ' + Buffer.concat(err).toString('utf8').slice(0, 1200)));
+      if (code !== 0) {
+        const stderr = Buffer.concat(err).toString('utf8');
+        const error = new Error(command + ' 读取失败: ' + stderr.slice(0, 1200));
+        // Internal bounded classification evidence, never serialized or appended to public hints.
+        Object.defineProperty(error, 'diagnosticStderr', {value: stderr});
+        return reject(error);
+      }
       const output = Buffer.concat(out);
       if (raw === true) return resolve(output);
       try { resolve(decodeUtf8(output)); }

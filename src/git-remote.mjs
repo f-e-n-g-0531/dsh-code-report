@@ -16,6 +16,7 @@ function remoteName(remote) {
 /** Only fixed diagnostic categories cross the RPC boundary; raw Git stderr may contain secrets. */
 export function remoteFailureDiagnostic(error) {
   const message=typeof error?.message==='string'?error.message:'';
+  const evidence=message+'\n'+(typeof error?.diagnosticStderr==='string'?error.diagnosticStderr:'');
   if(error?.code==='code-report/ssh-directory' || /^(?:SSH 目录配置无效|相对 SSH 目录需要仓库根目录|SSH 路径不存在或不可访问|SSH 路径必须是目录或私钥文件|SSH 目录不存在或不可读取|无法读取 SSH 目录配置)$/.test(message)) return {kind:'ssh-configuration',hint:'SSH 路径配置无效、不存在或不可访问；请检查目录或私钥文件及当前运行用户的访问权限'};
   if(error?.code==='code-report/ssh-identity' || message==='SSH 私钥文件不可读取') return {kind:'ssh-identity',hint:'SSH 私钥文件不可用；请填写私钥而非 .pub 公钥，并检查当前运行用户的文件访问权限'};
   const rules=[
@@ -32,7 +33,7 @@ export function remoteFailureDiagnostic(error) {
     ['repository',/repository .*not found|repository not found|does not appear to be a git repository|could not read from remote repository|project .*not found/i,'远端仓库不存在或当前身份无读取权限；请核对 origin 配置和服务器授权']
   ];
   if(error?.code==='ENOENT')return {kind:'tool',hint:'Git、SSH 或认证辅助程序无法启动；请检查 DSH 运行环境中的程序路径'};
-  for(const [kind,pattern,hint] of rules)if(pattern.test(message))return {kind,hint};
+  for(const [kind,pattern,hint] of rules)if(pattern.test(evidence))return {kind,hint};
   return {kind:'unknown',hint:'无法确认具体原因；请检查远端配置、访问权限与非交互认证（原始输出已隐藏，以免泄露 URL、密钥路径或凭据）'};
 }
 function safeFailure(remote, stage, error) {

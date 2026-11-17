@@ -5,7 +5,7 @@ import {PACKAGE_NAME,PROTOCOL_VERSION} from '../../src/protocol.mjs';
 
 // Synthetic service: dispatched model work can outlive its client transport.
 const settings={count:1,ttl:600000,failPreview:false,failGenerate:false,delayPreview:0,delayGenerate:0,ignoreAbort:false,runtimeMismatch:false,progressFailure:false,holdGenerate:false,holdInstall:false,holdRefs:false,...window.__fixtureOptions};
-const calls=[],previews=new Map(),results=new Map(),captureTasks=new Map(),gates=new Map();
+const calls=[],previews=new Map(),results=new Map(),captureTasks=new Map(),gates=new Map(),workspaceConfigurations=new Map();
 let previewSequence=0,modelCalls=0,installCalls=0,settledPreviews=0,settledGenerations=0,generateAborts=0,switchSession;
 const sessions={a:{id:'a',cwd:'G:/fixture/a',retainedBy:{mainView:1}},b:{id:'b',cwd:'G:/fixture/b',retainedBy:{mainView:1}}};
 const ok=value=>({ok:true,value});
@@ -33,6 +33,8 @@ function modelTransport(work,signal){
 }
 async function rpc(channel,endpoint,payload,signal){
  calls.push({channel,endpoint,payload:structuredClone(payload)});
+ if(endpoint==='configuration-load'){if(settings.holdConfigurationLoad)await gate('configuration');return settings.failConfigurationLoad?fail('工作目录配置读取失败'):ok(structuredClone(workspaceConfigurations.get(sessions[payload.sessionId].cwd)||null));}
+ if(endpoint==='configuration-save'){if(settings.failConfigurationSave)return fail('工作目录配置保存失败');workspaceConfigurations.set(sessions[payload.sessionId].cwd,structuredClone(payload.configuration));return ok(payload.configuration);}
  if(endpoint==='runtime-info')return ok(info());
  if(endpoint==='generate-cancel')return ok({operationId:payload.operationId,cancelRequested:true,status:'pending'});
  if(endpoint==='preview-cancel'){const task=captureTasks.get(payload.operationId);if(!task||task.sessionId!==payload.sessionId)return fail('采集任务不存在');task.status='stopped';task.error={code:'code-report/capture-stopped',message:'fixture 采集已取消'};if(task.value)previews.delete(task.value.previewId);return ok({operationId:payload.operationId,status:'stopped'});}
@@ -98,7 +100,7 @@ async function rpc(channel,endpoint,payload,signal){
  }
  return fail('未知模拟端点 '+endpoint);
 }
-window.fixture={configure(value){Object.assign(settings,value);},releasePreview:()=>release('preview'),releaseGenerate:()=>release('generate'),releaseInstall:()=>release('install'),releaseRefs:()=>release('refs'),getStats:()=>({calls:structuredClone(calls),modelCalls,installCalls,settledPreviews,settledGenerations,generateAborts,captureTasks:[...captureTasks.entries()].map(([operationId,task])=>({operationId,sessionId:task.sessionId,status:task.status}))}),switchSession:id=>switchSession(id),settings};
+window.fixture={configure(value){Object.assign(settings,value);},releasePreview:()=>release('preview'),releaseGenerate:()=>release('generate'),releaseInstall:()=>release('install'),releaseRefs:()=>release('refs'),releaseConfiguration:()=>release('configuration'),getStats:()=>({calls:structuredClone(calls),modelCalls,installCalls,settledPreviews,settledGenerations,generateAborts,captureTasks:[...captureTasks.entries()].map(([operationId,task])=>({operationId,sessionId:task.sessionId,status:task.status}))}),switchSession:id=>switchSession(id),settings};
 // Explicit host-theme simulation. This is not a screenshot of the live DSH GUI.
 if(settings.theme){
  const dark=settings.theme==='dark',root=document.documentElement;

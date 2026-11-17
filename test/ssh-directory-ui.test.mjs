@@ -30,10 +30,15 @@ test('SSH directory defaults and discovery preserve each repository setting with
 test('SSH directory input is remote Git only, accessible, and forwards edits',()=>{
  const row={...fresh(),sshDirectory:'G:/SSH keys'};const h=harness(row);let all=h.render();
  const input=sshInput(all);assert.equal(input.props.value,row.sshDirectory);assert.equal(input.props.maxLength,2048);
- const hint=all.find(node=>node.props?.id===input.props['aria-describedby']);assert.equal(hint.type,'ul');assert.equal(hint.props.children.length,4);
+ const hint=all.find(node=>node.props?.id===input.props['aria-describedby']);assert.equal(hint.type,'ul');assert.equal(hint.props.children.length,4);assert.equal(hint.props.role,'tooltip');assert.equal(hint.props.hidden,true);
+ const trigger=()=>all.find(node=>node.props?.['aria-label']==='SSH 配置说明 1');
+ trigger().props.onFocus();all=h.render();assert.equal(all.find(node=>node.props?.role==='tooltip').props.hidden,false);
+ trigger().props.onKeyDown({key:'Escape'});all=h.render();assert.equal(all.find(node=>node.props?.role==='tooltip').props.hidden,true);
+ trigger().props.onClick();all=h.render();assert.equal(all.find(node=>node.props?.role==='tooltip').props.hidden,false);
+ trigger().props.onBlur();all=h.render();assert.equal(all.find(node=>node.props?.role==='tooltip').props.hidden,true);
  const text=node=>Array.isArray(node)?node.map(text).join(''):node?.props?text(node.props.children):String(node??'');
  assert.match(text(hint),/留空.*现有 Git SSH.*私钥文件.*默认 config.*known_hosts.*SSH 目录.*默认身份文件.*覆盖仓库 SSH.*仅对本次远端读取生效/);
- const settings=all.find(node=>node.props?.className==='cr-ssh-settings');assert.ok(nodes(settings).includes(input));assert.ok(nodes(settings).includes(hint));
+ const settings=all.find(node=>node.props?.className==='cr-ssh-settings');assert.ok(nodes(settings).includes(sshInput(all)));assert.ok(nodes(settings).some(node=>node.props?.id===hint.props.id));
  input.props.onChange({target:{value:'G:/Other SSH/fork_ssh_key'}});assert.deepEqual(h.changes,[[0,'sshDirectory','G:/Other SSH/fork_ssh_key']]);
  assert.equal(sshInput(h.render({...row,gitMode:'local'})),undefined);
  assert.equal(sshInput(h.render({...row,type:'svn'})),undefined);

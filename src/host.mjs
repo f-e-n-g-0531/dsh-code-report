@@ -2,6 +2,7 @@ import {randomUUID,createHash} from 'node:crypto';
 import {snapshotJsonBytes} from './snapshot-json.mjs';
 import {modelCapacity} from './model-capacity.mjs';
 import {runtimeInfo,checkUpdate} from './updates.mjs';
+import {loadWorkspaceConfiguration,saveWorkspaceConfiguration} from './workspace-configuration.mjs';
 import {collect,discover,listRefs} from './collect.mjs';
 import {createAnalysisPlan,analyzeReport,markdown} from './report.mjs';
 
@@ -280,6 +281,11 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
   };
   return async(endpoint,payload,signal)=>{
     if(endpoint==='runtime-info')return respond(()=>{const info=runtimeInfo();return {...info,backendInstanceId,capabilities:{...info.capabilities,asyncPreview:true}};});
+    if(endpoint==='configuration-load'||endpoint==='configuration-save')return respond(async()=>{
+      const cwd=await sessionCwd(ctx,payload?.sessionId,signal);
+      const options={signal,assertCurrent:()=>assertSession(payload,cwd,signal)};
+      return endpoint==='configuration-load'?loadWorkspaceConfiguration(cwd,options):saveWorkspaceConfiguration(cwd,payload?.configuration,options);
+    });
     if(endpoint==='preview-start')return respond(()=>startPreview(payload,signal));
     if(endpoint==='generate-cancel')return respond(()=>progress.cancelGenerate(payload,signal));
     if(endpoint==='preview-cancel')return respond(()=>progress.cancel(payload,signal,(previewId,sessionId)=>previews.release({previewId,sessionId},signal)));

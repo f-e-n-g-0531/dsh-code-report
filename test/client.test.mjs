@@ -20,7 +20,7 @@ function harness(saved,{rpc=async()=>({ok:true,value:{packageName:PACKAGE_NAME,r
  };
  const sandbox={module:{exports:{}},require:id=>{assert.equal(id,'react');return hooks;},localStorage:{getItem:()=>saved?JSON.stringify(saved):null},TextEncoder,crypto:webcrypto,AbortController,AbortSignal,Date,setTimeout,clearTimeout,setInterval,clearInterval};
  vm.runInNewContext(compiled.outputFiles[0].text,sandbox);
- sandbox.module.exports.apply({connection:{rpc:{call:rpc}},slots:{inject(_name,fn){fn();},register(options,component){registrations.push({options,component});if(options.name==='main')Page=component;}}});
+ sandbox.module.exports.apply({connection:{rpc:{call:(channel,endpoint,payload,signal)=>endpoint==='configuration-load'?Promise.resolve({ok:true,value:saved??null}):rpc(channel,endpoint,payload,signal)}},slots:{inject(_name,fn){fn();},register(options,component){registrations.push({options,component});if(options.name==='main')Page=component;}}});
  return {effects,registrations,render(){cursor=0;refCursor=0;effectCursor=0;const page=Page({useSessions:fn=>fn({byId:{s:{id:'s',cwd:'G:/one',retainedBy:{mainView:1}}}})});return page.type(page.props);}};
 }
 function nodes(tree){const all=[];function walk(node){if(!node||typeof node!=='object')return;if(Array.isArray(node)){node.forEach(walk);return;}all.push(node);walk(node.props?.children);}walk(tree);return all;}
@@ -28,9 +28,9 @@ test('business runtime gate rejects missing old foreign and incompatible hosts',
  const valid={packageName:PACKAGE_NAME,runningVersion:version,protocol:PROTOCOL_VERSION};assert.equal(runtimeGate(valid,version),'');
  for(const bad of [null,{...valid,runningVersion:'0.3.1'},{...valid,protocol:99},{...valid,packageName:'other'}])assert.ok(runtimeGate(bad,version));
 });
-test('panel restores SVN permission while model approval and active preview remain absent',()=>{
+test('panel restores SVN permission while model approval and active preview remain absent',async()=>{
  const saved={schema:1,allowSvnNetwork:true,title:'上次发布',context:'client/api.ts',provider:'p',model:'m',scan:{maxDepth:20},rows:[{...fresh(),path:'client',type:'svn',a:'r1',b:'r2',branchA:'trunk',branchB:'release'}]};
- const all=nodes(harness(saved).render());
+ const instance=harness(saved);instance.render();instance.effects.find(item=>item.deps?.length===1&&item.deps[0]==='s').fn();await new Promise(resolve=>setImmediate(resolve));const all=nodes(instance.render());
  assert.ok(all.some(node=>node.type==='input'&&node.props.value==='上次发布'));
  assert.equal(all.find(node=>node.type==='button'&&node.props.children==='扫描 / 重新发现').props.disabled,true);
  assert.equal(all.find(node=>node.type==='button'&&node.props.children==='开始执行 · 采集差异').props.disabled,true);
@@ -58,8 +58,9 @@ test('automatic discovery effect starts once across verification unlocks',async(
   throw new Error('unexpected '+endpoint);
  }});
  instance.render();
- const discovery=()=>instance.effects.find(item=>item.deps?.length===3&&item.deps[0]==='s');
+ const discovery=()=>instance.effects.find(item=>item.deps?.length===5&&item.deps[0]==='s');
  discovery().fn();assert.equal(calls,0);
+ instance.effects.find(item=>item.deps?.length===1&&item.deps[0]==='s').fn();
  instance.effects.find(item=>item.deps?.length===1&&item.deps[0]===0).fn();
  await new Promise(resolve=>setImmediate(resolve));instance.render();
  discovery().fn();await new Promise(resolve=>setImmediate(resolve));assert.equal(calls,1);
@@ -76,7 +77,7 @@ test('client submits explicit remote capture and refs options and retains offlin
   if(endpoint==='result')return {ok:true,value:{status:'stopped',error:{code:'code-report/capture-stopped',message:'fixture capture stopped'}}};
   throw new Error('unexpected '+endpoint);
  }});
- instance.render();instance.effects.find(item=>item.deps?.length===1&&item.deps[0]===0).fn();
+ instance.render();instance.effects.find(item=>item.deps?.length===1&&item.deps[0]==='s').fn();instance.effects.find(item=>item.deps?.length===1&&item.deps[0]===0).fn();
  await new Promise(resolve=>setImmediate(resolve));let all=nodes(instance.render());
  const cards=all.find(node=>node.props?.loadRefs);
  await cards.props.loadRefs('.',undefined,{gitMode:'remote',gitRemote:'upstream',sshDirectory:'G:/SSH keys/.ssh'});
@@ -107,7 +108,7 @@ test('workspace groups workflow stages without changing initial approval state',
 test('captured evidence and strict analysis kinds have distinct UI without falsely completed workflow',async()=>{
  const saved={schema:1,title:'capture',context:'',provider:'',model:'',rows:[{...fresh(),a:'main',b:'release'}]},calls=[];
  const instance=harness(saved,{rpc:async(_channel,endpoint)=>{calls.push(endpoint);if(endpoint==='runtime-info')return {ok:true,value:{packageName:PACKAGE_NAME,runningVersion:version,protocol:PROTOCOL_VERSION}};if(endpoint==='preview-start')return {ok:true,value:{status:'pending'}};if(endpoint==='result')return {ok:true,value:{status:'completed',result:{previewId:'p',expiresAt:Date.now()+60000,markdown:'# evidence'}}};throw new Error('unexpected '+endpoint);}});
- instance.render();instance.effects.find(item=>item.deps?.length===1&&item.deps[0]===0).fn();await new Promise(resolve=>setImmediate(resolve));await nodes(instance.render()).find(node=>node.type==='button'&&node.props.children==='开始执行 · 采集差异').props.onClick();
+ instance.render();instance.effects.find(item=>item.deps?.length===1&&item.deps[0]==='s').fn();instance.effects.find(item=>item.deps?.length===1&&item.deps[0]===0).fn();await new Promise(resolve=>setImmediate(resolve));await nodes(instance.render()).find(node=>node.type==='button'&&node.props.children==='开始执行 · 采集差异').props.onClick();
  const tree=instance.render(),all=nodes(tree),section=all.find(node=>node.props?.result?.kind==='local');assert.ok(section);assert.equal(calls.includes('generate'),false);
  const strings=tree=>nodes(tree).flatMap(node=>[node.props?.children]).flat(Infinity).filter(item=>typeof item==='string').join(' ');
  for(const [kind,heading,button] of [['local','采集证据（尚未生成发布报告）','下载证据清单 .md'],['analysis','Markdown 报告','下载 .md 文件'],[undefined,'未分类结果（尚不能确认是发布报告）','下载未分类结果 .md']]){const rendered=section.type({...section.props,result:{...section.props.result,kind}}),elements=nodes(rendered);assert.ok(elements.some(node=>node.type==='h2'&&node.props.children===heading));assert.ok(elements.some(node=>node.type==='button'&&node.props.children===button));if(kind!=='analysis')assert.match(strings(rendered),/不会自动调用模型/);if(kind==='local')assert.match(strings(rendered),/仅采集完成，未调用模型.*尚无改动解释、接口影响分析或测试建议/);}

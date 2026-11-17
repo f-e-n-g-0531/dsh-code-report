@@ -13,7 +13,7 @@ import {capturePreview} from './preview-client.mjs';
 import {parsePublicApiPaths} from './public-api.mjs';
 import {reportDownloadText} from './report-export.mjs';
 import {fresh,mergeRepositories,repositoryIssues} from './repositories.mjs';
-import {DEFAULT_SCAN,loadConfiguration,saveConfiguration} from './configuration.mjs';
+import {DEFAULT_SCAN,cleanConfiguration} from './configuration.mjs';
 import {createResultStore,staleResult,previewExpired,generationBlocker,parseVersionContexts,captureBlocker,completedViewResult,terminalAnalysisProgress} from './result-state.mjs';
 export const inject=['slots','connection','remote','remote.pluginManager'];
 
@@ -38,17 +38,15 @@ export function apply(ctx){
     .catch(error=>{if(!ac.signal.aborted)setRuntimeError('后台验证失败：'+error.message);});
    return()=>ac.abort();
   },[runtimeAttempt]);
-  const [initial]=useState(()=>{
-   try{return {config:loadConfiguration(globalThis.localStorage,session?.cwd)};}
-   catch(error){return {config:null,error:error.message};}
-  });
-  const saved=initial.config,scanSettings=DEFAULT_SCAN;
-  const [configNotice,setConfigNotice]=useState(initial.error?'配置未恢复：'+initial.error:saved?restoredNotice(saved.allowSvnNetwork):'');
-  const [rows,setRows]=useState(saved?.rows||[]),[title,setTitle]=useState(saved?.title||'版本发布报告');
-  const [context,setContext]=useState(saved?.context||''),[versionContext,setVersionContext]=useState(saved?.versionContext||'');
-  const [network,setNetwork]=useState(saved?.allowSvnNetwork===true);
-  const [provider,setProvider]=useState(saved?.provider||''),[model,setModel]=useState(saved?.model||''),[consent,setConsent]=useState(false);
-  const [useDefaultModel,setUseDefaultModel]=useState(saved?.useDefaultModel!==false);
+  const scanSettings=DEFAULT_SCAN;
+  const [configReady,setConfigReady]=useState(false),[configBusy,setConfigBusy]=useState(false);
+  const configRequest=useRef(false);
+  const [configNotice,setConfigNotice]=useState('');
+  const [rows,setRows]=useState([]),[title,setTitle]=useState('版本发布报告');
+  const [context,setContext]=useState(''),[versionContext,setVersionContext]=useState('');
+  const [network,setNetwork]=useState(false);
+  const [provider,setProvider]=useState(''),[model,setModel]=useState(''),[consent,setConsent]=useState(false);
+  const [useDefaultModel,setUseDefaultModel]=useState(true);
   const [preview,setPreview]=useState(null),[result,setResult]=useState(()=>results.get(session));
   const [latestAnalysis,setLatestAnalysis]=useState(()=>results.getAnalysis(session));
   const [lifecycleState,setLifecycleState]=useState(()=>lifecycle.getSnapshot());
@@ -72,7 +70,7 @@ export function apply(ctx){
   },[lifecycleState.lastCompleted,lifecycleState.lastFailure]);
   const [busy,setBusy]=useState(''),[error,setError]=useState(''),[progress,setProgress]=useState(null),[progressWarning,setProgressWarning]=useState('');
   const [scanState,setScanState]=useState('idle'),[scanError,setScanError]=useState(''),[scanWarnings,setScanWarnings]=useState([]),[visited,setVisited]=useState(null);
-  const [analysisStrategy,setAnalysisStrategy]=useState(saved?.analysisStrategy||'full'),[publicApiPaths,setPublicApiPaths]=useState(saved?.publicApiPaths||'');
+  const [analysisStrategy,setAnalysisStrategy]=useState('full'),[publicApiPaths,setPublicApiPaths]=useState('');
   const [inputBudget,setInputBudget]=useState(''),[planDirty,setPlanDirty]=useState(false),[now,setNow]=useState(Date.now);
   const initialScanStarted=useRef(false),controller=useRef(null),mounted=useRef(true);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;controller.current?.abort();};},[]);
@@ -109,22 +107,42 @@ export function apply(ctx){
    setResult(previous=>{const next=staleResult(previous);if(next)results.set(session,next);return next;});
   };
   const change=(index,key,value)=>{invalidate();setRows(previous=>previous.map((row,i)=>i===index?{...row,[key]:value}:row));};
-  const store=()=>{
-   try{saveConfiguration(globalThis.localStorage,session.cwd,{schema:1,rows,title,context,versionContext,publicApiPaths,analysisStrategy,allowBatches:true,provider,model,useDefaultModel,scan:scanSettings,allowSvnNetwork:network});setConfigNotice('已保存此工作区配置及 SVN 访问勾选状态；不保存密码、报告、源码内容或模型发送确认。');}
-   catch(error){setConfigNotice('保存失败：'+error.message);}
+  const store=async()=>{
+   if(configRequest.current||!configReady)return;configRequest.current=true;setConfigBusy(true);
+   try{await rpc('configuration-save',{sessionId:session.id,configuration:cleanConfiguration({schema:1,rows,title,context,versionContext,publicApiPaths,analysisStrategy,allowBatches:true,provider,model,useDefaultModel,scan:scanSettings,allowSvnNetwork:network})});if(mounted.current)setConfigNotice('已保存到当前工作目录 .dsh-code-report.json；不保存密码、报告、源码内容或模型发送确认。');}
+   catch(error){if(mounted.current)setConfigNotice('保存失败：'+error.message);}
+   finally{configRequest.current=false;if(mounted.current)setConfigBusy(false);}
   };
-  const restore=()=>{
+  const restore=async()=>{
+   if(configRequest.current||!configReady)return;configRequest.current=true;setConfigBusy(true);
    try{
-    const value=loadConfiguration(globalThis.localStorage,session.cwd);
+    const loaded=await rpc('configuration-load',{sessionId:session.id});
+    const value=loaded?cleanConfiguration(loaded):null;
+    if(!mounted.current)return;
     if(!value){setConfigNotice('此工作区尚无已保存配置。');return;}
     invalidate();setRows(value.rows);setTitle(value.title);setContext(value.context);setVersionContext(value.versionContext||'');setPublicApiPaths(value.publicApiPaths||'');setAnalysisStrategy(value.analysisStrategy||'full');
     setProvider(value.provider);setModel(value.model);setUseDefaultModel(value.useDefaultModel!==false);setNetwork(value.allowSvnNetwork===true);
     setScanState('idle');setScanWarnings([]);setScanError('');setConfigNotice(restoredNotice(value.allowSvnNetwork));
-   }catch(error){setConfigNotice('恢复失败：'+error.message);}
+   }catch(error){if(mounted.current)setConfigNotice('恢复失败：'+error.message);}
+   finally{configRequest.current=false;if(mounted.current)setConfigBusy(false);}
   };
+  useEffect(()=>{
+   if(!session?.id){setConfigReady(true);return;}
+   const ac=new AbortController();
+   rpc('configuration-load',{sessionId:session.id},ac.signal).then(value=>{
+    if(ac.signal.aborted||!value)return;
+    const config=cleanConfiguration(value);
+    setRows(config.rows);setTitle(config.title);setContext(config.context);setVersionContext(config.versionContext||'');setPublicApiPaths(config.publicApiPaths||'');setAnalysisStrategy(config.analysisStrategy||'full');
+    setProvider(config.provider);setModel(config.model);setUseDefaultModel(config.useDefaultModel!==false);setNetwork(config.allowSvnNetwork===true);setConsent(false);
+    setConfigNotice(restoredNotice(config.allowSvnNetwork));
+   }).catch(error=>{if(!ac.signal.aborted)setConfigNotice('工作目录配置未恢复：'+error.message);})
+    .finally(()=>{if(!ac.signal.aborted)setConfigReady(true);});
+   return()=>ac.abort();
+  },[session?.id]);
   const perform=async(label,fn)=>{
    const update=updateController.getSnapshot();
    if(controller.current)return;
+   if(!configReady||configBusy)return;
    if(compatibility||update.updating||update.barrier){setError(compatibility||'更新未完成或需要重载');return;}
    let lease;try{lease=lifecycle.acquireBusiness(label,session);}catch(error){setError(error.message);return;}
    const ac=new AbortController();controller.current=ac;setBusy(label);setError('');setProgressWarning('');setProgress({phase:'starting',label});
@@ -167,12 +185,12 @@ export function apply(ctx){
     }catch(error){if(mounted.current){setScanState(signal.aborted?'cancelled':'failed');if(!signal.aborted)setScanError(error.message);}throw error;}
    });
   };
-  useEffect(()=>{if(session?.id&&!compatibility&&!lifecycle.getSnapshot().lease&&!initialScanStarted.current){initialScanStarted.current=true;void scan();}},[session?.id,compatibility,lifecycleState.revision]);
+  useEffect(()=>{if(session?.id&&configReady&&!configBusy&&!compatibility&&!lifecycle.getSnapshot().lease&&!initialScanStarted.current){initialScanStarted.current=true;void scan();}},[session?.id,configReady,configBusy,compatibility,lifecycleState.revision]);
   let versionContexts=[],parsedPublicApiPaths=[],contextIssue='';
   try{
    versionContexts=parseVersionContexts(versionContext,rows);parsedPublicApiPaths=parsePublicApiPaths(publicApiPaths,rows.filter(row=>row.enabled));
   }catch(error){contextIssue=error.message;}
-  const issues=repositoryIssues(rows),captureReason=globalBusy?'当前插件实例有任务或更新尚未确认，请先完成或恢复。':captureBlocker(rows,network,busy,compatibility,issues,contextIssue);
+  const issues=repositoryIssues(rows),captureReason=!configReady||configBusy?'正在读写工作目录配置。':globalBusy?'当前插件实例有任务或更新尚未确认，请先完成或恢复。':captureBlocker(rows,network,busy,compatibility,issues,contextIssue);
   const capture=()=>{
    if(captureReason)return;
    return perform('采集版本差异',async signal=>{
@@ -181,7 +199,7 @@ export function apply(ctx){
     if(!signal.aborted&&mounted.current){setNow(Date.now());setPreview(value);setAnalysisStrategy(value.analysisPlan?.strategy||'full');setInputBudget('');keepResult({markdown:value.markdown,stale:false,kind:'local'});}
    });
   };
-  const generateReason=generationBlocker({preview,now,compatibility,busy:busy||(globalBusy?'其他任务执行中':''),consent,provider,model,useDefaultModel,pendingRecovery})||(planDirty?'分析策略或输入预算已变化，请先更新分析计划。':'');
+  const generateReason=!configReady||configBusy?'正在读写工作目录配置。':generationBlocker({preview,now,compatibility,busy:busy||(globalBusy?'其他任务执行中':''),consent,provider,model,useDefaultModel,pendingRecovery})||(planDirty?'分析策略或输入预算已变化，请先更新分析计划。':'');
   const generate=()=>{
    const approved=consent;setConsent(false);
    if(generateReason||lifecycle.getSnapshot().lease)return;
@@ -222,7 +240,7 @@ export function apply(ctx){
    try{return (await rpc('refs',{sessionId:session.id,repositoryPath,gitMode,gitRemote,sshDirectory},signal)).refs;}finally{lease.release();}
   };
   return <section className="cr-root"><style>{css}</style>
-   <header className="cr-hero"><div className="cr-hero-title"><span className="cr-hero-mark" aria-hidden="true">▤</span><div><small>RELEASE WORKSPACE <span>· v{version}</span></small><h1>发布报告配置</h1><p>从版本差异到发布决策，让每一次交付都有据可依。</p></div></div><div className="cr-actions cr-header-actions"><button type="button" className="cr-danger-ghost" disabled={!ownTask&&!busy||!!ownTask?.forceCancelling||updating} onClick={forceCancel} title="立即中断前端等待并请求后台取消；不保证撤回远端请求或免计费，未知状态仍须核对">{ownTask?.forceCancelling?'强制取消中…':ownTask?.forceRequested?'重试强制取消':'强制取消'}</button><button disabled={!session||!!busy||updating} onClick={store}>保存配置</button><button disabled={!session||!!busy||updating||!!pendingRecovery} onClick={restore}>恢复已保存</button></div></header>
+   <header className="cr-hero"><div className="cr-hero-title"><span className="cr-hero-mark" aria-hidden="true">▤</span><div><small>RELEASE WORKSPACE <span>· v{version}</span></small><h1>发布报告配置</h1><p>从版本差异到发布决策，让每一次交付都有据可依。</p></div></div><div className="cr-actions cr-header-actions"><button type="button" className="cr-danger-ghost" disabled={!ownTask&&!busy||!!ownTask?.forceCancelling||updating} onClick={forceCancel} title="立即中断前端等待并请求后台取消；不保证撤回远端请求或免计费，未知状态仍须核对">{ownTask?.forceCancelling?'强制取消中…':ownTask?.forceRequested?'重试强制取消':'强制取消'}</button><button disabled={!session||!configReady||configBusy||!!busy||updating} onClick={store}>保存配置</button><button disabled={!session||!configReady||configBusy||!!busy||updating||!!pendingRecovery} onClick={restore}>恢复已保存</button></div></header>
    <nav className="cr-stage-nav" aria-label="报告工作流程"><div className="cr-stage" data-state={workflow[0]} aria-current={workflow[0]==='active'?'step':undefined}><span className="cr-stage-number">01</span><div><strong>配置发布范围</strong><span>项目与版本端点</span></div></div><div className="cr-stage" data-state={workflow[1]} aria-current={workflow[1]==='active'?'step':undefined}><span className="cr-stage-number">02</span><div><strong>核对差异证据</strong><span>固定快照 · 确认发送</span></div></div><div className="cr-stage" data-state={workflow[2]} aria-current={workflow[2]==='active'?'step':undefined}><span className="cr-stage-number">03</span><div><strong>生成与导出</strong><span>{ownTask?(ownTask.status==='running'?'模型分析进行中':'任务状态待核对'):hasCurrentReport&&!preview?'报告已生成，可下载':'影响分析与 QA 建议'}</span></div></div></nav>
    <details className="cr-update-details"><summary>插件版本与更新 · {version}</summary><UpdatePanel rpc={rpc} manager={ctx.remote?.pluginManager} reportBusy={!!busy||!!lifecycleState.paid||lifecycleState.lease?.kind==='business'} controller={updateController} updateState={updateState}/></details>
    {configNotice&&<p className="cr-hint" role="status">{configNotice}</p>}
@@ -230,17 +248,17 @@ export function apply(ctx){
    <fieldset className="cr-report-form">
     {!session?<p role="status">请先打开一个带工作目录的会话。</p>:<>
      <div className="cr-workspace-bar"><div className="cr-workspace"><span className="cr-workspace-label">当前工作区</span><code>{session.cwd}</code></div><span className="cr-readonly-badge">仅读取，不修改版本库</span></div>
-     <div className="cr-scan-settings"><button disabled={!!busy||!!compatibility||globalBusy} onClick={scan}>扫描 / 重新发现</button>{busy==='扫描项目'&&<button onClick={()=>controller.current?.abort()}>取消扫描</button>}<span className="cr-hint">只检查工作区根目录及一级子文件夹，不递归。{visited!==null?'上次检查 '+visited+' 个目录。':''}嵌套项目可手动添加；已保存的项目不会自动删除。</span></div>
-     <fieldset className="cr-panel cr-scope" disabled={!!busy||globalBusy}><legend>1. 发布范围</legend><label className="cr-wide">报告标题<input value={title} onChange={event=>{invalidate();setTitle(event.target.value);}} maxLength={160}/></label>
+     <div className="cr-scan-settings"><button disabled={!configReady||configBusy||!!busy||!!compatibility||globalBusy} onClick={scan}>扫描 / 重新发现</button>{busy==='扫描项目'&&<button onClick={()=>controller.current?.abort()}>取消扫描</button>}<span className="cr-hint">只检查工作区根目录及一级子文件夹，不递归。{visited!==null?'上次检查 '+visited+' 个目录。':''}嵌套项目可手动添加；已保存的项目不会自动删除。</span></div>
+     <fieldset className="cr-panel cr-scope" disabled={!configReady||configBusy||!!busy||globalBusy}><legend>1. 发布范围</legend><label className="cr-wide">报告标题<input value={title} onChange={event=>{invalidate();setTitle(event.target.value);}} maxLength={160}/></label>
       <div className="cr-section-intro"><div className="cr-section-heading"><h2>工作区项目</h2><p>{scanStateLabel(scanState)}当前列表 {rows.length} 个项目 · 已纳入 {rows.filter(row=>row.enabled).length} / 12。勾选需要生成报告的项目。</p></div><div className="cr-actions"><button onClick={()=>{invalidate();setRows(rows.map(row=>({...row,enabled:false})));}}>全部取消</button><button onClick={()=>{invalidate();setRows(rows.map((row,index)=>({...row,enabled:index<12})));}}>纳入前 12 项</button></div></div>
       {scanError&&<p className="cr-error" role="alert">{scanError}</p>}{scanWarnings.length>0&&<ul className="cr-scan-warnings">{scanWarnings.map((warning,index)=><li key={index}>{warning}</li>)}</ul>}
-      <RepositoryCards replace={next=>{invalidate();setRows(next);}} scanState={scanState} rows={rows} change={change} remove={index=>{invalidate();setRows(rows.filter((_,i)=>i!==index));}} loadRefs={loadRefs} refsDisabled={!!compatibility||globalBusy}/>
+      <RepositoryCards replace={next=>{invalidate();setRows(next);}} scanState={scanState} rows={rows} change={change} remove={index=>{invalidate();setRows(rows.filter((_,i)=>i!==index));}} loadRefs={loadRefs} refsDisabled={!configReady||configBusy||!!compatibility||globalBusy}/>
       <button disabled={rows.length>=500} onClick={()=>{invalidate();setRows([...rows,fresh()]);}}>＋ 添加项目</button>
       <details className="cr-guide"><summary>版本填写与远端读取说明</summary><p className="cr-hint">自动扫描当前工作区，保留已经填写的版本。路径相对于工作区，根目录填「.」。版本留空默认取对应 A/B 分支最新提交；两侧分支相同且版本均留空时无差异。Git 默认远端实时读取，可填 main / develop / origin/develop 等；会联网并可能要求身份验证，在隔离临时目录完整抓取，不创建业务本地分支、不修改业务 refs 或工作区。显式选择“本地离线”才仅用本地对象、不自动 fetch；远端失败不回退本地。SVN 仍需历史读取授权。</p></details>
       <label className="cr-check"><input type="checkbox" checked={network} onChange={event=>{invalidate();setNetwork(event.target.checked);}}/> 允许通过 SVN 工作副本地址读取历史版本（可能访问网络；此勾选随工作区配置保存，不保存密码）</label>
       <p className="cr-hint">本地采集不设固定证据总量上限；默认将已采集差异全文分片分析，不以头文件前缀代替实现改动。可在预览中显式选择快速摘要；全量分片可能多次计费，确认前请核对片数与范围。两种策略均不会自动重试。</p>
      </fieldset>
-     <details className="cr-optional"><summary>2. 附带项目源码（可选）{context.trim()||versionContext.trim()?' · 已填写':''}</summary><fieldset disabled={!!busy||globalBusy}><legend>源码路径</legend><p>每行填写一个工作区内的文件或文件夹路径，根目录可填「.」。文件夹递归展开；不会自动附带未填写的目录或扫描调用链。</p>
+     <details className="cr-optional"><summary>2. 附带项目源码（可选）{context.trim()||versionContext.trim()?' · 已填写':''}</summary><fieldset disabled={!configReady||configBusy||!!busy||globalBusy}><legend>源码路径</legend><p>每行填写一个工作区内的文件或文件夹路径，根目录可填「.」。文件夹递归展开；不会自动附带未填写的目录或扫描调用链。</p>
       <textarea aria-label="源码上下文路径" rows={4} placeholder={'app/src/api.ts\napp/src/components'} value={context} onChange={event=>{invalidate();setContext(event.target.value);}}/>
       <label>公共 SDK 候选边界（每行：仓库路径|公开头文件或目录，目录以 / 结尾）<textarea aria-label="公共SDK边界" rows={3} placeholder="app|sdk_inc/" value={publicApiPaths} onChange={event=>{invalidate();setPublicApiPaths(event.target.value);}}/></label><p className="cr-hint">这是本次操作者声明的候选范围，不是历史已发布证明；请附带正式发布清单或接入契约。DLL 导出宏、public 方法和内部跨模块协议不能单独证明对外性，无法确认的条目归待确认。</p>
       <label>固定版本源码（仅文件；每行：仓库路径|A或B|仓库相对路径）<textarea aria-label="固定版本源码路径" rows={3} placeholder="app|A|src/api.ts" value={versionContext} onChange={event=>{invalidate();setVersionContext(event.target.value);}}/></label>
@@ -249,7 +267,7 @@ export function apply(ctx){
      <div className="cr-actions cr-execute"><button className="cr-primary" disabled={!!captureReason} aria-describedby={captureReason?'cr-capture-reason':undefined} onClick={capture}>开始执行 · 采集差异</button>{captureReason&&<span id="cr-capture-reason" role="status" aria-live="polite">{captureReason}</span>}{busy&&<><span role="status">{busy}…</span><button onClick={()=>controller.current?.abort()}>取消</button></>}</div>
      {lifecycleState.paid&&!ownTask&&<p className="cr-stale" role="status">其他会话有模型任务执行中或结果未知；本插件实例暂停新业务和安装。请回原会话恢复。此互斥不覆盖其他标签页或客户端。</p>}
      {pendingRecovery&&<section className="cr-stale" aria-label="报告恢复"><p role="status">{pendingRecovery.message} 恢复只读取已有报告，不调用模型、不再次计费。任务归属保留在当前插件实例，切换会话仅分离视图，不取消模型。恢复标识按会话及工作区暂存；刷新、重载或更换客户端不保证恢复，请先下载。</p><button disabled={recovering} onClick={recover}>恢复已完成报告</button><button onClick={()=>lifecycle.cancel(session)}>取消模型任务</button><label className="cr-check"><input type="checkbox" checked={abandonConfirmed} disabled={!!busy} onChange={event=>setAbandonConfirmed(event.target.checked)}/>我确认标记放弃恢复；未知任务屏障仍保留，不解锁新业务或安装</label><button disabled={!!busy||!abandonConfirmed||pendingRecovery.status==='running'} onClick={abandonRecovery}>放弃恢复</button></section>}
-     {preview&&<PreviewSection preview={preview} busy={busy||(globalBusy?'等待任务核对':'')} expired={expired} useDefaultModel={useDefaultModel} setUseDefaultModel={value=>{setUseDefaultModel(value);setPlanDirty(true);}} provider={provider} model={model} consent={consent} setProvider={value=>{setProvider(value);setPlanDirty(true);}} setModel={value=>{setModel(value);setPlanDirty(true);}} setConsent={setConsent} generateReason={generateReason} onGenerate={generate} onCapture={capture} analysisStrategy={analysisStrategy} onStrategy={value=>{setAnalysisStrategy(value);setConsent(false);setPlanDirty(true);}} inputBudget={inputBudget} budgetValid={budgetValid} planDirty={planDirty} onBudget={value=>{setInputBudget(value);setConsent(false);setPlanDirty(true);}} onReplan={replan} compatibility={compatibility} now={now}/>}
+     {preview&&<PreviewSection preview={preview} busy={busy||(!configReady||configBusy?'正在读写配置':globalBusy?'等待任务核对':'')} expired={expired} useDefaultModel={useDefaultModel} setUseDefaultModel={value=>{setUseDefaultModel(value);setPlanDirty(true);}} provider={provider} model={model} consent={consent} setProvider={value=>{setProvider(value);setPlanDirty(true);}} setModel={value=>{setModel(value);setPlanDirty(true);}} setConsent={setConsent} generateReason={generateReason} onGenerate={generate} onCapture={capture} analysisStrategy={analysisStrategy} onStrategy={value=>{setAnalysisStrategy(value);setConsent(false);setPlanDirty(true);}} inputBudget={inputBudget} budgetValid={budgetValid} planDirty={planDirty} onBudget={value=>{setInputBudget(value);setConsent(false);setPlanDirty(true);}} onReplan={replan} compatibility={compatibility} now={now}/>}
      {progress&&<ProgressSection progress={progress}/>}{progressWarning&&<p className="cr-error" role="status">{progressWarning}</p>}
      {error&&error!==scanError&&<p className="cr-error" role="alert">{error}</p>}
      {latestAnalysis&&result?.kind!=='analysis'&&<p className="cr-stale">上一份成功模型报告仍保留，与当前草稿可能不同。<button onClick={()=>keepResult({...latestAnalysis,stale:true})}>查看上一份模型报告</button><button onClick={()=>downloadMarkdown(latestAnalysis.markdown,latestAnalysis.kind)}>下载上一份模型报告</button></p>}
@@ -262,7 +280,7 @@ export function apply(ctx){
  ctx.slots.inject('main',()=>ctx.slots.register({name:'main',key:'local-code-report'},Page));
  ctx.slots.inject('sidebar.panellist',()=>ctx.slots.register({name:'sidebar.panellist',id:'local-code-report',label:()=> '发布报告',order:66},Icon));
 }
-function restoredNotice(allowSvnNetwork){return allowSvnNetwork?'已恢复此工作区配置及 SVN 历史访问许可；模型发送仍需确认。':'已恢复此工作区配置；SVN 访问未授权，模型发送仍需确认。';}
+function restoredNotice(allowSvnNetwork){return allowSvnNetwork?'已从工作目录 .dsh-code-report.json 恢复配置及 SVN 历史访问许可；模型发送仍需确认。':'已从工作目录 .dsh-code-report.json 恢复配置；SVN 访问未授权，模型发送仍需确认。';}
 function scanStateLabel(state){return state==='completed'?'扫描完成 · ':state==='scanning'?'扫描中 · ':state==='failed'?'扫描失败 · ':state==='cancelled'?'扫描已取消 · ':'尚未扫描 · ';}
 function sideLabel(row,side){return row.type==='svn'?row['branch'+side]+' @ r'+row[side.toLowerCase()]:row[side.toLowerCase()];}
 function downloadMarkdown(markdown,kind){const url=URL.createObjectURL(new Blob([reportDownloadText(markdown,kind)],{type:'text/markdown;charset=utf-8'}));const anchor=document.createElement('a');anchor.href=url;anchor.download=(kind==='analysis'?'release-report-':kind==='local'?'captured-evidence-':'unclassified-result-')+new Date().toISOString().slice(0,10)+'.md';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}

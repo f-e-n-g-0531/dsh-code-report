@@ -1,6 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {remoteFailureDiagnostic} from '../src/git-remote.mjs';
+import {run} from '../src/process.mjs';
+
+test('classification uses bounded stderr after the public error message prefix without leaking it', async () => {
+  const stderr='server banner '.repeat(150)+'\nPermission denied (publickey). secret-host private-key';
+  await assert.rejects(run(process.execPath,['-e','process.stderr.write('+JSON.stringify(stderr)+',()=>process.exit(1))']),error=>{
+    assert.ok(!error.message.includes('publickey'));
+    assert.equal(remoteFailureDiagnostic(error).kind,'ssh-publickey');
+    assert.ok(!JSON.stringify(error).includes('secret-host'));
+    assert.ok(!remoteFailureDiagnostic(error).hint.includes('private-key'));
+    return true;
+  });
+});
 
 test('remote failures expose only fixed actionable diagnostic categories, never raw credentials', () => {
   const secret='https://private-user:private-token@secret-host/private-repo';
