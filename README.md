@@ -24,7 +24,7 @@
 
 [安装与准备](<#安装与准备>) · [快速上手](<#快速上手>) · [完整使用说明](<#完整使用说明>) · [故障排查](<#故障排查>) · [开发、发布与许可](<#开发发布与许可>)
 
-> 安装示例使用 v1.2.6；下文 full 默认策略、公共 SDK 边界与 schema 3 说明对应此版本；文档与安装示例不证明发布已完成，也不代表已在当前 GUI 生效。版本变化见[发布说明](<https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/RELEASE-NOTES.md>)；发布不自动安装或重启当前 DSH。
+> 安装示例使用 v1.2.7；下文 full 默认策略、公共 SDK 边界与 schema 3 说明对应此版本；文档与安装示例不证明发布已完成，也不代表已在当前 GUI 生效。版本变化见[发布说明](<https://github.com/f-e-n-g-0531/dsh-code-report/blob/main/RELEASE-NOTES.md>)；发布不自动安装或重启当前 DSH。
 
 ## 安装与准备
 
@@ -35,13 +35,13 @@
 优先使用 DSH 自带的“插件”页面安装 npm 包，填写以下包名与版本：
 
 ~~~text
-@feng0531/dsh-code-report@1.2.6
+@feng0531/dsh-code-report@1.2.7
 ~~~
 
 也可使用已配置好的 DSH 命令行。确认当前 profile 名称后再执行；profile 是插件安装环境，不是会话名或工作区路径。例如，只有确认使用 desktop 环境时才运行：
 
 ~~~sh
-dsh plugin --profile desktop add @feng0531/dsh-code-report@1.2.6
+dsh plugin --profile desktop add @feng0531/dsh-code-report@1.2.7
 ~~~
 
 安装会修改对应环境，先备份配置。命令行安装还需满足 DSH 自身的包管理器要求。安装后保存工作，手动完全退出并重新启动 DSH，再刷新原页面。**只刷新页面不会重载旧后台。** 发布新版本不会自动升级或重启你的环境。

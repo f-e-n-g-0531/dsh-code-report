@@ -18,7 +18,7 @@ test('linear packing matches reference JSON packing and preserves payload and pl
   for (const inputBudget of [14000, 24000, 64000]) {
     const payloadFor = evidence => ({schema: ANALYSIS_PLAN_VERSION, evidenceVersion: 2, title: source.title, limitations: source.limitations, publicApiPaths: source.publicApiPaths ?? [], evidence});
     const overhead = estimatedInputBytes(payloadFor([]));
-    const index = createEvidenceIndex(source, {maxTextBytes: Math.max(64, Math.floor((inputBudget - overhead - 512) / 8))});
+    const index = createEvidenceIndex(source, {groupAdjacentDiff: true, maxTextBytes: Math.max(64, Math.floor((inputBudget - overhead - 512) / 8))});
     const groups = []; let group = [];
     for (const item of index.items) {
       if (group.length && (estimatedInputBytes(payloadFor([...group, item])) > inputBudget)) { groups.push(group); group = []; }
@@ -232,8 +232,11 @@ test('fixed evaluation fixtures validate schema, but semantics remain human revi
   for (const fixture of suite.cases) {
     const plan = createAnalysisPlan(fixture.snapshot);
     const ids = plan.batches[0].evidenceIds;
-    const selected = fixture.evidenceSelector ? plan.batches[0].snapshot.evidence.find(item => item.kind === fixture.evidenceSelector.kind && fixture.evidenceSelector.contains.every(text => item.text.includes(text))) : null;
-    if (fixture.evidenceSelector) assert.ok(selected, fixture.name + ': expected text must occur in actual selected hunk');
+    const selector = fixture.evidenceSelector;
+    const fine = selector && createEvidenceIndex(fixture.snapshot).items.find(item => item.kind === selector.kind && selector.contains.every(text => item.text.includes(text)));
+    if (selector) assert.ok(fine, fixture.name + ': expected text must occur in one original hunk');
+    const selected = fine && plan.batches[0].snapshot.evidence.find(item => item.source === fine.source && item.file === fine.file && item.start <= fine.start && item.end >= fine.end && item.text.slice(fine.start - item.start, fine.end - item.start) === fine.text);
+    if (selector) assert.ok(selected, fixture.name + ': the actual request must contain that complete hunk');
     const substitute = value => JSON.parse(JSON.stringify(value).replaceAll('EVIDENCE_0', ids[0]).replaceAll('EVIDENCE_HUNK', selected?.id ?? 'missing-hunk'));
     const output = substitute(fixture.output);
     if (fixture.schemaValid) validateAnalysis(output, ids, {requireDispositions: false, evidence: plan.batches[0].snapshot.evidence});

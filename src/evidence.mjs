@@ -175,10 +175,31 @@ function* sections(block) {
   }
 }
 
+// Merge only adjacent sections of a single attributed diff block. The raw hunk
+// headers remain in the text; the combined interval still names the same file.
+function* analysisSections(block, maxTextBytes) {
+  let pending, end, size = 0, count = 0;
+  const flush = () => count === 1 ? pending : {...pending, kind: block.property ? 'property' : 'file', hunk: null,
+    text: block.text.slice(pending.start - block.start, end - block.start)};
+  // Unknown attribution must not be widened; preserve the per-section index.
+  if (block.file === null) { yield* sections(block); return; }
+  for (const section of sections(block)) {
+    const length = bytes(section.text);
+    if (pending && size + length > maxTextBytes) {
+      yield flush(); pending = undefined; size = 0; count = 0;
+    }
+    pending ??= section;
+    end = section.start + section.text.length;
+    size += length;
+    count++;
+  }
+  if (pending) yield flush();
+}
+
 export function snapshotHash(snapshot) { const hash = createHash('sha256'); for (const chunk of snapshotJsonChunks(snapshot)) hash.update(chunk); return hash.digest('hex'); }
 
 /** Raw sources and synthetic summaries have independent coordinates; every byte is counted. */
-export function createEvidenceIndex(snapshot, {maxTextBytes = 12000} = {}) {
+export function createEvidenceIndex(snapshot, {maxTextBytes = 12000, groupAdjacentDiff = false} = {}) {
   if (!snapshot || !Array.isArray(snapshot.repositories) || !Array.isArray(snapshot.context)) throw new Error('无效证据快照');
   if (!Number.isInteger(maxTextBytes) || maxTextBytes < 64) throw new Error('证据分片预算无效');
   const fingerprint = snapshotHash(snapshot), items = [], excluded = [], manifest = [];
@@ -201,7 +222,7 @@ export function createEvidenceIndex(snapshot, {maxTextBytes = 12000} = {}) {
     for (const file of files) manifest.push({...file, repositoryIndex: index});
     for (const path of repository.excludedPaths ?? []) excluded.push({repository: repository.path, path, reason: 'internal-path'});
     const metadata = {repository: repository.path, repositoryType: repository.type, identity: repository.identity ?? null, a: repository.a, b: repository.b};
-    for (const block of blocks) for (const section of sections(block)) append({...metadata, source: 'repository:' + index, provenance: 'version-diff', kind: section.kind, file: section.file, hunk: section.hunk}, section.text, section.start);
+    for (const block of blocks) for (const section of (groupAdjacentDiff ? analysisSections(block, maxTextBytes) : sections(block))) append({...metadata, source: 'repository:' + index, provenance: 'version-diff', kind: section.kind, file: section.file, hunk: section.hunk}, section.text, section.start);
     for (const file of files.filter(file => !assignedPaths.has(file.path))) {
       synthetic({...metadata, source: 'scope:' + index + ':' + evidenceHash(file.path).slice(0, 16), provenance: 'version-summary', kind: 'scope', file: file.path, hunk: null}, {path: file.path, kind: file.kind, item: file.item, props: file.props, status: file.status, note: '固定版本比较列出此路径，但未提供可归属的文本差异；不可据此推断内容或接口无变化。'});
     }

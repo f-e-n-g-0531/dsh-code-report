@@ -141,6 +141,31 @@ test('more than 8192 hunks and trusted source ranges retain every unit and byte'
   assert.ok(ranged.items.every(item => item.file === 'api.js'));
 });
 
+test('full planning combines small hunks without dropping text or weakening budgets', () => {
+  const header = name => 'diff --git a/' + name + ' b/' + name + '\r\n--- a/' + name + '\r\n+++ b/' + name + '\r\n';
+  const block = name => header(name) + Array.from({length: 400}, (_, i) => '@@ -' + (i + 1) + ' +'+ (i + 1) + ' @@\r\n-旧😀\r\n+新😀\r\n').join('');
+  const source = snapshot(block('api.js') + block('other.js'));
+  const capacity = {outputTokens: 8192}, inputBudget = 64000;
+  const plan = createAnalysisPlan(source, {capacity, inputBudget});
+  const fine = createEvidenceIndex(source, {maxTextBytes: Math.max(64, Math.floor((inputBudget - estimatedInputBytes({...plan.batches[0].snapshot, evidence: []}) - 512) / 8))});
+  // In this fixture the old 21-unit output guard binds before the input limit.
+  for (let offset = 0; offset < fine.items.length; offset += 21) {
+    assert.ok(estimatedInputBytes({...plan.batches[0].snapshot, evidence: fine.items.slice(offset, offset + 21)}) <= inputBudget);
+  }
+  assert.equal(Math.ceil(fine.items.length / 21), 39);
+  assert.equal(plan.batches.length, 1);
+  const items = plan.batches.flatMap(batch => batch.snapshot.evidence);
+  assert.equal(items.map(item => item.text).join(''), source.repositories[0].diff);
+  assert.equal(new Set(items.map(item => item.id)).size, items.length);
+  for (const item of items) {
+    assert.equal(item.text, source.repositories[0].diff.slice(item.start, item.end));
+    const boundary = source.repositories[0].diff.indexOf(header('other.js'));
+    assert.ok(item.file === 'api.js' ? item.end <= boundary : item.file === 'other.js' && item.start >= boundary);
+  }
+  assert.ok(plan.batches.every(batch => batch.inputBytes <= inputBudget && batch.inputBytes === estimatedInputBytes(batch.snapshot) && batch.evidenceIds.length <= 21));
+  assert.deepEqual(plan.coverage.files.map(file => file.path), ['api.js', 'other.js']);
+});
+
 test('SVN property values cannot forge headers or paths; shared attribution retains raw bytes', () => {
   const text = 'Index: parent/file.txt\n===\n--- parent/file.txt\t(revision 1)\n+++ parent/file.txt\t(revision 2)\n@@ -1 +1 @@\n-old\n+new\n\nProperty changes on: parent/file.txt\n___\nModified: custom\n## -1,2 +1,2 ##\n--- /dev/null\n+++ /dev/null\n--- forged\n+++ other\nBinary files forged\nindex abc..def 160000\n';
   const source = snapshot(text), repo = source.repositories[0];

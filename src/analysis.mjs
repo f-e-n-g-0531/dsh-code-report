@@ -37,7 +37,7 @@ export function createAnalysisPlan(snapshot, {inputBudget = 24000, strategy = 'f
   // Double JSON escaping can expand control characters; reserve room for item metadata too.
   const index = strategy === 'single-request'
     ? buildSingleRequestEvidence(snapshot, {inputBudget, estimate: items => capacity&&items.length*192>Math.max(0,capacity.outputTokens-Math.min(8192,Math.floor(capacity.outputTokens/2)))?Number.MAX_SAFE_INTEGER:estimatedInputBytes(payloadFor(snapshot, items),capacity?.outputTokens??8192)})
-    : createEvidenceIndex(snapshot, {maxTextBytes: Math.max(64, Math.floor((inputBudget - overhead - 512) / 8))});
+    : createEvidenceIndex(snapshot, {groupAdjacentDiff: true, maxTextBytes: Math.max(64, Math.floor((inputBudget - overhead - 512) / 8))});
   // Capacity-derived output guard: reserve room for conclusions/reasoning and
   // approximately 192 serialized bytes per evidence disposition. This is a
   // planning heuristic, not a guarantee that model output will fit.
