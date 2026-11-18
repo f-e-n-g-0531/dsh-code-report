@@ -21,7 +21,7 @@ export async function capturePreview({rpc,payload,signal,onProgress=()=>{},onWar
    if(response.status==='completed'&&response.result){onWarning('');return response.result;}
    if(response.status==='stopped')throw Object.assign(new Error(response.error?.message||'采集任务已停止'),{code:response.error?.code||'code-report/capture-stopped'});
    if(response.status!=='pending')throw Object.assign(new Error('采集结果不可用；没有自动重新采集或发送模型请求，请核对后台任务状态。'),{code:'code-report/preview-unavailable'});
-   try{const progress=await query('progress',identity);onProgress(progress);onWarning('');}
+   try{const progress=response.progress?.phase?response.progress:await query('progress',identity);onProgress(progress);onWarning('');}
    catch(error){if(signal?.aborted)throw error;if(!transportFailure(error))throw error;warn(error);}
    await pause(pollMs,signal);
   }

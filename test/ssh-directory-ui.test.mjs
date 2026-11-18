@@ -8,7 +8,7 @@ const compiled=await build({entryPoints:['src/RepositoryCards.jsx'],bundle:true,
 function nodes(tree){const all=[];function walk(node){if(!node||typeof node!=='object')return;if(Array.isArray(node)){node.forEach(walk);return;}all.push(node);walk(node.props?.children);}walk(tree);return all;}
 function harness(row,loadRefs){
  let states=[],refs=[],effects=[],cursor=0,refCursor=0,effectCursor=0;
- const hooks={...React,useState(initial){const i=cursor++;if(!(i in states))states[i]=initial;return [states[i],value=>{states[i]=typeof value==='function'?value(states[i]):value;}];},useRef(initial){const i=refCursor++;return refs[i]??=( {current:initial});},useEffect(fn,deps){const i=effectCursor++,previous=effects[i];if(!previous||deps.some((v,n)=>!Object.is(v,previous.deps[n])))effects[i]={fn,deps,pending:true};}};
+ const hooks={...React,memo:fn=>fn,useMemo:fn=>fn(),useCallback:fn=>fn,useState(initial){const i=cursor++;if(!(i in states))states[i]=initial;return [states[i],value=>{states[i]=typeof value==='function'?value(states[i]):value;}];},useRef(initial){const i=refCursor++;return refs[i]??=( {current:initial});},useEffect(fn,deps){const i=effectCursor++,previous=effects[i];if(!previous||deps.some((v,n)=>!Object.is(v,previous.deps[n])))effects[i]={fn,deps,pending:true};}};
  const sandbox={module:{exports:{}},require:()=>hooks,AbortController};vm.runInNewContext(compiled.outputFiles[0].text,sandbox);
  const cards=sandbox.module.exports.default({rows:[row]});
  const element=nodes(cards).find(node=>typeof node.type==='function');

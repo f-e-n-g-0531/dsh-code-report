@@ -171,18 +171,20 @@ function svnChange(entry, urlA, urlB) {
  // A may be an ancestor of B; always remove the longest matching endpoint.
  const base = [urlA, urlB].sort((a,b) => b.length-a.length).find(url => name === url || name.startsWith(url + '/'));
  if (!base) throw new Error('SVN 变更路径不属于比较端点');
- const relative = decodeURIComponent(name.slice(base.length).replace(/^\//, ''));
- if (relative.split('/').some(part => part === '..' || part === '.') || relative.includes('\\')) throw new Error('无效 SVN 变更路径');
+ const suffix = name.slice(base.length);
+ const segments = suffix ? suffix.slice(1).split('/').map(decodeURIComponent) : [];
+ if (segments.some(part => !part || part === '..' || part === '.' || /[/\\\x00-\x1f\x7f]/.test(part))) throw new Error('无效 SVN 变更路径');
+ const relative = segments.join('/');
  const kind = entry['@_kind'], item = entry['@_item'], props = entry['@_props'];
  if (!['file','dir'].includes(kind) || !['added','deleted','modified','none'].includes(item) || !['modified','none'].includes(props)) throw new Error('无法安全判断 SVN 变更元数据');
  return {relative, kind, item, props};
 }
-async function svnEntryDiff(exec,repo,entry,urlA,urlB){
+async function svnEntryDiff(exec,repo,entry,urlA,urlB,signal){
  if(!['file','dir'].includes(entry.kind))throw new Error('无法安全判断 SVN 变更类型');
  const suffix=entry.relative?'/'+entry.relative.split('/').map(encodeURIComponent).join('/'):'';
- return exec('svn',['diff','--internal-diff','--depth','empty','--old='+urlA+suffix+'@'+repo.a,'--new='+urlB+suffix+'@'+repo.b,...SVN_ACCESS_ARGS],{raw:true});
+ return exec('svn',['diff','--internal-diff','--depth','empty','--old='+urlA+suffix+'@'+repo.a,'--new='+urlB+suffix+'@'+repo.b,...SVN_ACCESS_ARGS],{raw:true,signal,killTree:true});
 }
-async function svnEvidence(exec,repo,root,row,request,a,b,checkpoint,onEntry){
+async function svnEvidence(exec,repo,root,row,request,a,b,budget,checkpoint,onEntry){
  if(request.allowSvnNetwork!==true)throw new Error('SVN 历史读取需要勾选仓库访问授权');
  const branchA=svnBranch(row.branchA),branchB=svnBranch(row.branchB);
  const info=xml(await exec('svn',['info','--xml','--non-interactive','--',root+'@'])).info.entry;
@@ -192,7 +194,9 @@ async function svnEvidence(exec,repo,root,row,request,a,b,checkpoint,onEntry){
  repo.a=await svnResolveEndpoint(exec,info,urlA,a);repo.b=await svnResolveEndpoint(exec,info,urlB,b);
  repo.identity={uuid:info.repository.uuid,repositoryRoot:info.repository.root,urlA,urlB};
  const targets=['--old='+urlA+'@'+repo.a,'--new='+urlB+'@'+repo.b];
- const entries=list(xml(await exec('svn',['diff','--summarize','--xml',...targets,...SVN_ACCESS_ARGS])).diff?.paths?.path).map(x=>svnChange(x,urlA,urlB));
+ const summary = xml(await exec('svn',['diff','--summarize','--xml',...targets,...SVN_ACCESS_ARGS])).diff;
+ if (!summary || !Object.hasOwn(summary,'paths')) throw new Error('无效 SVN 变更清单');
+ const entries = list(summary.paths?.path).map(x=>svnChange(x,urlA,urlB));
  repo.excludedPaths=entries.filter(x=>internalPath(x.relative)).map(x=>x.relative);
  const included=entries.filter(x=>!internalPath(x.relative));repo.files=included.map(x=>x.relative);
  repo.changes = included.map(({relative:path,kind,item,props}) => ({path,kind,item,props}));
@@ -200,23 +204,50 @@ async function svnEvidence(exec,repo,root,row,request,a,b,checkpoint,onEntry){
  if(!repo.excludedPaths.length)setDiff(repo,await exec('svn',['diff','--internal-diff',...targets,...SVN_ACCESS_ARGS],{raw:true}));
  else{
   // Never request a recursive parent diff after exclusions: deleted directories contain old bodies too.
-  repo.diff='';
+  repo.diff = ''; // Preserve snapshot serialization order; assemble the body only at the end.
   repo.diffParts = [];
+  const texts = [];
+  let offset = 0;
   const rawHasher = createHash('sha256');
   const encodings = new Set();
-  for (const [index, entry] of included.entries()) {
-   const start = repo.diff.length;
-   const bytes = await svnEntryDiff(exec, repo, entry, urlA, urlB);
-   rawHasher.update(bytes);
-   const {text,encoding} = decodeDiffBytes(bytes,{label:'项目 ' + repo.path + ' / ' + entry.relative + ' 差异'});
-   if (encoding.includes('gb18030')) encodings.add('gb18030');
-   if (encoding === 'utf-8+gb18030' || (encoding === 'utf-8' && /[^\x00-\x7f]/.test(text))) encodings.add('utf-8');
-   repo.diff += text;
-   // Offsets refer to the exact original UTF-16 string, not re-encoded byte counts.
-   if (text.length) repo.diffParts.push({path:entry.relative,start,end:repo.diff.length});
+  // Fixed windows bound active subprocesses and pending raw results without imposing a new byte cap.
+  // Keep caller byte budgets sequential: their checkpoint accounts for one command at a time.
+  const width = budget.maxBytes === undefined ? 4 : 1;
+  for (let first = 0; first < included.length; first += width) {
    checkpoint();
-   onEntry?.(index + 1, included.length, entry.relative);
+   const window = included.slice(first, first + width);
+   const cancel = new AbortController();
+   const signal = budget.signal ? AbortSignal.any([budget.signal, cancel.signal]) : cancel.signal;
+   const pending = window.map(entry => svnEntryDiff(exec, repo, entry, urlA, urlB, signal).catch(error => {
+    cancel.abort(error);
+    throw error;
+   }));
+   // Always await command closure, including on decode/progress errors and cancellation.
+   const drained = Promise.allSettled(pending);
+   try {
+    for (const [index, entry] of window.entries()) {
+     const bytes = await pending[index];
+     signal.throwIfAborted();
+     rawHasher.update(bytes);
+     const {text,encoding} = decodeDiffBytes(bytes,{label:'项目 ' + repo.path + ' / ' + entry.relative + ' 差异'});
+     if (encoding.includes('gb18030')) encodings.add('gb18030');
+     if (encoding === 'utf-8+gb18030' || (encoding === 'utf-8' && /[^\x00-\x7f]/.test(text))) encodings.add('utf-8');
+     if (text.length) {
+      // Offsets refer to the exact original UTF-16 string, not re-encoded byte counts.
+      repo.diffParts.push({path:entry.relative,start:offset,end:offset + text.length});
+      offset += text.length;
+      texts.push(text);
+     }
+     if (budget.maxBytes !== undefined) repo.diff = texts.join('');
+     checkpoint();
+     onEntry?.(first + index + 1, included.length, entry.relative);
+    }
+   } finally {
+    cancel.abort();
+    await drained;
+   }
   }
+  repo.diff = texts.join('');
   repo.rawDiffHash = rawHasher.digest('hex');
   repo.diffEncoding = encodings.has('gb18030') ? (encodings.has('utf-8') ? 'utf-8+gb18030' : 'gb18030') : 'utf-8';
  }
@@ -244,7 +275,7 @@ async function collectRepository(cwd,row,request,budget,result,onEntry,remoteCon
     for(const entry of request.versionContexts||[])if(entry.repository===repo.path)remoteContexts.set(entry,await readVersionContext(cwd,entry,[repo],budget,checkpoint,temporary));
    });
   }else await gitEvidence(exec,root,repo,a,b);
- }else await svnEvidence(exec,repo,root,row,request,a,b,checkpoint,onEntry);
+ }else await svnEvidence(exec,repo,root,row,request,a,b,budget,checkpoint,onEntry);
  checkpoint();
  return {repo,requestedA:a,requestedB:b};
 }

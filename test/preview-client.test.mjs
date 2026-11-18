@@ -8,6 +8,11 @@ test('capture uses one short start and polls original task until preview is avai
  const value=await capturePreview({...options(async(endpoint,body)=>{calls.push(endpoint);assert.equal(body.operationId,'capture-1');if(endpoint==='preview-start')return {status:'pending'};if(endpoint==='progress')return {phase:'collecting'};return ++reads<3?{status:'pending'}:{status:'completed',result:{previewId:'p',markdown:'local'}};}),onProgress:value=>progress.push(value)});
  assert.equal(value.previewId,'p');assert.equal(calls.filter(x=>x==='preview-start').length,1);assert.equal(progress.length,2);assert.ok(!calls.includes('generate'));
 });
+test('pending result carries progress without a second RPC',async()=>{
+ const calls=[],steps=[];let reads=0;
+ await capturePreview({...options(async endpoint=>{calls.push(endpoint);if(endpoint==='preview-start')return {status:'pending'};return ++reads===1?{status:'pending',progress:{phase:'collecting',completed:1}}:{status:'completed',result:{previewId:'p'}};}),onProgress:value=>steps.push(value.completed)});
+ assert.deepEqual(calls,['preview-start','result','result']);assert.deepEqual(steps,[1]);
+});
 test('lost start response and transient result transport failures never resubmit capture',async()=>{
  const calls=[],warnings=[];let reads=0;
  const value=await capturePreview({...options(async endpoint=>{calls.push(endpoint);if(endpoint==='preview-start')throw new TypeError('Failed to fetch');if(endpoint==='result'&&++reads===1)throw new TypeError('Failed to fetch');return {status:'completed',result:{previewId:'recovered'}};}),onWarning:value=>warnings.push(value)});

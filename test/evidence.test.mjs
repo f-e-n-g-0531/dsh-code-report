@@ -166,6 +166,31 @@ test('full planning combines small hunks without dropping text or weakening budg
   assert.deepEqual(plan.coverage.files.map(file => file.path), ['api.js', 'other.js']);
 });
 
+test('long escape-heavy diffs reduce output-limited batches without changing input limits', () => {
+  const files = Array.from({length: 20}, (_, i) => 'file-' + i + '.txt');
+  const diff = files.map(name => 'diff --git a/' + name + ' b/' + name + '\r\n--- a/' + name + '\r\n+++ b/' + name + '\r\n@@ -1 +1 @@\r\n' + ('-old 😀 \\"\u0000\r\n+new 😀 \\"\ud800\r\n').repeat(2500)).join('');
+  const source = snapshot(diff); source.repositories[0].files = files;
+  const inputBudget = 64000, capacity = {outputTokens: 1024};
+  const plan = createAnalysisPlan(source, {capacity, inputBudget});
+  assert.ok(plan.batches.length <= plan.packing.originalBatches * 0.7);
+  assert.equal(plan.batches.length, plan.packing.input + plan.packing.output + plan.packing.both + 1);
+  assert.ok(plan.packing.inputLowerBound <= plan.batches.length);
+  assert.ok(plan.packing.outputLowerBound <= plan.batches.length);
+  assert.equal(plan.packing.totalInputBytes, plan.batches.reduce((sum, batch) => sum + batch.inputBytes, 0));
+  let end = 0;
+  for (const batch of plan.batches) {
+    assert.equal(batch.inputBytes, estimatedInputBytes(batch.snapshot, capacity.outputTokens));
+    assert.ok(batch.inputBytes <= inputBudget);
+    assert.ok(batch.evidenceIds.length <= 2);
+    for (const item of batch.snapshot.evidence) {
+      assert.equal(item.start, end);
+      assert.equal(item.text, diff.slice(item.start, item.end));
+      end = item.end;
+    }
+  }
+  assert.equal(end, diff.length);
+});
+
 test('SVN property values cannot forge headers or paths; shared attribution retains raw bytes', () => {
   const text = 'Index: parent/file.txt\n===\n--- parent/file.txt\t(revision 1)\n+++ parent/file.txt\t(revision 2)\n@@ -1 +1 @@\n-old\n+new\n\nProperty changes on: parent/file.txt\n___\nModified: custom\n## -1,2 +1,2 ##\n--- /dev/null\n+++ /dev/null\n--- forged\n+++ other\nBinary files forged\nindex abc..def 160000\n';
   const source = snapshot(text), repo = source.repositories[0];

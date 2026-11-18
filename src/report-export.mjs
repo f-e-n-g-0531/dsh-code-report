@@ -4,14 +4,22 @@ function readerLine(line){
  line=line.replace(/ ?\[\d+\]\(#evidence-\d+\)/g,'');
  // Classify a decoded shadow, but slice the original so metadata remains inert
  // Markdown. In particular markdownText encodes URL colons, slashes and backticks.
- const offsets=[];let text='';
- for(const match of line.matchAll(/&#(?:[0-9]+|x[0-9a-f]+);|[\s\S]/gi)){
-  const entity=/^&#(x[0-9a-f]+|[0-9]+);$/i.exec(match[0]);
-  const code=entity?Number.parseInt(entity[1].replace(/^x/i,''),/^x/i.test(entity[1])?16:10):NaN;
-  const decoded=Number.isInteger(code)&&code<=0x10ffff?String.fromCodePoint(code):match[0];
-  for(let index=0;index<decoded.length;index++)offsets.push({start:match.index,end:match.index+match[0].length});
-  text+=decoded;
- }
+ const entities=[];let shift=0;
+ const text=line.replace(/&#(x[0-9a-f]+|[0-9]+);/gi,(encoded,value,start)=>{
+  const code=Number.parseInt(value.replace(/^x/i,''),/^x/i.test(value)?16:10);
+  if(!Number.isInteger(code)||code>0x10ffff)return encoded;
+  const decoded=String.fromCodePoint(code),from=start-shift;
+  shift+=encoded.length-decoded.length;
+  entities.push({from,to:from+decoded.length,start,end:start+encoded.length,shift});
+  return decoded;
+ });
+ const originalOffset=(index,end)=>{
+  let lo=0,hi=entities.length;
+  while(lo<hi){const mid=(lo+hi)>>>1;if(entities[mid].from<=index)lo=mid+1;else hi=mid;}
+  const entity=entities[lo-1];
+  if(entity&&index<entity.to)return end?entity.end:entity.start;
+  return index+(entity?.shift??0)+(end?1:0);
+ };
  // Public URLs and root-relative endpoints are contracts, even when their path
  // or query contains a source-looking filename. Match them before source cleanup.
  const endpoints=[];
@@ -36,7 +44,7 @@ function readerLine(line){
  const removed=[];
  for(const pattern of patterns)for(const match of text.matchAll(pattern)){
   const start=match.index,end=start+match[0].length;
-  if(!endpoints.some(endpoint=>start<endpoint.end&&end>endpoint.start))removed.push({start:offsets[start].start,end:offsets[end-1].end});
+  if(!endpoints.some(endpoint=>start<endpoint.end&&end>endpoint.start))removed.push({start:originalOffset(start,false),end:originalOffset(end-1,true)});
  }
  let result='',cursor=0;
  for(const range of removed.sort((a,b)=>a.start-b.start||b.end-a.end)){

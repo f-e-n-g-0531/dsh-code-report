@@ -1,4 +1,4 @@
-import React,{useState,useRef,useEffect} from 'react';
+import React,{useState,useRef,useEffect,useMemo,useCallback,useSyncExternalStore} from 'react';
 import css from './style.css';
 import UpdatePanel from './UpdatePanel.jsx';
 import RepositoryCards from './RepositoryCards.jsx';
@@ -16,6 +16,43 @@ import {fresh,mergeRepositories,repositoryIssues} from './repositories.mjs';
 import {DEFAULT_SCAN,cleanConfiguration} from './configuration.mjs';
 import {createResultStore,staleResult,previewExpired,generationBlocker,parseVersionContexts,captureBlocker,completedViewResult,terminalAnalysisProgress} from './result-state.mjs';
 export const inject=['slots','connection','remote','remote.pluginManager'];
+
+const progressFields=['phase','label','completed','total','queued','inFlight','etaMs','concurrency'];
+const cancellationProgress={phase:'cancel-requested',label:'已请求强制取消；后台状态核对中，不代表未计费'};
+const singleRequest=plan=>plan?.strategy==='single-request'||plan?.mode==='single-request'||plan?.coverage?.strategy==='single-request';
+const previewDeadline=expiresAt=>typeof expiresAt==='number'?expiresAt:Date.parse(expiresAt);
+
+function createProgressView(){
+ let snapshot={progress:null,warning:''};const listeners=new Set();
+ function update(next){snapshot=next;for(const listener of listeners)listener();}
+ return {
+  getSnapshot:()=>snapshot,subscribe(listener){listeners.add(listener);return()=>listeners.delete(listener);},
+  setProgress(progress){if(!progressFields.every(key=>Object.is(snapshot.progress?.[key],progress?.[key])))update({...snapshot,progress});},
+  setWarning(warning){if(snapshot.warning!==warning)update({...snapshot,warning});}
+ };
+}
+
+// Bound each read-only progress request even if the transport ignores abort.
+function pollProgress(rpc,identity,signal,{onProgress,onWarning,warning}){
+ let timer,failures=0;
+ const poll=async()=>{
+  if(signal.aborted)return;
+  const request=new AbortController();let timeout;
+  const abort=()=>request.abort(signal.reason);
+  signal.addEventListener('abort',abort,{once:true});
+  try{
+   const interrupted=new Promise((_,reject)=>{
+    request.signal.addEventListener('abort',()=>reject(request.signal.reason),{once:true});
+    timeout=setTimeout(()=>request.abort(new Error('进度查询超时。')),5000);
+   });
+   const value=await Promise.race([interrupted,rpc('progress',identity,request.signal)]);
+   if(!signal.aborted){failures=0;onProgress(value);onWarning('');}
+  }catch(error){if(!signal.aborted&&++failures>=2)onWarning(warning+error.message);}
+  finally{clearTimeout(timeout);signal.removeEventListener('abort',abort);}
+  if(!signal.aborted)timer=setTimeout(poll,500);
+ };
+ if(!signal.aborted){timer=setTimeout(poll,250);signal.addEventListener('abort',()=>clearTimeout(timer),{once:true});}
+}
 
 export function apply(ctx){
  const rpc=createClientRpc(ctx.connection);
@@ -46,67 +83,95 @@ export function apply(ctx){
   const [context,setContext]=useState(''),[versionContext,setVersionContext]=useState('');
   const [network,setNetwork]=useState(false);
   const [provider,setProvider]=useState(''),[model,setModel]=useState(''),[consent,setConsent]=useState(false);
-  const [useDefaultModel,setUseDefaultModel]=useState(true);
+  const [useDefaultModel,setUseDefaultModel]=useState(true),[concurrency,setConcurrency]=useState(2);
   const [preview,setPreview]=useState(null),[result,setResult]=useState(()=>results.get(session));
   const [latestAnalysis,setLatestAnalysis]=useState(()=>results.getAnalysis(session));
   const [lifecycleState,setLifecycleState]=useState(()=>lifecycle.getSnapshot());
-  useEffect(()=>lifecycle.subscribe(setLifecycleState),[]);
-  const ownTask=lifecycleState.paid?.sessionKey===JSON.stringify([session?.id,session?.cwd])?lifecycleState.paid:null;
+  const sessionKey=JSON.stringify([session?.id,session?.cwd]);
+  const ownTask=lifecycleState.paid?.sessionKey===sessionKey?lifecycleState.paid:null;
   const pendingRecovery=ownTask;
-  const pendingRecoveryRef=useRef(pendingRecovery);pendingRecoveryRef.current=pendingRecovery;
   const [abandonConfirmed,setAbandonConfirmed]=useState(false),[recovering,setRecovering]=useState(false);
   const globalBusy=!!lifecycleState.lease;
   const draftRevision=useRef(0),submittedOperation=useRef(null);
   useEffect(()=>{
-   if(lifecycleState.lastCompleted?.sessionKey===JSON.stringify([session?.id,session?.cwd])){
+   if(lifecycleState.lastCompleted?.sessionKey===sessionKey){
     setResult(completedViewResult(results.get(session),lifecycleState.lastCompleted,submittedOperation.current,draftRevision.current));
     setLatestAnalysis(results.getAnalysis(session));setPreview(null);setConsent(false);
     setProgress(terminalAnalysisProgress(lifecycleState.lastCompleted));setProgressWarning('');
    }
-   if(lifecycleState.lastFailure?.sessionKey===JSON.stringify([session?.id,session?.cwd])){
+   if(lifecycleState.lastFailure?.sessionKey===sessionKey){
     setError(lifecycleState.lastFailure.message);setConsent(false);
+    const retry=lifecycleState.lastFailure.details?.error?.details;
+    if(Number.isFinite(retry?.previewExpiresAt))setPreview(previous=>previous?.previewId===retry.previewId?{...previous,expiresAt:retry.previewExpiresAt}:previous);
     setProgress(terminalAnalysisProgress(null,lifecycleState.lastFailure));setProgressWarning('');
    }
   },[lifecycleState.lastCompleted,lifecycleState.lastFailure]);
-  const [busy,setBusy]=useState(''),[error,setError]=useState(''),[progress,setProgress]=useState(null),[progressWarning,setProgressWarning]=useState('');
+  useEffect(()=>{
+   const save=lifecycleState.lastSavedReport;
+   if(save?.sessionKey!==sessionKey)return;
+   const patch=previous=>previous?.operationId===save.operationId?{...previous,savedReport:save.savedReport}:previous;
+   setLatestAnalysis(patch);setResult(patch);
+  },[lifecycleState.lastSavedReport]);
+  const [busy,setBusy]=useState(''),[error,setError]=useState(''),[progressView]=useState(createProgressView);
+  const {setProgress,setWarning:setProgressWarning}=progressView;
+  useEffect(()=>{
+   let previous=lifecycle.getSnapshot();
+   return lifecycle.subscribe(next=>{
+    const task=next.paid,old=previous.paid;
+    if(task?.asyncGenerate&&task.sessionKey===sessionKey){
+     if(task.forceRequested)setProgress(cancellationProgress);
+     else if(task.progress)setProgress(task.progress);
+     setProgressWarning(task.progressWarning||'');
+    }
+    // Progress-only publications must not rerender the scope, preview or report.
+    if(previous===next||previous.lease?.kind!==next.lease?.kind||previous.lastCompleted!==next.lastCompleted||previous.lastFailure!==next.lastFailure||previous.lastSavedReport!==next.lastSavedReport||
+     ['operationId','status','message','forceRequested','forceCancelling','asyncGenerate'].some(key=>old?.[key]!==task?.[key]))setLifecycleState(next);
+    previous=next;
+   });
+  },[sessionKey]);
   const [scanState,setScanState]=useState('idle'),[scanError,setScanError]=useState(''),[scanWarnings,setScanWarnings]=useState([]),[visited,setVisited]=useState(null);
   const [analysisStrategy,setAnalysisStrategy]=useState('full'),[publicApiPaths,setPublicApiPaths]=useState('');
-  const [inputBudget,setInputBudget]=useState(''),[planDirty,setPlanDirty]=useState(false),[now,setNow]=useState(Date.now);
+  const [inputBudget,setInputBudget]=useState(''),[planDirty,setPlanDirty]=useState(false),[,refreshExpiry]=useState(0);
   const initialScanStarted=useRef(false),controller=useRef(null),mounted=useRef(true);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;controller.current?.abort();};},[]);
+  const deadline=previewDeadline(preview?.expiresAt);
   useEffect(()=>{
-   if(!preview)return;
-   const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer);
-  },[preview?.previewId]);
+   if(!Number.isFinite(deadline))return;
+   let timer;
+   const expire=()=>{
+    const remaining=deadline-Date.now();
+    if(remaining>0)timer=setTimeout(expire,Math.min(remaining,2147483647));
+    else refreshExpiry(value=>value+1);
+   };
+   expire();return()=>clearTimeout(timer);
+  },[deadline]);
   useEffect(()=>{
    const id=preview?.previewId;
    return()=>{if(id&&session?.id&&!lifecycle.hasPaid(session))void rpc('release-preview',{sessionId:session.id,previewId:id}).catch(()=>{});};
   },[preview?.previewId,session?.id]);
-  const expired=preview?previewExpired(preview,now):false;
+  const expired=!!preview&&previewExpired(preview);
   const hasCurrentReport=result?.kind==='analysis'&&!result.stale;
   const workflow=ownTask?['complete','complete','active']:preview&&!expired?['complete','active','pending']:hasCurrentReport?['complete','complete','complete']:['active','pending','pending'];
   useEffect(()=>{if(expired)setConsent(false);},[expired]);
   useEffect(()=>{
-   if(!ownTask)return;
-   const ac=new AbortController();let timer,failures=0;
-   const poll=async()=>{
-    try{const value=await rpc('progress',{sessionId:session.id,operationId:ownTask.operationId},ac.signal);if(!ac.signal.aborted){setProgress(ownTask.forceRequested?{phase:'cancel-requested',label:'已请求强制取消；后台状态核对中，不代表未计费'}:value);setProgressWarning('');failures=0;}}
-    catch(error){if(!ac.signal.aborted&&++failures>=2)setProgressWarning('进度连接暂时失联；任务身份仍保留，请只读恢复。'+error.message);}
-    if(!ac.signal.aborted)timer=setTimeout(poll,500);
-   };
-   timer=setTimeout(poll,250);return()=>{ac.abort();clearTimeout(timer);};
-  },[ownTask?.operationId,ownTask?.forceRequested]);
+   if(!ownTask||ownTask.asyncGenerate)return;
+   const ac=new AbortController();
+   pollProgress(rpc,{sessionId:session.id,operationId:ownTask.operationId},ac.signal,{onProgress:value=>setProgress(ownTask.forceRequested?cancellationProgress:value),onWarning:setProgressWarning,warning:'进度连接暂时失联；任务身份仍保留，请只读恢复。'});
+   return()=>ac.abort();
+  },[ownTask?.operationId,ownTask?.forceRequested,ownTask?.asyncGenerate]);
   const keepResult=value=>{results.set(session,value);setResult(value);setLatestAnalysis(results.getAnalysis(session));};
-  const clearResult=()=>{
-   if(result?.kind==='analysis')results.clearAnalysis(session);else results.clearCurrent(session);
+  const clearResult=useCallback(kind=>{
+   if(kind==='analysis')results.clearAnalysis(session);else results.clearCurrent(session);
    setResult(results.get(session));setLatestAnalysis(results.getAnalysis(session));
-  };
-  const invalidate=()=>{
+  },[sessionKey]);
+  const invalidate=useCallback(()=>{
    draftRevision.current++;
    setPreview(null);setConsent(false);setProgress(null);setPlanDirty(false);
    setResult(previous=>{const next=staleResult(previous);if(next)results.set(session,next);return next;});
-  };
-  const change=(index,key,value)=>{invalidate();setRows(previous=>previous.map((row,i)=>i===index?{...row,[key]:value}:row));};
+  },[sessionKey]);
+  const change=useCallback((index,key,value)=>{invalidate();setRows(previous=>previous.map((row,i)=>i===index?{...row,[key]:value}:row));},[invalidate]);
+  const replaceRows=useCallback(next=>{invalidate();setRows(next);},[invalidate]);
+  const removeRow=useCallback(index=>{invalidate();setRows(previous=>previous.filter((_,i)=>i!==index));},[invalidate]);
   const store=async()=>{
    if(configRequest.current||!configReady)return;configRequest.current=true;setConfigBusy(true);
    try{await rpc('configuration-save',{sessionId:session.id,configuration:cleanConfiguration({schema:1,rows,title,context,versionContext,publicApiPaths,analysisStrategy,allowBatches:true,provider,model,useDefaultModel,scan:scanSettings,allowSvnNetwork:network})});if(mounted.current)setConfigNotice('已保存到当前工作目录 .dsh-code-report.json；不保存密码、报告、源码内容或模型发送确认。');}
@@ -163,15 +228,9 @@ export function apply(ctx){
   };
   const tracked=async(endpoint,payload,signal)=>{
    const operationId=crypto.randomUUID(),polling=new AbortController(),pollSignal=AbortSignal.any([signal,polling.signal]);
-   let timer,failures=0;
-   const poll=async()=>{
-    try{const value=await rpc('progress',{sessionId:session.id,operationId},pollSignal);if(!pollSignal.aborted&&mounted.current){setProgress(value);setProgressWarning('');failures=0;}}
-    catch(error){if(!pollSignal.aborted&&mounted.current&&++failures>=2)setProgressWarning('进度连接暂时失联，任务结果尚未知；请勿重复提交。'+error.message);}
-    if(!pollSignal.aborted)timer=setTimeout(poll,500);
-   };
-   timer=setTimeout(poll,250);
+   pollProgress(rpc,{sessionId:session.id,operationId},pollSignal,{onProgress:setProgress,onWarning:setProgressWarning,warning:'进度连接暂时失联，任务结果尚未知；请勿重复提交。'});
    try{return await rpc(endpoint,{...payload,operationId},signal);}
-   finally{polling.abort();clearTimeout(timer);}
+   finally{polling.abort();}
   };
   const scan=()=>{
    if(compatibility){setScanError(compatibility);return;}
@@ -186,26 +245,26 @@ export function apply(ctx){
    });
   };
   useEffect(()=>{if(session?.id&&configReady&&!configBusy&&!compatibility&&!lifecycle.getSnapshot().lease&&!initialScanStarted.current){initialScanStarted.current=true;void scan();}},[session?.id,configReady,configBusy,compatibility,lifecycleState.revision]);
-  let versionContexts=[],parsedPublicApiPaths=[],contextIssue='';
-  try{
-   versionContexts=parseVersionContexts(versionContext,rows);parsedPublicApiPaths=parsePublicApiPaths(publicApiPaths,rows.filter(row=>row.enabled));
-  }catch(error){contextIssue=error.message;}
-  const issues=repositoryIssues(rows),captureReason=!configReady||configBusy?'正在读写工作目录配置。':globalBusy?'当前插件实例有任务或更新尚未确认，请先完成或恢复。':captureBlocker(rows,network,busy,compatibility,issues,contextIssue);
+  const {versionContexts,parsedPublicApiPaths,contextIssue}=useMemo(()=>{
+   try{return {versionContexts:parseVersionContexts(versionContext,rows),parsedPublicApiPaths:parsePublicApiPaths(publicApiPaths,rows.filter(row=>row.enabled)),contextIssue:''};}
+   catch(error){return {contextIssue:error.message};}
+  },[versionContext,publicApiPaths,rows]);
+  const issues=useMemo(()=>repositoryIssues(rows),[rows]),captureReason=!configReady||configBusy?'正在读写工作目录配置。':globalBusy?'当前插件实例有任务或更新尚未确认，请先完成或恢复。':captureBlocker(rows,network,busy,compatibility,issues,contextIssue);
   const capture=()=>{
    if(captureReason)return;
    return perform('采集版本差异',async signal=>{
     setPreview(null);setConsent(false);setPlanDirty(false);
     const value=await capturePreview({rpc,signal,onProgress:value=>{if(mounted.current&&!signal.aborted)setProgress(value);},onWarning:value=>{if(mounted.current&&!signal.aborted)setProgressWarning(value);},payload:{sessionId:session.id,...(!useDefaultModel?{route:{provider:provider.trim(),model:model.trim()}}:{}),request:{title,analysisStrategy,repositories:rows.filter(row=>row.enabled).map(({enabled,...row})=>row),contextPaths:context.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),versionContexts,publicApiPaths:parsedPublicApiPaths,allowSvnNetwork:network,allowBatches:true}}});
-    if(!signal.aborted&&mounted.current){setNow(Date.now());setPreview(value);setAnalysisStrategy(value.analysisPlan?.strategy||'full');setInputBudget('');keepResult({markdown:value.markdown,stale:false,kind:'local'});}
+    if(!signal.aborted&&mounted.current){setPreview(value);setAnalysisStrategy(value.analysisPlan?.strategy||'full');setInputBudget('');keepResult({markdown:value.markdown,stale:false,kind:'local'});}
    });
   };
-  const generateReason=!configReady||configBusy?'正在读写工作目录配置。':generationBlocker({preview,now,compatibility,busy:busy||(globalBusy?'其他任务执行中':''),consent,provider,model,useDefaultModel,pendingRecovery})||(planDirty?'分析策略或输入预算已变化，请先更新分析计划。':'');
+  const generateReason=!configReady||configBusy?'正在读写工作目录配置。':generationBlocker({preview,compatibility,busy:busy||(globalBusy?'其他任务执行中':''),consent,provider,model,useDefaultModel,pendingRecovery})||(planDirty?'分析策略或输入预算已变化，请先更新分析计划。':'');
   const generate=()=>{
    const approved=consent;setConsent(false);
-   if(generateReason||lifecycle.getSnapshot().lease)return;
+   if(generateReason||previewExpired(preview)||lifecycle.getSnapshot().lease)return;
    try{
-    setError('');
-    const operation=lifecycle.startGenerate(session,{previewId:preview.previewId,planId:preview.analysisPlan.id,sendToModel:approved,route:useDefaultModel?{mode:'default',provider:preview.defaultRoute.provider,model:preview.defaultRoute.model}:{provider:provider.trim(),model:model.trim()}});
+    setError('');setProgress({phase:'starting',label:'正在启动模型分析'});setProgressWarning('');
+    const operation=lifecycle.startGenerate(session,{previewId:preview.previewId,planId:preview.analysisPlan.id,sendToModel:approved,concurrency:singleRequest(preview.analysisPlan)?1:concurrency,route:useDefaultModel?{mode:'default',provider:preview.defaultRoute.provider,model:preview.defaultRoute.model}:{provider:provider.trim(),model:model.trim()}},{asyncGenerate:runtime?.capabilities?.asyncGenerate===true,backendInstanceId:runtime?.backendInstanceId});
     submittedOperation.current={operationId:operation.operationId,draftRevision:draftRevision.current};
    }catch(error){setError(error.message);}
   };
@@ -228,17 +287,17 @@ export function apply(ctx){
   const budgetValid=inputBudget===''||(/^\d+$/.test(inputBudget)&&Number.isSafeInteger(Number(inputBudget))&&Number(inputBudget)>=4000);
   const replan=()=>{
    setConsent(false);
-   if(!preview||expired||!budgetValid||globalBusy)return;
+   if(!preview||previewExpired(preview)||!budgetValid||globalBusy)return;
    return perform('更新分析计划',async signal=>{
     const value=await tracked('analysis-plan',{sessionId:session.id,previewId:preview.previewId,...(inputBudget===''?{}:{inputBudget:Number(inputBudget)}),route:useDefaultModel?{mode:'default',...preview.defaultRoute}:{provider:provider.trim(),model:model.trim()},strategy:analysisStrategy},signal);
     if(!signal.aborted&&mounted.current){setPreview(previous=>({...previous,analysisPlan:value.analysisPlan,planError:null}));setPlanDirty(false);}
    });
   };
-  const loadRefs=async(repositoryPath,signal,{gitMode='remote',gitRemote='origin',sshDirectory}={})=>{
+  const loadRefs=useCallback(async(repositoryPath,signal,{gitMode='remote',gitRemote='origin',sshDirectory}={})=>{
    if(compatibility||updateController.getSnapshot().updating||updateController.getSnapshot().barrier)throw new Error('后台或更新状态尚不可用');
    const lease=lifecycle.acquireBusiness(gitMode==='remote'?'读取远端 refs':'读取本地 refs',session);
    try{return (await rpc('refs',{sessionId:session.id,repositoryPath,gitMode,gitRemote,sshDirectory},signal)).refs;}finally{lease.release();}
-  };
+  },[compatibility,sessionKey]);
   return <section className="cr-root"><style>{css}</style>
    <header className="cr-hero"><div className="cr-hero-title"><span className="cr-hero-mark" aria-hidden="true">▤</span><div><small>RELEASE WORKSPACE <span>· v{version}</span></small><h1>发布报告配置</h1><p>从版本差异到发布决策，让每一次交付都有据可依。</p></div></div><div className="cr-actions cr-header-actions"><button type="button" className="cr-danger-ghost" disabled={!ownTask&&!busy||!!ownTask?.forceCancelling||updating} onClick={forceCancel} title="立即中断前端等待并请求后台取消；不保证撤回远端请求或免计费，未知状态仍须核对">{ownTask?.forceCancelling?'强制取消中…':ownTask?.forceRequested?'重试强制取消':'强制取消'}</button><button disabled={!session||!configReady||configBusy||!!busy||updating} onClick={store}>保存配置</button><button disabled={!session||!configReady||configBusy||!!busy||updating||!!pendingRecovery} onClick={restore}>恢复已保存</button></div></header>
    <nav className="cr-stage-nav" aria-label="报告工作流程"><div className="cr-stage" data-state={workflow[0]} aria-current={workflow[0]==='active'?'step':undefined}><span className="cr-stage-number">01</span><div><strong>配置发布范围</strong><span>项目与版本端点</span></div></div><div className="cr-stage" data-state={workflow[1]} aria-current={workflow[1]==='active'?'step':undefined}><span className="cr-stage-number">02</span><div><strong>核对差异证据</strong><span>固定快照 · 确认发送</span></div></div><div className="cr-stage" data-state={workflow[2]} aria-current={workflow[2]==='active'?'step':undefined}><span className="cr-stage-number">03</span><div><strong>生成与导出</strong><span>{ownTask?(ownTask.status==='running'?'模型分析进行中':'任务状态待核对'):hasCurrentReport&&!preview?'报告已生成，可下载':'影响分析与 QA 建议'}</span></div></div></nav>
@@ -252,7 +311,7 @@ export function apply(ctx){
      <fieldset className="cr-panel cr-scope" disabled={!configReady||configBusy||!!busy||globalBusy}><legend>1. 发布范围</legend><label className="cr-wide">报告标题<input value={title} onChange={event=>{invalidate();setTitle(event.target.value);}} maxLength={160}/></label>
       <div className="cr-section-intro"><div className="cr-section-heading"><h2>工作区项目</h2><p>{scanStateLabel(scanState)}当前列表 {rows.length} 个项目 · 已纳入 {rows.filter(row=>row.enabled).length} / 12。勾选需要生成报告的项目。</p></div><div className="cr-actions"><button onClick={()=>{invalidate();setRows(rows.map(row=>({...row,enabled:false})));}}>全部取消</button><button onClick={()=>{invalidate();setRows(rows.map((row,index)=>({...row,enabled:index<12})));}}>纳入前 12 项</button></div></div>
       {scanError&&<p className="cr-error" role="alert">{scanError}</p>}{scanWarnings.length>0&&<ul className="cr-scan-warnings">{scanWarnings.map((warning,index)=><li key={index}>{warning}</li>)}</ul>}
-      <RepositoryCards replace={next=>{invalidate();setRows(next);}} scanState={scanState} rows={rows} change={change} remove={index=>{invalidate();setRows(rows.filter((_,i)=>i!==index));}} loadRefs={loadRefs} refsDisabled={!configReady||configBusy||!!compatibility||globalBusy}/>
+      <RepositoryCards replace={replaceRows} scanState={scanState} rows={rows} change={change} remove={removeRow} loadRefs={loadRefs} refsDisabled={!configReady||configBusy||!!compatibility||globalBusy}/>
       <button disabled={rows.length>=500} onClick={()=>{invalidate();setRows([...rows,fresh()]);}}>＋ 添加项目</button>
       <details className="cr-guide"><summary>版本填写与远端读取说明</summary><p className="cr-hint">自动扫描当前工作区，保留已经填写的版本。路径相对于工作区，根目录填「.」。版本留空默认取对应 A/B 分支最新提交；两侧分支相同且版本均留空时无差异。Git 默认远端实时读取，可填 main / develop / origin/develop 等；会联网并可能要求身份验证，在隔离临时目录完整抓取，不创建业务本地分支、不修改业务 refs 或工作区。显式选择“本地离线”才仅用本地对象、不自动 fetch；远端失败不回退本地。SVN 仍需历史读取授权。</p></details>
       <label className="cr-check"><input type="checkbox" checked={network} onChange={event=>{invalidate();setNetwork(event.target.checked);}}/> 允许通过 SVN 工作副本地址读取历史版本（可能访问网络；此勾选随工作区配置保存，不保存密码）</label>
@@ -267,11 +326,11 @@ export function apply(ctx){
      <div className="cr-actions cr-execute"><button className="cr-primary" disabled={!!captureReason} aria-describedby={captureReason?'cr-capture-reason':undefined} onClick={capture}>开始执行 · 采集差异</button>{captureReason&&<span id="cr-capture-reason" role="status" aria-live="polite">{captureReason}</span>}{busy&&<><span role="status">{busy}…</span><button onClick={()=>controller.current?.abort()}>取消</button></>}</div>
      {lifecycleState.paid&&!ownTask&&<p className="cr-stale" role="status">其他会话有模型任务执行中或结果未知；本插件实例暂停新业务和安装。请回原会话恢复。此互斥不覆盖其他标签页或客户端。</p>}
      {pendingRecovery&&<section className="cr-stale" aria-label="报告恢复"><p role="status">{pendingRecovery.message} 恢复只读取已有报告，不调用模型、不再次计费。任务归属保留在当前插件实例，切换会话仅分离视图，不取消模型。恢复标识按会话及工作区暂存；刷新、重载或更换客户端不保证恢复，请先下载。</p><button disabled={recovering} onClick={recover}>恢复已完成报告</button><button onClick={()=>lifecycle.cancel(session)}>取消模型任务</button><label className="cr-check"><input type="checkbox" checked={abandonConfirmed} disabled={!!busy} onChange={event=>setAbandonConfirmed(event.target.checked)}/>我确认标记放弃恢复；未知任务屏障仍保留，不解锁新业务或安装</label><button disabled={!!busy||!abandonConfirmed||pendingRecovery.status==='running'} onClick={abandonRecovery}>放弃恢复</button></section>}
-     {preview&&<PreviewSection preview={preview} busy={busy||(!configReady||configBusy?'正在读写配置':globalBusy?'等待任务核对':'')} expired={expired} useDefaultModel={useDefaultModel} setUseDefaultModel={value=>{setUseDefaultModel(value);setPlanDirty(true);}} provider={provider} model={model} consent={consent} setProvider={value=>{setProvider(value);setPlanDirty(true);}} setModel={value=>{setModel(value);setPlanDirty(true);}} setConsent={setConsent} generateReason={generateReason} onGenerate={generate} onCapture={capture} analysisStrategy={analysisStrategy} onStrategy={value=>{setAnalysisStrategy(value);setConsent(false);setPlanDirty(true);}} inputBudget={inputBudget} budgetValid={budgetValid} planDirty={planDirty} onBudget={value=>{setInputBudget(value);setConsent(false);setPlanDirty(true);}} onReplan={replan} compatibility={compatibility} now={now}/>}
-     {progress&&<ProgressSection progress={progress}/>}{progressWarning&&<p className="cr-error" role="status">{progressWarning}</p>}
+     {preview&&<PreviewSection preview={preview} busy={busy||(!configReady||configBusy?'正在读写配置':globalBusy?'等待任务核对':'')} expired={expired} useDefaultModel={useDefaultModel} setUseDefaultModel={value=>{setUseDefaultModel(value);setPlanDirty(true);}} provider={provider} model={model} consent={consent} setProvider={value=>{setProvider(value);setPlanDirty(true);}} setModel={value=>{setModel(value);setPlanDirty(true);}} setConsent={setConsent} generateReason={generateReason} onGenerate={generate} onCapture={capture} analysisStrategy={analysisStrategy} onStrategy={value=>{setAnalysisStrategy(value);setConsent(false);setPlanDirty(true);}} inputBudget={inputBudget} budgetValid={budgetValid} planDirty={planDirty} onBudget={value=>{setInputBudget(value);setConsent(false);setPlanDirty(true);}} onReplan={replan} compatibility={compatibility} concurrency={concurrency} onConcurrency={value=>{if(value!==concurrency){setConcurrency(value);setConsent(false);}}}/>}
+     <OperationProgress view={progressView}/>
      {error&&error!==scanError&&<p className="cr-error" role="alert">{error}</p>}
      {latestAnalysis&&result?.kind!=='analysis'&&<p className="cr-stale">上一份成功模型报告仍保留，与当前草稿可能不同。<button onClick={()=>keepResult({...latestAnalysis,stale:true})}>查看上一份模型报告</button><button onClick={()=>downloadMarkdown(latestAnalysis.markdown,latestAnalysis.kind)}>下载上一份模型报告</button></p>}
-     {result&&<ReportSection result={result} onDownload={()=>downloadMarkdown(result.markdown,result.kind)} onClear={clearResult}/>}
+     {result&&<ReportSection result={result} onClear={clearResult}/>}
     </>}
    </fieldset>
   </section>;
@@ -284,12 +343,11 @@ function restoredNotice(allowSvnNetwork){return allowSvnNetwork?'已从工作目
 function scanStateLabel(state){return state==='completed'?'扫描完成 · ':state==='scanning'?'扫描中 · ':state==='failed'?'扫描失败 · ':state==='cancelled'?'扫描已取消 · ':'尚未扫描 · ';}
 function sideLabel(row,side){return row.type==='svn'?row['branch'+side]+' @ r'+row[side.toLowerCase()]:row[side.toLowerCase()];}
 function downloadMarkdown(markdown,kind){const url=URL.createObjectURL(new Blob([reportDownloadText(markdown,kind)],{type:'text/markdown;charset=utf-8'}));const anchor=document.createElement('a');anchor.href=url;anchor.download=(kind==='analysis'?'release-report-':kind==='local'?'captured-evidence-':'unclassified-result-')+new Date().toISOString().slice(0,10)+'.md';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
-function PreviewSection({preview,busy,expired,useDefaultModel=true,setUseDefaultModel,provider,model,consent,setProvider,setModel,setConsent,generateReason,onGenerate,onCapture,analysisStrategy,onStrategy,inputBudget,budgetValid,planDirty,onBudget,onReplan,compatibility,now}){
- const deadline=typeof preview.expiresAt==='number'?preview.expiresAt:Date.parse(preview.expiresAt);
- const plan=preview.analysisPlan,coverage=plan?.coverage||{},single=plan?.strategy==='single-request'||plan?.mode==='single-request'||coverage.strategy==='single-request';
+function PreviewSection({preview,busy,expired,useDefaultModel=true,setUseDefaultModel,provider,model,consent,setProvider,setModel,setConsent,generateReason,onGenerate,onCapture,analysisStrategy,onStrategy,inputBudget,budgetValid,planDirty,onBudget,onReplan,compatibility,concurrency,onConcurrency}){
+ const plan=preview.analysisPlan,coverage=plan?.coverage||{},single=singleRequest(plan);
  return <fieldset className="cr-panel cr-preview" disabled={!!busy}><legend>3. 确认分析范围</legend>
   <div className="cr-preview-metrics"><div className="cr-metric"><span>固定项目</span><strong>{preview.repositories.length}</strong></div><div className="cr-metric"><span>变更路径</span><strong>{preview.repositories.reduce((sum,row)=>sum+row.files.length,0)}</strong></div><div className="cr-metric"><span>源码文件</span><strong>{preview.context.length}</strong></div><div className="cr-metric"><span>{single?'模型请求':'模型分片'}</span><strong>{plan?.batches?.length??'—'}</strong></div></div>
-  <p>证据 {preview.bytes} 字节（约 {(preview.bytes/1024).toFixed(1)} KiB）；{preview.repositories.length} 个项目，{preview.repositories.reduce((total,row)=>total+(row.files?.length||0),0)} 条变更路径，{preview.context.length} 个实际源码文件（目录已展开）。{expired?'快照已过期。':'快照剩余约 '+Math.max(0,Math.ceil((deadline-now)/1000))+' 秒。'}</p>
+  <p>证据 {preview.bytes} 字节（约 {(preview.bytes/1024).toFixed(1)} KiB）；{preview.repositories.length} 个项目，{preview.repositories.reduce((total,row)=>total+(row.files?.length||0),0)} 条变更路径，{preview.context.length} 个实际源码文件（目录已展开）。<PreviewCountdown key={preview.expiresAt} deadline={previewDeadline(preview.expiresAt)} expired={expired}/></p>
   {expired&&<div className="cr-error" role="status">快照已过期，请重新采集并确认发送。<button disabled={!!compatibility} onClick={onCapture}>重新采集</button></div>}
   <ul className="cr-preview-repos">{preview.repositories.map((row,index)=><li key={index}><strong>{row.path}</strong> · {row.type} · {row.files.length} 个变更路径<br/><code>{sideLabel(row,'A')} → {sideLabel(row,'B')}</code>{row.type==='git'&&<p>{row.gitSource==='remote'?'远端实时读取 · '+(row.remote||'origin')+' · 观察时间 '+(row.observedAt||'未记录')+'（本次快照，之后不自动更新）':row.gitSource==='local'?'本地离线读取':'Git 来源未记录'}</p>}<br/>差异解码 {row.diffEncoding||'未记录'} · 原始字节 SHA-256 {row.rawDiffHash||'未记录'}</li>)}</ul>
   <LazyDetails key={preview.previewId} summary="查看源码上下文及限制">{()=><><p className="cr-hint">以下为本次实际附带的文件清单（目录已展开）；请核对来源与排除限制后再授权模型。</p><ul aria-label="实际源码文件清单">{preview.context.map((item,index)=><li key={index}>{item.repository?item.repository+' / ':''}{item.path} · {item.provenance==='version-A'?'版本 A':item.provenance==='version-B'?'版本 B':'当前工作区'} {item.revision||''} · 编码 {item.encoding||'未记录'} · 原始字节 SHA-256 {item.rawHash||item.hash}</li>)}</ul><ul aria-label="源码及采集限制">{preview.limitations.map((text,index)=><li key={index}>{text}</li>)}</ul></>}</LazyDetails>
@@ -297,10 +355,12 @@ function PreviewSection({preview,busy,expired,useDefaultModel=true,setUseDefault
   <div className="cr-budget-row"><label>{single?'单次输入预算（保守字节估算，非 token）':'单片输入预算（保守字节估算，非 token）'}<input aria-label={single?'单次输入预算':'单片输入预算'} type="number" min={4000} max={plan?.capacity?.inputBudget} placeholder="留空：按所选模型容量自动规划" value={inputBudget} onChange={event=>onBudget(event.target.value)}/></label>
   <button disabled={expired||!budgetValid||!!compatibility} onClick={onReplan}>更新分析计划</button></div>
   {plan?.capacity&&<p className="cr-hint" role="status">预算来源：{plan.capacity.source==='host-model'?'所选模型配置':'兼容回退'}；上下文 {plan.capacity.contextWindow??'未知'} token；本次输出预留 {plan.capacity.outputTokens} token；安全余量 {plan.capacity.safetyTokens??'未知'} token；自动输入预算 {plan.capacity.inputBudget} 字节；当前计划 {plan.inputBudget} 字节。{plan.capacity.warning}</p>}
+  {!single&&plan?.packing&&<p className="cr-hint" role="status">分片诊断：基础规划 {plan.packing.originalBatches} 片，最终 {plan.batches.length} 片；切批时输入限制 {plan.packing.input} 次、输出处置限制 {plan.packing.output} 次、两者同时 {plan.packing.both} 次。按当前证据划分，输入体量至少需要 {plan.packing.inputLowerBound} 片{plan.packing.outputLowerBound>0?'，输出处置额度至少需要 '+plan.packing.outputLowerBound+' 片':''}（规划估算，不是服务端 token 统计）。</p>}
   {!budgetValid&&<p role="alert">预算留空按模型自动规划；手动值必须是至少 4000 的安全整数。</p>}{planDirty&&<p role="status">分析策略或预算已变更，请更新分析计划并重新确认。</p>}
   {preview.planError&&<p className="cr-error" role="alert">分析计划尚不可用：{preview.planError.message}。可调整预算重新规划；本地证据清单仍可下载。</p>}
   {single?<SingleRequestCoverage coverage={coverage}/>:<p className="cr-guide" role="status">全量差异分片：发送已采集的全部文本差异和所选上下文，不按头文件前缀抽样；不代表完整调用图或模型已正确理解。计划 {plan?.batches?.length??0} 次模型请求，每片可能计费；只有明确确认后执行，失败不自动重试。</p>}
-  <p className="cr-hint">{single?'本计划仅一次模型请求，发送预算内本地摘要和明确选择的片段，不是全部正文；失败不会自动重试。更换模型路由、更新分析计划或再次明确确认后重试可能再次计费。':'本计划 '+(plan?.batches?.length??0)+' 片，按顺序调用模型，可能产生多次费用；失败重试仅复用宿主保留的同计划、同路由已完成分片，每次仍须确认。更换模型路由或更新分析计划将重跑全部分片，可能再次计费。'}预算留空按所选模型上下文自动规划，扣除输出预留和安全余量；手动预算仅可降低。每片不再因达到 32 条证据而强制拆分。保守字节估算不是精确 token 数，也不保证服务端一定接受。</p>
+  {!single&&analysisStrategy==='full'&&<label>模型并发路数<select aria-label="模型并发路数" value={concurrency} disabled={expired} onChange={event=>onConcurrency(Number(event.target.value))}><option value={1}>1 路</option><option value={2}>2 路（默认）</option><option value={4}>4 路</option></select></label>}
+  <p className="cr-hint">{single?'本计划仅一次模型请求，发送预算内本地摘要和明确选择的片段，不是全部正文；失败不会自动重试。更换模型路由、更新分析计划或再次明确确认后重试可能再次计费。':'本计划 '+(plan?.batches?.length??0)+' 片，最多同时调用 '+concurrency+' 路模型请求，可能产生多次费用；失败重试仅复用宿主保留的同计划、同路由已完成分片，每次仍须确认。更换模型路由或更新分析计划将重跑全部分片，可能再次计费。'}预算留空按所选模型上下文自动规划，扣除输出预留和安全余量；手动预算仅可降低。每片不再因达到 32 条证据而强制拆分。保守字节估算不是精确 token 数，也不保证服务端一定接受。</p>
   <label className="cr-check"><input type="checkbox" checked={useDefaultModel} onChange={event=>{setUseDefaultModel(event.target.checked);setConsent(false);}}/>使用 DSH 默认模型</label>
   {useDefaultModel?<p className="cr-hint" role="status">{preview.defaultRoute?<>本次模型：<strong>{preview.defaultRoute.provider} / {preview.defaultRoute.model}</strong>。来自 DSH 默认模型配置，已随本次采集固定；无需重复填写。修改宿主默认模型后请重新采集。</>:<>未能读取 DSH 默认模型；请在宿主配置默认模型后重新采集，或取消“使用 DSH 默认模型”手动指定。不会自动选择其他模型。</>}</p>:<div className="cr-route"><label>DSH 提供方 ID<input value={provider} placeholder="已在 DSH 配置的 provider ID" onChange={event=>{setProvider(event.target.value);setConsent(false);}}/></label><label>模型 ID<input value={model} placeholder="该提供方支持的 model ID" onChange={event=>{setModel(event.target.value);setConsent(false);}}/></label></div>}
   <p className="cr-hint">默认使用宿主配置，不跟随会话临时切换的聊天模型；只有确认发送并点击生成才调用模型。取消默认选项可手动覆盖，不修改宿主配置。</p>
@@ -311,19 +371,41 @@ function PreviewSection({preview,busy,expired,useDefaultModel=true,setUseDefault
 function SingleRequestCoverage({coverage}){
  return <section className="cr-guide" aria-label="单次摘要覆盖范围"><strong>单次摘要分析 · 非模型全文覆盖</strong><p>本地完整统计：本地差异文本字节 {coverage.originalSourceBytes??'未提供'}（已解码 UTF-8 口径，非原始网络字节），完整文件清单 {coverage.fullManifestFiles??'未提供'} 个；发送文件专属元数据或片段 {coverage.sentFileCount??'未提供'} 个，其中实际发送正文片段 {coverage.sentTextFileCount??'未提供'} 个；完全未发送文件专属证据 {coverage.omittedFileCount??'未提供'} 个；生成物 {coverage.generatedFileCount??'未提供'} 个。</p><p>本地完整统计不等于模型全文覆盖。仅发送本地摘要及预算内明确选择的片段；未发送的正文无法据此宣称已分析，已发送文件也不代表其全文已发送。生成物可能只发送元数据，不据此推断接口或行为没有变化。</p></section>;
 }
-function ProgressSection({progress}){
- const counted=progress.total>0&&['collecting','analyzing','completed'].includes(progress.phase);
- return <section className="cr-progress" aria-label="执行进度"><div role="status" aria-live="polite">{progress.label}{counted?'（'+progress.completed+' / '+progress.total+'）':''}</div><progress aria-label="执行进度" max={progress.total||1} value={counted?progress.completed:undefined}/><p className="cr-hint">按实际完成的项目、文件或分片计数，不代表耗时比例；单次模型内部进度不可量化。</p></section>;
+function PreviewCountdown({deadline,expired}){
+ const remaining=()=>Number.isFinite(deadline)?Math.max(0,Math.ceil((deadline-Date.now())/1000)):0;
+ const [seconds,setSeconds]=useState(remaining);
+ useEffect(()=>{
+  if(expired)return;
+  let timer;
+  const tick=()=>{const next=remaining();setSeconds(next);if(next>0)timer=setTimeout(tick,1000);};
+  tick();return()=>clearTimeout(timer);
+ },[deadline,expired]);
+ return <span>{expired||seconds===0?'快照已过期。':'快照剩余约 '+seconds+' 秒。'}</span>;
 }
-function ReportSection({result,onDownload,onClear}){
+const OperationProgress=React.memo(function OperationProgress({view}){
+ const {progress,warning}=useSyncExternalStore(view.subscribe,view.getSnapshot);
+ return <>{progress&&<ProgressSection progress={progress}/>}{warning&&<p className="cr-error" role="status">{warning}</p>}</>;
+});
+function ProgressSection({progress}){
+ const metrics=[];
+ if(Number.isFinite(progress.queued)&&progress.queued>=0)metrics.push('排队 '+progress.queued+' 片');
+ if(Number.isFinite(progress.inFlight)&&progress.inFlight>=0)metrics.push('进行中 '+progress.inFlight+' 片');
+ if(Number.isFinite(progress.concurrency)&&progress.concurrency>0)metrics.push('并发 '+progress.concurrency+' 路');
+ if(Number.isFinite(progress.etaMs)&&progress.etaMs>=0)metrics.push('预计剩余约 '+Math.ceil(progress.etaMs/1000)+' 秒');
+ const counted=progress.total>0&&['collecting','analyzing','completed'].includes(progress.phase);
+ return <section className="cr-progress" aria-label="执行进度"><div role="status" aria-live="polite">{progress.label}{counted?'（'+progress.completed+' / '+progress.total+'）':''}{metrics.length>0?' · '+metrics.join(' · '):''}</div><progress aria-label="执行进度" max={progress.total||1} value={counted?progress.completed:undefined}/><p className="cr-hint">按实际完成的项目、文件或分片计数，不代表耗时比例；单次模型内部进度不可量化。</p></section>;
+}
+const ReportSection=React.memo(function ReportSection({result,onClear}){
  const analysis=result.kind==='analysis',local=result.kind==='local';
- return <section className="cr-result"><div className="cr-actions"><h2>{analysis?'Markdown 报告':local?'采集证据（尚未生成发布报告）':'未分类结果（尚不能确认是发布报告）'}</h2><button onClick={onDownload}>{analysis?'下载 .md 文件':local?'下载证据清单 .md':'下载未分类结果 .md'}</button><button onClick={onClear}>{analysis?'清除报告':'清除证据结果'}</button></div>
+ return <section className="cr-result"><div className="cr-actions"><h2>{analysis?'Markdown 报告':local?'采集证据（尚未生成发布报告）':'未分类结果（尚不能确认是发布报告）'}</h2><button onClick={()=>downloadMarkdown(result.markdown,result.kind)}>{analysis?'下载 .md 文件':local?'下载证据清单 .md':'下载未分类结果 .md'}</button><button onClick={()=>onClear(result.kind)}>{analysis?'清除报告':'清除证据结果'}</button></div>
+  {analysis&&result.savedReport?.status==='pending'&&<p className="cr-hint" role="status">正在保存报告到工作区；现在也可下载 .md 文件。</p>}
   {analysis&&result.savedReport?.status==='saved'&&<p className="cr-hint" role="status">报告已保存到工作区：<code>{result.savedReport.path}</code>。清除面板报告不会删除磁盘文件。</p>}
   {analysis&&result.savedReport?.status==='failed'&&<p className="cr-error" role="alert">{result.savedReport.message}</p>}
+  {analysis&&result.savedReport?.status==='unknown'&&<p className="cr-hint" role="status">{result.savedReport.message}</p>}
   {!analysis&&<p className="cr-stale" role="status">{local?'仅采集完成，未调用模型；尚无改动解释、接口影响分析或测试建议。请核对上方默认模型和发送范围，明确确认后，点击“开始执行 · 生成报告”。':'结果类型未确认，不能据此认定已完成模型分析或发布报告。'}不会自动调用模型。</p>}
   {result.stale&&<p className="cr-stale" role="status">{analysis?'已有报告':'已有证据结果'}与当前草稿可能不同，旧结果已保留，可继续下载；重新采集后才用于当前范围分析。</p>}
   <p className="cr-hint">以下为安全排版的阅读视图，不执行报告中的 HTML、外部链接或图片；原始 Markdown 及内部附录可在下方展开检查；正式报告下载仅保留本次比较范围、改动内容、对外接口变更、影响范围、QA 测试范围五节，不含附录或源码路径；覆盖限制及未知待确认信息保留在五节内。模型建议需要人工复核，不代表测试已通过。结果仅在当前插件实例内按会话暂存当前报告及最近成功模型报告（最多 16 个会话，按会话数量淘汰；大报告更耗内存），生成完成的正式报告由后台直接保存到工作区，路径与写入失败状态见上方；未保存成功时请下载。原始 Markdown、内部附录和采集证据仍仅内存暂存，不写入浏览器本地存储。</p>
   {result.coverage?.strategy==='single-request'&&<SingleRequestCoverage coverage={result.coverage}/>}
   {result.coverage&&<><p role="status">{result.coverage.strategy==='single-request'?'已处理摘要证据':'已处理证据'} {result.coverage.processed??result.coverage.analyzed??0} / {result.coverage.total??0}；未处理 {result.coverage.remaining??0}；完成分片 {result.coverage.completedBatches??0} / {result.coverage.totalBatches??0}；被引用 {result.coverage.cited??0}。引用有效不代表结论正确，仍需人工复核。</p><LazyDetails summary="分析覆盖信息">{()=><pre>{JSON.stringify(result.coverage,null,2)}</pre>}</LazyDetails></>}<ReportDocument markdown={result.markdown}/><LazyDetails className="cr-report-raw" summary="查看原始 Markdown">{()=><pre>{result.markdown}</pre>}</LazyDetails>
  </section>;
-}
+});

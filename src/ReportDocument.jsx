@@ -43,7 +43,8 @@ function blocks(lines,{depth=0}={}){
   const key=i,mark=fenceStart(line),title=heading(line);
   if(mark){
    const content=[];i++;
-   while(i<lines.length&&!new RegExp('^ {0,3}'+mark[1][0]+'{'+mark[1].length+',}\\s*$').test(lines[i]))content.push(lines[i++]);
+   const closingFence=new RegExp('^ {0,3}'+mark[1][0]+'{'+mark[1].length+',}\\s*$');
+   while(i<lines.length&&!closingFence.test(lines[i]))content.push(lines[i++]);
    if(i<lines.length)i++;
    result.push(<pre key={key}><code>{content.join('\n')}</code></pre>);continue;
   }

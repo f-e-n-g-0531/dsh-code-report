@@ -11,10 +11,10 @@ const sessions={a:{id:'a',cwd:'G:/fixture/a',retainedBy:{mainView:1}},b:{id:'b',
 const ok=value=>({ok:true,value});
 const execution=(phase,{dispatched=true,available=false}={})=>({backendInstanceId:'fixture-backend',dispatch:dispatched?'dispatched':'not-dispatched',dispatchCount:dispatched?1:0,completedBatches:available?(settings.analysisBatches||1):0,totalBatches:settings.analysisBatches||1,resultAvailability:available?'available':'unavailable',phase});
 const fail=(message,code='code-report/input',extra={})=>({ok:false,error:{code,message,details:{fixture:true,...extra}}});
-const info=()=>({packageName:PACKAGE_NAME,protocol:PROTOCOL_VERSION,runningVersion:settings.runtimeMismatch?'0.0.0':(settings.runningVersion||version),asyncPreview:true});
+const info=()=>({packageName:PACKAGE_NAME,protocol:PROTOCOL_VERSION,runningVersion:settings.runtimeMismatch?'0.0.0':(settings.runningVersion||version),asyncPreview:true,...(settings.asyncGenerate?{backendInstanceId:'fixture-backend',capabilities:{asyncGenerate:true}}:{})});
 // Single-request fixtures are contract mocks, not real compaction or coverage calculations.
 const singleCoverage=()=>({strategy:'single-request',originalSourceBytes:987654,fullManifestFiles:12,sentFileCount:7,sentTextFileCount:2,omittedFileCount:5,generatedFileCount:4,total:7,processed:7,remaining:0,completedBatches:1,totalBatches:1,cited:0});
-const plan=()=>settings.singleRequest?{id:'plan-single-fixture',strategy:'single-request',inputBudget:settings.singleBudget||64000,estimated:true,batches:[{id:'batch-single',evidenceIds:['summary-1'],inputBytes:4200}],coverage:singleCoverage()}:{id:'plan-fixture',inputBudget:24000,estimated:true,batches:Array.from({length:settings.analysisBatches||1},(_,index)=>({id:'batch-'+(index+1),evidenceIds:['e-'+(index+1)],inputBytes:100})),coverage:{total:settings.analysisBatches||1,excluded:0}};
+const plan=()=>settings.singleRequest?{id:'plan-single-fixture',strategy:'single-request',inputBudget:settings.singleBudget||64000,estimated:true,batches:[{id:'batch-single',evidenceIds:['summary-1'],inputBytes:4200}],coverage:singleCoverage()}:{id:'plan-fixture',inputBudget:24000,estimated:true,packing:settings.packing,batches:Array.from({length:settings.analysisBatches||1},(_,index)=>({id:'batch-'+(index+1),evidenceIds:['e-'+(index+1)],inputBytes:100})),coverage:{total:settings.analysisBatches||1,excluded:0}};
 function gate(name){return new Promise(resolve=>{gates.set(name,resolve);});}
 function release(name){const resolve=gates.get(name);if(resolve){gates.delete(name);resolve();}}
 const wait=(ms,signal)=>new Promise((resolve,reject)=>{
@@ -59,7 +59,7 @@ async function rpc(channel,endpoint,payload,signal){
   const task=results.get(payload.operationId);
   if(task&&task.sessionId===payload.sessionId){
    const phase=task.status==='pending'?'analyzing':task.status;
-   return ok({phase,completed:phase==='completed'?(settings.analysisBatches||1):0,total:settings.analysisBatches||1,label:'fixture '+phase});
+   return ok({phase,completed:phase==='completed'?(settings.analysisBatches||1):0,total:settings.analysisBatches||1,label:'fixture '+phase,execution:execution(phase),savedReport:task.value?.savedReport});
   }
   return ok({phase:'collecting',completed:0,total:1,label:'fixture 正在处理'});
  }
@@ -81,7 +81,10 @@ async function rpc(channel,endpoint,payload,signal){
   previews.set(previewId,{sessionId:payload.sessionId,value});task.value=value;task.status='completed';})();
   if(settings.failPreviewStartResponse)throw new Error('fixture capture start response lost');return ok({operationId:payload.operationId,status:'pending'});
  }
- if(endpoint==='generate'){
+ if(endpoint==='generate'||endpoint==='generate-start'){
+  const background=endpoint==='generate-start';
+  const previous=results.get(payload.operationId);
+  if(background&&previous)return ok({operationId:payload.operationId,status:previous.status,execution:execution(previous.status)});
   const preview=previews.get(payload.previewId);
   if(payload.sendToModel!==true)return fail('需要明确确认','code-report/input',{execution:execution('stopped',{dispatched:false})});
   if(!preview||preview.sessionId!==payload.sessionId||Date.now()>=preview.value.expiresAt)return fail('预览已过期','code-report/preview-expired',{execution:execution('stopped',{dispatched:false})});
@@ -97,6 +100,7 @@ async function rpc(channel,endpoint,payload,signal){
    if(settings.failGenerateResponse)throw new Error('fixture response lost after generation');
    return ok(value);
   })();
+  if(background){void work.catch(()=>{});return ok({operationId:payload.operationId,status:'pending',execution:execution('pending')});}
   return modelTransport(work,signal);
  }
  return fail('未知模拟端点 '+endpoint);

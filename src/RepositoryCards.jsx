@@ -1,13 +1,14 @@
-import React,{useState,useEffect,useRef} from 'react';
+import React,{useState,useEffect,useRef,useMemo,useCallback} from 'react';
 import {scanMessage,rowIssues,zeroDifferenceWarning} from './repositories.mjs';
 import {bulkVersions} from './configuration.mjs';
-export default function RepositoryCards({rows,change,remove,scanState,replace,loadRefs,refsDisabled}){
+export default React.memo(function RepositoryCards({rows,change,remove,scanState,replace,loadRefs,refsDisabled}){
  const [query,setQuery]=useState(''),[onlySelected,setOnlySelected]=useState(false),[expandedRows,setExpandedRows]=useState([]);
- const toggle=index=>setExpandedRows(current=>current.includes(index)?current.filter(value=>value!==index):[...current,index]);
- const removeRow=index=>{setExpandedRows(current=>current.filter(value=>value!==index).map(value=>value>index?value-1:value));remove(index);};
+ const toggle=useCallback(index=>setExpandedRows(current=>current.includes(index)?current.filter(value=>value!==index):[...current,index]),[]);
+ const removeRow=useCallback(index=>{setExpandedRows(current=>current.filter(value=>value!==index).map(value=>value>index?value-1:value));remove(index);},[remove]);
  const [type,setType]=useState('git'),[a,setA]=useState(''),[b,setB]=useState(''),[branchA,setBranchA]=useState(''),[branchB,setBranchB]=useState(''),[emptyOnly,setEmptyOnly]=useState(true);
- const visible=rows.map((row,index)=>({row,index})).filter(({row})=>(!onlySelected||row.enabled)&&row.path.toLowerCase().includes(query.toLowerCase()));
- const firstError=rows.findIndex((_,index)=>rowIssues(rows,index).length);
+ const issuesByRow=useMemo(()=>rows.map((_,index)=>rowIssues(rows,index)),[rows]);
+ const visible=useMemo(()=>{const match=query.toLowerCase();return rows.map((row,index)=>({row,index})).filter(({row})=>(!onlySelected||row.enabled)&&row.path.toLowerCase().includes(match));},[rows,onlySelected,query]);
+ const firstError=issuesByRow.findIndex(issues=>issues.length);
  const locateError=()=>{setQuery('');setOnlySelected(false);setExpandedRows(current=>current.includes(firstError)?current:[...current,firstError]);requestAnimationFrame(()=>document.getElementById('cr-project-config-'+firstError)?.querySelector('input')?.focus());};
  return <div className="cr-repositories">
   <div className="cr-table-toolbar"><input aria-label="搜索项目路径" placeholder="搜索项目路径…" value={query} onChange={event=>setQuery(event.target.value)}/><label className="cr-selection"><input type="checkbox" checked={onlySelected} onChange={event=>setOnlySelected(event.target.checked)}/>仅看已选</label><span>{visible.length} / {rows.length} 项</span>{firstError>=0&&<button onClick={locateError}>定位首个错误项目</button>}</div>
@@ -17,15 +18,15 @@ export default function RepositoryCards({rows,change,remove,scanState,replace,lo
    <p className="cr-hint">将影响全部 {rows.filter(row=>row.enabled&&row.type===type).length} 个已选 {type.toUpperCase()} 项目，不受搜索过滤影响。空白字段保持原值；不同仓库的版本和 SVN 分支可能不同，执行前逐行确认。</p>
   </details>
   {!rows.length?<div className="cr-empty">{scanMessage(scanState)}</div>:<div className="cr-table-scroll"><table className="cr-config-table"><thead><tr><th scope="col">纳入</th><th scope="col">项目路径 / 类型</th><th scope="col">A · 比较基线</th><th scope="col">B · 发布目标</th><th scope="col">操作</th></tr></thead><tbody>
-   {visible.map(({row,index})=><RepositoryRow key={index} row={row} index={index} issues={rowIssues(rows,index)} warning={zeroDifferenceWarning(row)} change={change} remove={removeRow} loadRefs={loadRefs} refsDisabled={refsDisabled} expanded={expandedRows.includes(index)} toggle={()=>toggle(index)}/>)}
+   {visible.map(({row,index})=><RepositoryRow key={index} row={row} index={index} issues={issuesByRow[index]} warning={zeroDifferenceWarning(row)} change={change} remove={removeRow} loadRefs={loadRefs} refsDisabled={refsDisabled} expanded={expandedRows.includes(index)} toggle={toggle}/>)}
   </tbody></table>{!visible.length&&<p className="cr-empty">没有符合筛选条件的项目，已选项目不会因此取消。</p>}</div>}
  </div>;
-}
+});
 export function comparisonSummary(row){
  const endpoint=side=>{const branch=(row[side==='a'?'branchA':'branchB']||'').trim()||'未填写分支',version=(row[side]||'').trim();return branch+' @ '+(version?(row.type==='svn'?'r'+version.replace(/^r/i,''):version):'最新提交');};
  return 'A：'+endpoint('a')+' → B：'+endpoint('b');
 }
-function RepositoryRow({row,index,issues,warning,change,remove,loadRefs,refsDisabled,expanded,toggle}){
+const RepositoryRow=React.memo(function RepositoryRow({row,index,issues,warning,change,remove,loadRefs,refsDisabled,expanded,toggle}){
  const [refs,setRefs]=useState([]),[loading,setLoading]=useState(false),[error,setError]=useState(''),[sshTip,setSshTip]=useState(false);
  const request=useRef(null),mounted=useRef(true);
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;request.current?.abort();};},[]);
@@ -39,7 +40,7 @@ function RepositoryRow({row,index,issues,warning,change,remove,loadRefs,refsDisa
  };
  const listId='cr-refs-'+index,issueId='cr-issues-'+index,remote=(row.gitMode??'remote')==='remote';
  return <tr id={'cr-row-'+index} className="cr-project-card" data-selected={row.enabled} data-expanded={expanded}>
-  <td className="cr-project-select"><label className="cr-selection"><input type="checkbox" checked={row.enabled} aria-label={'纳入项目 '+(index+1)} onChange={event=>change(index,'enabled',event.target.checked)}/><span>项目 {String(index+1).padStart(2,'0')}</span></label><span className={'cr-vcs-badge cr-'+row.type}>{row.type.toUpperCase()}</span><button type="button" className="cr-project-toggle" aria-label={(expanded?'收起项目 ':'展开项目 ')+(index+1)} aria-expanded={expanded} aria-controls={['cr-project-config-'+index,'cr-project-a-'+index,'cr-project-b-'+index].join(' ')} onClick={toggle}><span aria-hidden="true">{expanded?'▾':'▸'}</span><span className="cr-project-heading"><span className="cr-project-name">{row.path||'未填写项目路径'}</span>{!expanded&&<span className="cr-project-comparison" aria-label={'项目版本对比 '+(index+1)}>{comparisonSummary(row)}</span>}</span><span className="cr-project-toggle-hint">{expanded?'收起':'展开'}</span></button>{!!issues.length&&<span className="cr-project-error">{issues.length} 项错误</span>}</td>
+  <td className="cr-project-select"><label className="cr-selection"><input type="checkbox" checked={row.enabled} aria-label={'纳入项目 '+(index+1)} onChange={event=>change(index,'enabled',event.target.checked)}/><span>项目 {String(index+1).padStart(2,'0')}</span></label><span className={'cr-vcs-badge cr-'+row.type}>{row.type.toUpperCase()}</span><button type="button" className="cr-project-toggle" aria-label={(expanded?'收起项目 ':'展开项目 ')+(index+1)} aria-expanded={expanded} aria-controls={['cr-project-config-'+index,'cr-project-a-'+index,'cr-project-b-'+index].join(' ')} onClick={()=>toggle(index)}><span aria-hidden="true">{expanded?'▾':'▸'}</span><span className="cr-project-heading"><span className="cr-project-name">{row.path||'未填写项目路径'}</span>{!expanded&&<span className="cr-project-comparison" aria-label={'项目版本对比 '+(index+1)}>{comparisonSummary(row)}</span>}</span><span className="cr-project-toggle-hint">{expanded?'收起':'展开'}</span></button>{!!issues.length&&<span className="cr-project-error">{issues.length} 项错误</span>}</td>
   <td className="cr-project-config" id={'cr-project-config-'+index} hidden={!expanded}>
    {expanded&&<><div className="cr-project-fields"><label className="cr-project-path">项目路径<input value={row.path} aria-label={'项目路径 '+(index+1)} aria-invalid={issues.length>0} aria-describedby={issues.length?issueId:undefined} placeholder="相对于工作区" onChange={event=>change(index,'path',event.target.value)}/></label><label>版本控制<select value={row.type} aria-label={'VCS '+(index+1)} onChange={event=>change(index,'type',event.target.value)}><option value="git">Git</option><option value="svn">SVN</option></select></label>
    {row.type==='git'&&<><label>读取方式<select aria-label={'Git 读取方式 '+(index+1)} value={row.gitMode??'remote'} onChange={event=>change(index,'gitMode',event.target.value)}><option value="remote">远端实时读取</option><option value="local">本地离线</option></select></label>{remote&&<><label>远端配置名<input aria-label={'Git 远端名 '+(index+1)} value={row.gitRemote??'origin'} placeholder="origin（非 URL）" onChange={event=>change(index,'gitRemote',event.target.value)}/></label><div className="cr-ssh-settings"><div className="cr-ssh-heading" onMouseLeave={()=>setSshTip(false)}><label htmlFor={'cr-ssh-input-'+index}>SSH 私钥文件或目录（可选）</label><button type="button" className="cr-ssh-tip-trigger" onMouseEnter={()=>setSshTip(true)} onMouseLeave={event=>{if(!event.relatedTarget?.closest?.('.cr-ssh-hint'))setSshTip(false);}} aria-label={'SSH 配置说明 '+(index+1)} aria-describedby={'cr-ssh-hint-'+index} onFocus={()=>setSshTip(true)} onBlur={()=>setSshTip(false)} onClick={()=>setSshTip(true)} onKeyDown={event=>{if(event.key==='Escape')setSshTip(false);}}>ⓘ</button><ul role="tooltip" onMouseLeave={()=>setSshTip(false)} hidden={!sshTip} className="cr-hint cr-ssh-hint" id={'cr-ssh-hint-'+index}>
@@ -65,4 +66,4 @@ function RepositoryRow({row,index,issues,warning,change,remove,loadRefs,refsDisa
   </>}</td>)}
   <td className="cr-project-remove"><button className="cr-danger-ghost" onClick={()=>remove(index)} aria-label={'移除项目 '+(index+1)}>移除</button></td>
  </tr>;
-}
+});

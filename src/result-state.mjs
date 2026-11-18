@@ -17,7 +17,7 @@ export function createResultStore({limit=16,maxBytes=Infinity}={}){
   },
   set(session,value){
    if(!session?.id||!session?.cwd||!value?.markdown)return;
-   const current={markdown:value.markdown,stale:value.stale===true,coverage:value.coverage,...(value.savedReport?{savedReport:{...value.savedReport}}:{}),...(value.kind?{kind:value.kind}:{})};
+   const current={markdown:value.markdown,stale:value.stale===true,coverage:value.coverage,...(value.savedReport?{savedReport:{...value.savedReport}}:{}),...(value.kind?{kind:value.kind}:{}),...(value.operationId?{operationId:value.operationId}:{})};
    const previous=entries.get(resultKey(session));
    // Keep only current output and latest successful AI output, not an unbounded history.
    const entry={current,analysis:value.kind==='analysis'?current:previous?.analysis};
@@ -25,6 +25,13 @@ export function createResultStore({limit=16,maxBytes=Infinity}={}){
    // Default retention is count-based; do not repeatedly encode every large report.
    let bytes=Number.isFinite(maxBytes)?[...entries.values()].reduce((sum,item)=>sum+entrySize(item),0):0;
    while(entries.size>limit||bytes>maxBytes){const key=entries.keys().next().value;if(Number.isFinite(maxBytes))bytes-=entrySize(entries.get(key));entries.delete(key);}
+  },
+  updateSavedReport(session,operationId,savedReport){
+   const key=resultKey(session),entry=entries.get(key);
+   if(entry?.analysis?.operationId!==operationId)return false;
+   const analysis={...entry.analysis,savedReport:{...savedReport}};
+   entries.set(key,{analysis,current:entry.current?.operationId===operationId?{...entry.current,savedReport:{...savedReport}}:entry.current});
+   return true;
   },
   clearCurrent(session){
    const key=resultKey(session),entry=entries.get(key);

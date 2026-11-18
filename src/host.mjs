@@ -7,7 +7,53 @@ import {collect,discover,listRefs} from './collect.mjs';
 import {createAnalysisPlan,analyzeReport,markdown} from './report.mjs';
 import {saveWorkspaceReport} from './workspace-report.mjs';
 
-const PREVIEW_TTL=10*60*1000,PROGRESS_TTL=10*60*1000;
+const PREVIEW_TTL=10*60*1000,RESUME_TTL=30*60*1000,PROGRESS_TTL=10*60*1000;
+const MODEL_SLOT_LIMIT=4,PROVIDER_SLOT_LIMIT=4,SAVE_SLOT_LIMIT=2;
+let activeSaves=0;
+const failedSave=()=>({status:'failed',message:'报告已生成，但保存到工作区失败；请检查目录权限或磁盘空间并下载报告，不要重新生成。'});
+const isGenerate=endpoint=>endpoint==='generate'||endpoint==='generate-start';
+const previewDeadline=p=>p.resumeUntil??(p.time+PREVIEW_TTL);
+const operationFingerprint=(endpoint,payload,concurrency)=>createHash('sha256').update(JSON.stringify([endpoint,payload.previewId,payload.planId,payload.route?.mode??'explicit',payload.route?.provider,payload.route?.model,payload.sendToModel,concurrency])).digest('hex');
+function requestedConcurrency(payload,endpoint){
+  const width=payload.concurrency===undefined?(endpoint==='generate-start'?2:1):payload.concurrency;
+  if(![1,2,4].includes(width))throw problem('input','模型并发数必须为 1、2 或 4');
+  return width;
+}
+
+// Shared across handlers in this backend module, not just within one operation.
+function createModelSlots(){
+  let active=0;
+  const providers=new Map(),waiting=new Set();
+  const drain=()=>{
+    for(const waiter of waiting){
+      if(active>=MODEL_SLOT_LIMIT)break;
+      const {provider,signal}=waiter,count=providers.get(provider)||0;
+      if(count>=PROVIDER_SLOT_LIMIT)continue;
+      waiting.delete(waiter);signal.removeEventListener('abort',waiter.abort);
+      active++;providers.set(provider,count+1);
+      waiter.resolve(()=>{
+        active--;
+        const current=providers.get(provider);
+        if(current===1)providers.delete(provider);else providers.set(provider,current-1);
+        drain();
+      });
+    }
+  };
+  return (provider,signal)=>new Promise((resolve,reject)=>{
+    signal.throwIfAborted();
+    const waiter={provider,signal,resolve,abort(){waiting.delete(waiter);reject(signal.reason);}};
+    waiting.add(waiter);signal.addEventListener('abort',waiter.abort,{once:true});drain();
+  });
+}
+const acquireModelSlot=createModelSlots();
+// A stalled metadata lookup must not indefinitely occupy a slot that has not dispatched.
+async function waitForAdmission(signal,read){
+  signal.throwIfAborted();let abort;
+  try{
+    const cancelled=new Promise((_,reject)=>{abort=()=>reject(signal.reason);signal.addEventListener('abort',abort,{once:true});});
+    return await Promise.race([cancelled,read()]);
+  }finally{signal.removeEventListener('abort',abort);}
+}
 const PREVIEW_LIMIT=16,PROGRESS_LIMIT=64,ACTIVE_LIMIT=2;
 const TERMINAL_PHASES=['completed','stopped'];
 const PAID_ID_LIMIT=1024;
@@ -30,12 +76,12 @@ export async function sessionCwd(ctx,id,signal){
 }
 function createPreviewStore(ctx,now){
   const items=new Map();
-  const prune=()=>{for(const [id,p]of items)if(!p.used&&now()-p.time>=PREVIEW_TTL)items.delete(id);};
+  const prune=()=>{for(const [id,p]of items)if(!p.used&&now()>=previewDeadline(p))items.delete(id);};
   const claim=(payload,cwd)=>{
     const p=items.get(payload.previewId);
     if(!p||p.cwd!==cwd||p.sessionId!==payload.sessionId)throw problem('preview-expired','预览已过期、已使用或会话变更，请重新采集');
     if(p.used)throw problem('busy','预览正在分析，请等待完成或取消');
-    if(now()-p.time>=PREVIEW_TTL){items.delete(payload.previewId);throw problem('preview-expired','预览已过期，请重新采集');}
+    if(now()>=previewDeadline(p)){items.delete(payload.previewId);throw problem('preview-expired','预览已过期，请重新采集');}
     return p;
   };
   const release=async(payload,signal)=>{
@@ -47,7 +93,8 @@ function createPreviewStore(ctx,now){
   const add=(id,entry)=>{
     // Bound retained snapshots by count, not by the size of one legitimate release.
     while(items.size>=PREVIEW_LIMIT){
-      const oldest=[...items].find(([,p])=>!p.used);
+      const idle=[...items].filter(([,p])=>!p.used);
+      const oldest=idle.find(([,p])=>!p.resumeUntil)??idle[0];
       if(!oldest)throw problem('busy','预览缓存已满，请稍后重试');
       items.delete(oldest[0]);
     }
@@ -56,9 +103,12 @@ function createPreviewStore(ctx,now){
   return {prune,claim,release,add,discard:id=>items.delete(id)};
 }
 function createProgressStore(ctx,now,backendInstanceId){
+  // Process-local receipts and checkpoints only. A restart loses these records;
+  // missing records never prove that remote processing or billing did not happen.
   const items=new Map(),paidIds=new Map();
   const terminal=item=>TERMINAL_PHASES.includes(item.value.phase);
-  const expired=item=>terminal(item)&&now()-item.updatedAt>PROGRESS_TTL;
+  const evictable=item=>terminal(item)&&item.result?.savedReport?.status!=='pending';
+  const expired=item=>evictable(item)&&now()-item.updatedAt>PROGRESS_TTL;
   const execution=item=>({backendInstanceId,dispatch:item.dispatchCount?'dispatched':'not-dispatched',dispatchCount:item.dispatchCount,completedBatches:item.completedBatches,totalBatches:item.totalBatches,resultAvailability:item.result?'available':'unavailable',phase:terminal(item)?item.value.phase:'pending'});
   const begin=(id,sessionId,cwd,endpoint,fingerprint)=>{
     if(typeof id!=='string'||!/^[a-zA-Z0-9-]{1,100}$/.test(id))throw problem('input','无效任务标识');
@@ -67,11 +117,11 @@ function createProgressStore(ctx,now,backendInstanceId){
     if(prior||known){
       const owner=prior||known;
       if(owner.sessionId!==sessionId||owner.cwd!==cwd||owner.endpoint!==endpoint||owner.fingerprint!==fingerprint)throw problem('operation-conflict','任务标识已绑定其他请求，禁止重复发送');
-      if(prior?.endpoint==='preview-start')return {operation:prior,existing:true};
+      if(prior&&(endpoint==='preview-start'||endpoint==='generate-start'))return {operation:prior,existing:true};
       if(prior?.result)return {operation:prior,replay:prior.result};
       throw problem('operation-exists','此任务标识已使用，请只读核对结果；禁止重新派发',{...(prior?{execution:execution(prior)}:{backendInstanceId})});
     }
-    for(const [key,item]of items){if(items.size<PROGRESS_LIMIT)break;if(terminal(item))items.delete(key);}
+    for(const [key,item]of items){if(items.size<PROGRESS_LIMIT)break;if(evictable(item))items.delete(key);}
     if(items.size>=PROGRESS_LIMIT)throw problem('busy','活动任务进度缓存已满');
     const operation={id,sessionId,cwd,endpoint,fingerprint,dispatchCount:0,completedBatches:0,totalBatches:0,updatedAt:now(),value:{phase:'starting',label:'准备执行'}};
     items.set(id,operation);
@@ -92,7 +142,7 @@ function createProgressStore(ctx,now,backendInstanceId){
   };
   const stop=(item,error)=>{
     if(!item||terminal(item))return;
-    item.error={code:error.code||'code-report/request-failed',message:String(error.message||'任务已停止').slice(0,1200)};
+    item.error={code:error.code||'code-report/request-failed',message:String(error.message||'任务已停止').slice(0,1200),...(isGenerate(item.endpoint)&&error.details?{details:{...error.details}}:{})};
     item.value={phase:'stopped',label:item.error.message};item.updatedAt=now();
   };
   const owned=async(payload,signal,code)=>{
@@ -105,9 +155,12 @@ function createProgressStore(ctx,now,backendInstanceId){
     if(item.result)return {status:'completed',result:item.result,execution:facts};
     if(item.value.phase==='completed')return {status:'unavailable',phase:'completed',execution:facts};
     if(item.value.phase==='stopped')return {status:'stopped',phase:'stopped',error:item.error,execution:facts};
-    return {status:'pending',phase:item.value.phase,execution:facts};
+    return {status:'pending',phase:item.value.phase,execution:facts,...(item.endpoint==='preview-start'?{progress:item.value}:{})};
   };
-  const read=async(payload,signal)=>{const item=await owned(payload,signal,'progress-unavailable');return {...item.value,execution:execution(item)};};
+  const read=async(payload,signal)=>{const item=await owned(payload,signal,'progress-unavailable');return {...item.value,execution:execution(item),...(item.result?.savedReport?{savedReport:item.result.savedReport}:{})};};
+  const saveFinished=(item,savedReport)=>{
+    item.result={...item.result,savedReport};item.updatedAt=now();
+  };
   const cancel=async(payload,signal,discardPreview)=>{
     const item=await owned(payload,signal,'progress-unavailable');
     if(item.endpoint!=='preview-start')throw problem('input','任务不是异步采集');
@@ -120,15 +173,16 @@ function createProgressStore(ctx,now,backendInstanceId){
   };
   const cancelGenerate=async(payload,signal)=>{
     const item=await owned(payload,signal,'result-unavailable');signal?.throwIfAborted();
-    if(item.endpoint!=='generate')throw problem('input','任务不是模型分析');
-    if(!terminal(item))item.controller?.abort();
-    return {operationId:item.id,cancelRequested:true,status:terminal(item)?item.value.phase:'pending',execution:execution(item)};
+    if(!isGenerate(item.endpoint))throw problem('input','任务不是模型分析');
+    const cancelRequested=!terminal(item)&&!!item.controller&&!item.controller.signal.aborted;
+    if(cancelRequested)item.controller.abort();
+    return {operationId:item.id,cancelRequested,status:terminal(item)?item.value.phase:'pending',execution:execution(item)};
   };
-  return {begin,authorize,update,read,finish,stop,result,execution,cancel,cancelGenerate};
+  return {begin,authorize,update,read,finish,saveFinished,stop,result,execution,cancel,cancelGenerate};
 }
 function publicPlan(plan){
   if(!plan)return null;
-  return {id:plan.id,strategy:plan.strategy,mode:plan.mode,formatVersion:plan.formatVersion,evidenceVersion:plan.evidenceVersion,inputBudget:plan.inputBudget,estimated:plan.estimated,capacity:plan.capacity??null,modelRoute:plan.modelRoute??null,batches:plan.batches.map(({id,evidenceIds,inputBytes})=>({id,evidenceIds,inputBytes})),coverage:plan.coverage};
+  return {id:plan.id,strategy:plan.strategy,mode:plan.mode,formatVersion:plan.formatVersion,evidenceVersion:plan.evidenceVersion,inputBudget:plan.inputBudget,estimated:plan.estimated,packing:plan.packing??null,capacity:plan.capacity??null,modelRoute:plan.modelRoute??null,batches:plan.batches.map(({id,evidenceIds,inputBytes})=>({id,evidenceIds,inputBytes})),coverage:plan.coverage};
 }
 // ctx.get is an optional Cordis lookup: unlike required injection it keeps old hosts usable.
 function defaultModelRoute(ctx){
@@ -230,74 +284,139 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
       next.capacity=capacity;next.modelRoute=selected?{provider:selected.provider,model:selected.model}:null;
       await assertSession(payload,cwd,signal);signal.throwIfAborted();previews.claim(payload,cwd);
       p.plan=next;p.completed=new Map();p.routeKey=null;
-      return {analysisPlan:publicPlan(next),expiresAt:p.time+PREVIEW_TTL,defaultRoute:p.defaultRoute?{...p.defaultRoute}:null,defaultRouteError:p.defaultRouteError?{...p.defaultRouteError}:null};
+      return {analysisPlan:publicPlan(next),expiresAt:previewDeadline(p),defaultRoute:p.defaultRoute?{...p.defaultRoute}:null,defaultRouteError:p.defaultRouteError?{...p.defaultRouteError}:null};
     },
-    generate:async({payload,cwd,signal,update,operation})=>{
+    generate:async({payload,cwd,signal,update,operation,width,background=false})=>{
       const p=previews.claim(payload,cwd);
       if(payload.sendToModel!==true)throw problem('consent-required','需要明确确认向所选模型发送源码');
       if(!p.plan||payload.planId!==p.plan.id)throw problem('plan-mismatch','分析计划已变化或不可用，请重新确认发送范围');
       const approvedPlan=p.plan;
       const route=generationRoute(payload.route,p),key=routeKey(route);
-      if(p.plan.capacity?.source==='host-model'){
-        if(routeKey(p.plan.modelRoute)!==key)throw problem('plan-mismatch','所选模型已变化，请更新分析计划并重新确认');
-        const capacity=await modelCapacity(ctx.llm,route);
-        if(JSON.stringify(capacity)!==JSON.stringify(p.plan.capacity))throw problem('plan-mismatch','模型容量配置已变化，请更新分析计划并重新确认');
+      if(background||approvedPlan.capacity?.source==='host-model'){
+        if(!approvedPlan.modelRoute||routeKey(approvedPlan.modelRoute)!==key)throw problem('plan-mismatch','所选模型已变化，请更新分析计划并重新确认');
+        const capacity=await waitForAdmission(AbortSignal.any([signal,AbortSignal.timeout(15000)]),()=>modelCapacity(ctx.llm,route));
+        if(JSON.stringify(capacity)!==JSON.stringify(approvedPlan.capacity))throw problem('plan-mismatch','模型容量配置已变化，请更新分析计划并重新确认');
       }
       await assertSession(payload,cwd,signal);signal.throwIfAborted();previews.claim(payload,cwd);
       if(p.plan!==approvedPlan)throw problem('plan-mismatch','分析计划已变化，请重新确认');
       if(p.routeKey!==key){p.completed=new Map();p.routeKey=key;}
       signal.throwIfAborted();progress.authorize(operation);p.used=true;
-      // Recheck authority before every model dispatch, not only before the first batch.
-      let dispatched=false;
-      const llm={async *stream(input){
-        await assertSession(payload,cwd,signal);signal.throwIfAborted();
-        if(!dispatched&&now()-p.time>=PREVIEW_TTL)throw problem('preview-expired','预览已过期，请重新采集');
-        if(p.plan.strategy==='single-request'&&dispatched)throw problem('analysis-plan','单次摘要禁止隐式第二次模型请求；失败后须重新明确确认');
-        if(p.plan.capacity?.source==='host-model'){
-          const current=await modelCapacity(ctx.llm,route);
-          if(JSON.stringify(current)!==JSON.stringify(p.plan.capacity))throw problem('plan-mismatch','模型容量配置已变化，请更新分析计划并重新确认');
-        }
-        await assertSession(payload,cwd,signal);signal.throwIfAborted();
-        if(!dispatched&&now()-p.time>=PREVIEW_TTL)throw problem('preview-expired','预览已过期，请重新采集');
-        dispatched=true;if(operation)operation.dispatchCount++;yield* ctx.llm.stream({...input,maxTokens:p.plan.capacity?.outputTokens??input.maxTokens});
+      const concurrency=approvedPlan.strategy==='single-request'?1:width;
+      let dispatched=false,admitting=0,latestProgress;
+      const publish=()=>{
+        if(!latestProgress)return;
+        const waiting=Math.min(admitting,latestProgress.inFlight??0);
+        update({...latestProgress,completed:p.completed.size,queued:(latestProgress.queued??0)+waiting,inFlight:(latestProgress.inFlight??0)-waiting,etaMs:waiting?null:(latestProgress.etaMs??null),concurrency});
+      };
+      const onProgress=value=>{latestProgress=value;publish();};
+      // Keep the slot until the adapter iterator (including its cleanup) actually settles.
+      // The analyzer may stop awaiting an uncooperative iterator well before that point.
+      const llm={async *stream(input,{admissionSignal}={}){
+        const admission=admissionSignal?AbortSignal.any([signal,admissionSignal]):signal;
+        let release;
+        admitting++;publish();
+        try{
+          release=await acquireModelSlot(route.provider,admission);
+          const validate=AbortSignal.any([admission,AbortSignal.timeout(15000)]);
+          if(background||approvedPlan.capacity?.source==='host-model'){
+            const current=await waitForAdmission(validate,()=>modelCapacity(ctx.llm,route));
+            if(JSON.stringify(current)!==JSON.stringify(approvedPlan.capacity))throw problem('plan-mismatch','模型容量配置已变化，请更新分析计划并重新确认');
+          }
+          await waitForAdmission(validate,()=>assertSession(payload,cwd,validate));validate.throwIfAborted();
+          if(!dispatched&&now()>=previewDeadline(p))throw problem('preview-expired','预览已过期，请重新采集');
+          if(approvedPlan.strategy==='single-request'&&dispatched)throw problem('analysis-plan','单次摘要禁止隐式第二次模型请求；失败后须重新明确确认');
+          dispatched=true;operation.dispatchCount++;
+          admitting--;publish();
+          try{yield* ctx.llm.stream({...input,maxTokens:approvedPlan.capacity?.outputTokens??input.maxTokens});}
+          finally{admitting++;}
+        }finally{release?.();admitting--;publish();}
       }};
-      update({phase:'analyzing',label:'正在分析固定快照；分片内部进度不可量化',completed:p.completed.size,total:p.plan.batches.length});
+      onProgress({phase:'analyzing',label:'正在分析固定快照；分片内部进度不可量化',completed:p.completed.size,total:approvedPlan.batches.length,queued:approvedPlan.batches.length-p.completed.size,inFlight:0,etaMs:null});
       try{
-        const result=await analyze(llm,route,p.snapshot,{signal,plan:p.plan,completed:p.completed,onProgress:update});
-        if(result.completed instanceof Map)p.completed=result.completed;
+        const result=await analyze(llm,route,p.snapshot,{signal,plan:approvedPlan,completed:new Map(p.completed),concurrency,onProgress,onBatchComplete(id,entry){
+          p.completed.set(id,entry);publish();
+        }});
+        if(result.completed instanceof Map)for(const [id,entry]of result.completed)p.completed.set(id,entry);
         // Completed validated analysis is a server fact, separate from cancelled delivery.
         // Still recheck authoritative ownership without borrowing the delivery signal.
         await assertSession(payload,cwd,AbortSignal.timeout(15000));
         if(operation){operation.completedBatches=p.completed.size;operation.totalBatches=p.plan.batches.length;}
         const value={markdown:markdown(p.snapshot,result.markdown,route,{structured:true,evidenceManifest:plan===defaultAnalysisPlan||p.plan.strategy==='single-request'?p.plan.coverage:null}),coverage:result.coverage};
-        // Persistence failure must never turn a validated paid result into a model retry.
-        try{value.savedReport=await saveReport(cwd,value.markdown,{assertCurrent:()=>assertSession(payload,cwd,AbortSignal.timeout(15000))});}
-        catch{value.savedReport={status:'failed',message:'报告已生成，但保存到工作区失败；请检查目录权限或磁盘空间并下载报告，不要重新生成。'};}
-        progress.finish(operation,value);previews.discard(payload.previewId);return value;
+        // Publication and persistence are separate for background clients. Legacy callers
+        // still receive the final save status in the original generate response.
+        if(activeSaves>=SAVE_SLOT_LIMIT){
+          value.savedReport={status:'failed',message:'报告已生成，但工作区保存通道繁忙，未发起保存。请下载报告，不要重新生成。'};
+          progress.finish(operation,value);previews.discard(payload.previewId);return value;
+        }
+        activeSaves++;
+        const persist=async()=>{
+          try{return (await saveReport(cwd,value.markdown,{assertCurrent:()=>assertSession(payload,cwd,AbortSignal.timeout(15000))}))??failedSave();}
+          catch{return failedSave();}
+          finally{activeSaves--;}
+        };
+        if(background){
+          value.savedReport={status:'pending'};
+          progress.finish(operation,value);previews.discard(payload.previewId);
+          void new Promise(resolve=>setImmediate(resolve)).then(persist).then(saved=>progress.saveFinished(operation,saved));
+        }else{
+          value.savedReport=await persist();progress.finish(operation,value);previews.discard(payload.previewId);
+        }
+        return value;
       }catch(error){
-        if(error.completed instanceof Map)p.completed=error.completed;
-        if(operation){operation.completedBatches=p.completed.size;operation.totalBatches=p.plan.batches.length;}
+        if(error.completed instanceof Map)for(const [id,entry]of error.completed)p.completed.set(id,entry);
+        operation.completedBatches=p.completed.size;operation.totalBatches=approvedPlan.batches.length;
+        if(dispatched)p.resumeUntil=now()+RESUME_TTL;
         if(!error.code)error.code='code-report/analysis-incomplete';
-        error.details={...error.details,coverage:error.coverage,completedBatches:p.completed.size,remainingBatches:p.plan.batches.length-p.completed.size,requiresConfirmation:true};
+        error.details={...error.details,coverage:error.coverage,completedBatches:p.completed.size,remainingBatches:approvedPlan.batches.length-p.completed.size,requiresConfirmation:true,...(p.resumeUntil?{previewId:payload.previewId,previewExpiresAt:previewDeadline(p)}:{})};
         throw error;
       }finally{p.used=false;}
     }
   };
+  const startGenerate=async(payload,transportSignal)=>{
+    transportSignal?.throwIfAborted();
+    if(!payload||typeof payload!=='object')throw problem('input','无效请求');
+    const request=structuredClone(payload);
+    const cwd=await sessionCwd(ctx,request.sessionId,transportSignal);
+    transportSignal?.throwIfAborted();
+    if(request.backendInstanceId!==undefined&&request.backendInstanceId!==backendInstanceId)throw problem('backend-changed','后台实例已变化，旧预览和未完成分片不可复用；不会自动重新发送');
+    const width=requestedConcurrency(request,'generate-start');
+    const {operation,existing}=progress.begin(request.operationId,request.sessionId,cwd,'generate-start',operationFingerprint('generate-start',request,width));
+    const acknowledgement=()=>({operationId:operation.id,status:TERMINAL_PHASES.includes(operation.value.phase)?operation.value.phase:'pending',execution:progress.execution(operation)});
+    if(existing)return acknowledgement();
+    if(active>=ACTIVE_LIMIT){
+      progress.stop(operation,problem('busy','报告任务繁忙，请稍后重试'));
+      return acknowledgement();
+    }
+    const controller=new AbortController();
+    operation.controller=controller;active++;
+    // The transport signal controls only admission, never the admitted job.
+    void new Promise(resolve=>setImmediate(resolve)).then(async()=>{
+      const signal=controller.signal;
+      try{
+        signal.throwIfAborted();previews.prune();
+        await endpoints.generate({payload:request,cwd,signal,operation,width,background:true,update:value=>progress.update(operation,value)});
+      }catch(error){
+        progress.stop(operation,signal.aborted?problem('cancelled','已停止本地分析；远端处理与计费仍需核对',error.details??{}):error);
+      }finally{active--;delete operation.controller;}
+    });
+    return acknowledgement();
+  };
   return async(endpoint,payload,signal)=>{
-    if(endpoint==='runtime-info')return respond(()=>{const info=runtimeInfo();return {...info,backendInstanceId,capabilities:{...info.capabilities,asyncPreview:true}};});
+    if(endpoint==='runtime-info')return respond(()=>{const info=runtimeInfo();return {...info,backendInstanceId,capabilities:{...info.capabilities,asyncPreview:true,asyncGenerate:true}};});
     if(endpoint==='configuration-load'||endpoint==='configuration-save')return respond(async()=>{
       const cwd=await sessionCwd(ctx,payload?.sessionId,signal);
       const options={signal,assertCurrent:()=>assertSession(payload,cwd,signal)};
       return endpoint==='configuration-load'?loadWorkspaceConfiguration(cwd,options):saveWorkspaceConfiguration(cwd,payload?.configuration,options);
     });
     if(endpoint==='preview-start')return respond(()=>startPreview(payload,signal));
+    if(endpoint==='generate-start')return respond(()=>startGenerate(payload,signal));
     if(endpoint==='generate-cancel')return respond(()=>progress.cancelGenerate(payload,signal));
     if(endpoint==='preview-cancel')return respond(()=>progress.cancel(payload,signal,(previewId,sessionId)=>previews.release({previewId,sessionId},signal)));
     if(endpoint==='check-update')return respond(()=>checkUpdate({signal}));
     if(endpoint==='release-preview')return respond(()=>previews.release(payload,signal));
     if(endpoint==='progress')return respond(()=>progress.read(payload,signal));
     if(endpoint==='result')return respond(()=>progress.result(payload,signal));
-    active++;let operation;
+    active++;let operation,width;
     try{
       // Large collections and many model batches have no arbitrary request deadline.
       // Caller cancellation remains authoritative (except validated delivery completion).
@@ -305,7 +424,8 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
       if(!endpointNames.includes(endpoint)||!payload||typeof payload!=='object')throw problem('input','无效请求');
       const cwd=await sessionCwd(ctx,payload.sessionId,signal);signal.throwIfAborted();
       if(payload.operationId!==undefined||endpoint==='generate'){
-        const fingerprint=createHash('sha256').update(JSON.stringify([endpoint,payload.previewId,payload.planId,payload.route?.mode??'explicit',payload.route?.provider,payload.route?.model,payload.sendToModel])).digest('hex');
+        if(endpoint==='generate')width=requestedConcurrency(payload,endpoint);
+        const fingerprint=operationFingerprint(endpoint,payload,width);
         const started=progress.begin(payload.operationId,payload.sessionId,cwd,endpoint,fingerprint);
         if(started.replay)return {ok:true,value:started.replay};
         operation=started.operation;
@@ -316,7 +436,7 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
       }
       if(active>ACTIVE_LIMIT)throw problem('busy','报告任务繁忙，请稍后重试');
       const update=value=>progress.update(operation,value);
-      const value=await endpoints[endpoint]({payload,cwd,signal,update,operation});
+      const value=await endpoints[endpoint]({payload,cwd,signal,update,operation,width});
       if(operation?.value.phase!=='completed')signal.throwIfAborted();
       update({phase:'completed',completed:1,total:1,label:'执行完成'});return {ok:true,value};
     }catch(error){

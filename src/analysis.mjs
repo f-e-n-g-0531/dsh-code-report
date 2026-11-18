@@ -1,4 +1,4 @@
-import {createEvidenceIndex, evidenceHash, snapshotHash, EVIDENCE_FORMAT_VERSION} from './evidence.mjs';
+import {prepareEvidenceIndex, evidenceHash, EVIDENCE_FORMAT_VERSION} from './evidence.mjs';
 import {markdownText as safe} from './markdown-text.mjs';
 import {buildSingleRequestEvidence} from './single-request.mjs';
 import {renderReadableAnalysis, qaGroups, qaGroup, qaParts} from './readable-analysis.mjs';
@@ -27,6 +27,25 @@ export function estimatedInputBytes(payload, maxTokens = 8192) {
   return contentBytes + 2 * 200 * 6 + 32;
 }
 
+// Text is escaped first inside the payload and then inside the request JSON.
+const itemInputBytes = item => utf8(JSON.stringify(JSON.stringify(item))) - 2;
+function escapedExtra(character) {
+  const code = character.charCodeAt(0);
+  if (code === 34 || code === 92) return 3;
+  if (code >= 0xd800) return 4; // lone surrogate: three UTF-8 replacement bytes become seven ASCII bytes
+  return [8, 9, 10, 12, 13].includes(code) ? 2 : 6;
+}
+function escapedTextBytes(text) {
+  let size = utf8(text);
+  // Unicode mode matches lone surrogates but never the two halves of a valid pair.
+  for (const match of text.matchAll(/["\\\x00-\x1f\ud800-\udfff]/gu)) size += escapedExtra(match[0]);
+  return size;
+}
+function escapedCharacterBytes(character) {
+  const code = character.charCodeAt(0);
+  return utf8(character) + (character.length === 1 && (code < 32 || code === 34 || code === 92 || (code >= 0xd800 && code <= 0xdfff)) ? escapedExtra(character) : 0);
+}
+
 export function createAnalysisPlan(snapshot, {inputBudget = 24000, strategy = 'full', capacity = null} = {}) {
   if (!['full', 'single-request'].includes(strategy)) throw fail('analysis-input', '未知分析策略');
   if (!Number.isSafeInteger(inputBudget) || inputBudget < 4000) {
@@ -34,35 +53,64 @@ export function createAnalysisPlan(snapshot, {inputBudget = 24000, strategy = 'f
   }
   const overhead = estimatedInputBytes(payloadFor(snapshot, []),capacity?.outputTokens??8192);
   if (overhead + 512 >= inputBudget) throw fail('analysis-plan', '标题或限制元数据超过分析预算，请提高预算或缩小范围');
-  // Double JSON escaping can expand control characters; reserve room for item metadata too.
-  const index = strategy === 'single-request'
-    ? buildSingleRequestEvidence(snapshot, {inputBudget, estimate: items => capacity&&items.length*192>Math.max(0,capacity.outputTokens-Math.min(8192,Math.floor(capacity.outputTokens/2)))?Number.MAX_SAFE_INTEGER:estimatedInputBytes(payloadFor(snapshot, items),capacity?.outputTokens??8192)})
-    : createEvidenceIndex(snapshot, {groupAdjacentDiff: true, maxTextBytes: Math.max(64, Math.floor((inputBudget - overhead - 512) / 8))});
-  // Capacity-derived output guard: reserve room for conclusions/reasoning and
-  // approximately 192 serialized bytes per evidence disposition. This is a
-  // planning heuristic, not a guarantee that model output will fit.
-  const outputTokens=capacity?.outputTokens??8192;
-  const dispositionBudget=Math.max(0,outputTokens-Math.min(8192,Math.floor(outputTokens/2)));
-  if(capacity&&dispositionBudget<192)throw fail('analysis-plan','输出预算不足以容纳证据处置与结论，请检查模型输出配置');
-  const groups = [];
-  let group = {items: [], inputBytes: overhead};
-  for (const item of index.items) {
-    // The payload is itself a JSON string inside the request. Each serialized item
-    // contributes its doubly escaped bytes, without the enclosing string quotes;
-    // array commas contribute one byte. This is exact without reserializing the
-    // growing batch (or its shared title/limitations) for every candidate item.
-    const itemBytes = utf8(JSON.stringify(JSON.stringify(item))) - 2;
-    if (overhead + itemBytes > inputBudget) {
-      throw fail('analysis-plan', '单条证据元数据超过预算，请提高预算或缩小范围；未截断证据');
+  // Retain the per-unit output reservation. A wider unit is tried only if
+  // the original plan leaves room above the input-volume lower bound.
+  const outputTokens = capacity?.outputTokens ?? 8192;
+  const dispositionBudget = outputTokens - Math.min(8192, Math.floor(outputTokens / 2));
+  const maxItems = capacity ? Math.floor(dispositionBudget / 192) : Infinity;
+  if (maxItems < 1) throw fail('analysis-plan', '输出预算不足以容纳证据处置与结论，请检查模型输出配置');
+  const room = inputBudget - overhead;
+  const pack = items => {
+    const groups = [];
+    const closes = {input: 0, output: 0, both: 0};
+    let group = {items: [], inputBytes: overhead}, itemWeight = 0;
+    for (const item of items) {
+      const itemBytes = itemInputBytes(item);
+      if (itemBytes > room) throw fail('analysis-plan', '单条证据元数据超过预算，请提高预算或缩小范围；未截断证据');
+      const input = group.inputBytes + 1 + itemBytes > inputBudget;
+      const output = strategy === 'full' && group.items.length >= maxItems;
+      if (group.items.length && (input || output)) {
+        closes[input && output ? 'both' : input ? 'input' : 'output']++;
+        groups.push(group);
+        group = {items: [], inputBytes: overhead};
+      }
+      group.inputBytes += itemBytes + (group.items.length ? 1 : 0);
+      group.items.push(item);
+      itemWeight += itemBytes + 1;
     }
-    if (group.items.length && (group.inputBytes + 1 + itemBytes > inputBudget || (capacity&&strategy==='full'&&(group.items.length+1)*192>dispositionBudget))) {
-      groups.push(group);
-      group = {items: [], inputBytes: overhead};
+    if (group.items.length) groups.push(group);
+    return {groups, closes, inputLowerBound: Math.ceil(itemWeight / (room + 1)), outputLowerBound: Math.ceil(items.length / maxItems)};
+  };
+  const originalOptions = {groupAdjacentDiff: true, maxTextBytes: Math.max(64, Math.floor((room - 512) / 8))};
+  const buildIndex = strategy === 'full' ? prepareEvidenceIndex(snapshot) : null;
+  let index = strategy === 'single-request'
+    ? buildSingleRequestEvidence(snapshot, {inputBudget, estimate: items => items.length > maxItems ? Number.MAX_SAFE_INTEGER : estimatedInputBytes(payloadFor(snapshot, items), outputTokens),
+      estimateAppend: (item, size, count) => count >= maxItems ? Number.MAX_SAFE_INTEGER : size + itemInputBytes(item) + (count ? 1 : 0)})
+    : buildIndex(originalOptions);
+  let packed = pack(index.items);
+  const originalBatches = packed.groups.length;
+  const slack = originalBatches - packed.inputLowerBound;
+  if (strategy === 'full' && capacity && originalBatches > 1 && (packed.closes.output || packed.closes.both || slack >= Math.max(2, Math.ceil(originalBatches / 10)))) {
+    // Target two units per batch for long text, leaving room for nearby evidence.
+    // Measure escaping exactly, not an arbitrary raw-byte multiplier.
+    const tooLarge = fail('analysis-plan', '合并后的证据元数据超出预算');
+    try {
+      const candidate = buildIndex({groupAdjacentDiff: true, maxTextBytes: Math.max(64, Math.floor(room / 2)), textBudget: {
+        available: metadata => {
+          const size = itemInputBytes(metadata);
+          const paired = Math.floor((room - 1) / 2) - size;
+          return paired >= 7 ? paired : room - size;
+        }, measure: escapedTextBytes, character: escapedCharacterBytes,
+        error: () => tooLarge
+      }});
+      const wider = pack(candidate.items);
+      if (wider.groups.length < originalBatches) { index = candidate; packed = wider; }
+    } catch (error) {
+      if (error !== tooLarge) throw error;
+      // Metadata at a wider boundary may not fit; the original plan remains valid.
     }
-    group.inputBytes += itemBytes + (group.items.length ? 1 : 0);
-    group.items.push(item);
   }
-  if (group.items.length) groups.push(group);
+  const {groups} = packed;
   const payloads = groups.map(group => payloadFor(snapshot, group.items));
   const payloadHashes = payloads.map(payload => evidenceHash(JSON.stringify(payload)));
   if (strategy === 'single-request' && payloads.length !== 1) throw fail('analysis-plan', '单次摘要必须恰好一份模型输入，未自动拆分或派发');
@@ -84,7 +132,9 @@ export function createAnalysisPlan(snapshot, {inputBudget = 24000, strategy = 'f
     return strategy === 'single-request' ? file : {...file, sentMetadata: metadataKeys.has(key), sentText: textKeys.has(key)};
   });
   const fullCoverage = strategy === 'full' ? {originalSourceBytes: snapshot.repositories.reduce((n, repo) => n + utf8(repo.diff), 0) + snapshot.context.reduce((n, item) => n + utf8(item.text), 0), fullManifestFiles: files.length, sentFileCount: files.filter(file => file.sentMetadata).length, sentTextFileCount: files.filter(file => file.sentText).length, omittedFileCount: files.filter(file => !file.sentMetadata).length} : {};
-  const plan = {id, strategy, mode: strategy, formatVersion: ANALYSIS_PLAN_VERSION, evidenceVersion: EVIDENCE_FORMAT_VERSION, inputBudget, ...(capacity?{capacity}:{}), estimated: true, batches, coverage: {...index.coverage, ...fullCoverage, total: index.items.length, excluded: index.excluded, files}};
+  const packing = strategy === 'full' ? {originalBatches, ...packed.closes, inputLowerBound: packed.inputLowerBound,
+    outputLowerBound: packed.outputLowerBound, items: index.items.length, totalInputBytes: groups.reduce((sum, group) => sum + group.inputBytes, 0)} : null;
+  const plan = {id, strategy, ...(packing?{packing}:{}), mode: strategy, formatVersion: ANALYSIS_PLAN_VERSION, evidenceVersion: EVIDENCE_FORMAT_VERSION, inputBudget, ...(capacity?{capacity}:{}), estimated: true, batches, coverage: {...index.coverage, ...fullCoverage, total: index.items.length, excluded: index.excluded, files}};
   Object.defineProperty(plan, 'snapshotHash', {value: index.snapshotHash, enumerable: false});
   return plan;
 }
@@ -306,15 +356,15 @@ function renderAnalysis(plan, completed) {
   return lines.join('\n') + '\n';
 }
 
-/** Sequential, explicitly authorized invocation. Never retries a model call automatically. */
-export async function analyzeReport(llm, route, snapshot, {signal, plan, completed = new Map(), onProgress = () => {}} = {}) {
+/** Bounded, explicitly authorized invocation. Never retries a model call automatically. */
+export async function analyzeReport(llm, route, snapshot, {signal, plan, completed = new Map(), concurrency = 1, onBatchComplete = () => {}, onProgress = () => {}} = {}) {
   const accepted = new Map();
   let currentPlan;
   try {
     signal?.throwIfAborted();
     validateRoute(route);
     currentPlan = createAnalysisPlan(snapshot, {inputBudget: plan?.inputBudget ?? 24000, strategy: plan?.strategy ?? 'full', capacity: plan?.capacity??null});
-    if (plan && (plan.id !== currentPlan.id || (plan.snapshotHash && plan.snapshotHash !== snapshotHash(snapshot)))) {
+    if (plan && (plan.id !== currentPlan.id || (plan.snapshotHash && plan.snapshotHash !== currentPlan.snapshotHash))) {
       throw fail('analysis-plan', '分析计划与当前证据不一致，请重新规划并确认');
     }
     if (!(completed instanceof Map)) throw fail('analysis-input', '已完成分片必须由宿主提供 Map');
@@ -326,16 +376,52 @@ export async function analyzeReport(llm, route, snapshot, {signal, plan, complet
       }
       accepted.set(id, {...entry, analysis: validateAnalysis(entry.analysis, known.get(id).evidenceIds, {normalized: true, requireDispositions: currentPlan.strategy !== 'single-request', evidence: known.get(id).snapshot.evidence, publicApiPaths: snapshot.publicApiPaths ?? []})});
     }
-    onProgress({phase: 'analyzing', completed: accepted.size, total: currentPlan.batches.length, label: '已完成 ' + accepted.size + ' / ' + currentPlan.batches.length + ' 个分析分片（不代表耗时比例）'});
-    for (const batch of currentPlan.batches) {
-      if (accepted.has(batch.id)) continue;
-      signal?.throwIfAborted();
-      const stream = llm.stream({provider: route.provider, model: route.model, system: ANALYSIS_SYSTEM,
-        messages: [{role: 'user', content: [{type: 'text', text: JSON.stringify(batch.snapshot)}]}], tools: [], maxTokens: currentPlan.capacity?.outputTokens??8192, signal});
-      const analysis = validateAnalysis(await consumeStructuredAnalysis(stream, signal), batch.evidenceIds, {requireDispositions: currentPlan.strategy !== 'single-request', evidence: batch.snapshot.evidence, publicApiPaths: snapshot.publicApiPaths ?? []});
-      accepted.set(batch.id, {formatVersion: ANALYSIS_PLAN_VERSION, payloadHash: batch.payloadHash, planId: currentPlan.id, batchId: batch.id, provider: route.provider, model: route.model, analysis});
-      onProgress({phase: 'analyzing', completed: accepted.size, total: currentPlan.batches.length, label: '已完成 ' + accepted.size + ' / ' + currentPlan.batches.length + ' 个分析分片（不代表耗时比例）'});
-    }
+    if (![1, 2, 4].includes(concurrency)) throw fail('analysis-input', '并发数必须为 1、2 或 4');
+    const pending = currentPlan.batches.filter(batch => !accepted.has(batch.id));
+    const width = currentPlan.strategy === 'single-request' ? 1 : concurrency;
+    const total = currentPlan.batches.length;
+    let cursor = 0, inFlight = 0, stopped = false, firstError;
+    const admission = new AbortController();
+    let sampleStart = performance.now();
+    const completions = [];
+    const publish = () => {
+      const remaining = total - accepted.size;
+      const samples = completions.length;
+      const elapsed = performance.now() - sampleStart;
+      const etaMs = !stopped && samples >= 2 && remaining ? Math.ceil(remaining * elapsed / samples) : null;
+      onProgress({phase: 'analyzing', completed: accepted.size, total, queued: pending.length - cursor, inFlight, etaMs,
+        concurrency: width, label: '已完成 ' + accepted.size + ' / ' + total + ' 个分析分片（不代表耗时比例）'});
+    };
+    const stop = error => {
+      if (!stopped) { stopped = true; firstError = error; admission.abort(error); }
+    };
+    const worker = async () => {
+      while (!stopped && !signal?.aborted && cursor < pending.length) {
+        const batch = pending[cursor++];
+        inFlight++;
+        try {
+          publish();
+          signal?.throwIfAborted();
+          const stream = llm.stream({provider: route.provider, model: route.model, system: ANALYSIS_SYSTEM,
+            messages: [{role: 'user', content: [{type: 'text', text: JSON.stringify(batch.snapshot)}]}], tools: [], maxTokens: currentPlan.capacity?.outputTokens??8192, signal}, {admissionSignal: admission.signal});
+          const analysis = validateAnalysis(await consumeStructuredAnalysis(stream, signal), batch.evidenceIds, {requireDispositions: currentPlan.strategy !== 'single-request', evidence: batch.snapshot.evidence, publicApiPaths: snapshot.publicApiPaths ?? []});
+          const entry = {formatVersion: ANALYSIS_PLAN_VERSION, payloadHash: batch.payloadHash, planId: currentPlan.id, batchId: batch.id, provider: route.provider, model: route.model, analysis};
+          accepted.set(batch.id, entry);
+          completions.push(performance.now());
+          if (completions.length > 12) sampleStart = completions.shift();
+          await onBatchComplete(batch.id, entry);
+        } catch (error) { stop(error); }
+        finally {
+          inFlight--;
+          try { publish(); } catch (error) { stop(error); }
+        }
+      }
+    };
+    publish();
+    // A failed batch stops new work. Already started peers may still validate;
+    // explicit cancellation aborts local waits via the shared signal.
+    await Promise.all(Array.from({length: Math.min(width, pending.length)}, worker));
+    if (stopped) throw firstError;
     signal?.throwIfAborted();
     return {markdown: renderAnalysis(currentPlan, accepted), coverage: coverageFor(currentPlan, accepted), completed: accepted};
   } catch (error) {

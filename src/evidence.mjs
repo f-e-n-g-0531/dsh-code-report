@@ -6,10 +6,10 @@ export const evidenceHash = value => createHash('sha256').update(value).digest('
 const bytes = value => Buffer.byteLength(value, 'utf8');
 
 /** Partition exact Unicode text, keeping CRLF and every original code point. */
-function* textParts(text, maxBytes) {
+function* textParts(text, maxBytes, measure = bytes) {
   let yielded = false, start = 0, offset = 0, size = 0;
   for (const character of text) {
-    const length = bytes(character);
+    const length = measure(character);
     if (size && size + length > maxBytes) {
       yield {start, end: offset, text: text.slice(start, offset)};
       yielded = true;
@@ -177,14 +177,14 @@ function* sections(block) {
 
 // Merge only adjacent sections of a single attributed diff block. The raw hunk
 // headers remain in the text; the combined interval still names the same file.
-function* analysisSections(block, maxTextBytes) {
+function* analysisSections(block, maxTextBytes, measure = bytes) {
   let pending, end, size = 0, count = 0;
   const flush = () => count === 1 ? pending : {...pending, kind: block.property ? 'property' : 'file', hunk: null,
     text: block.text.slice(pending.start - block.start, end - block.start)};
   // Unknown attribution must not be widened; preserve the per-section index.
   if (block.file === null) { yield* sections(block); return; }
   for (const section of sections(block)) {
-    const length = bytes(section.text);
+    const length = measure(section.text);
     if (pending && size + length > maxTextBytes) {
       yield flush(); pending = undefined; size = 0; count = 0;
     }
@@ -199,17 +199,33 @@ function* analysisSections(block, maxTextBytes) {
 export function snapshotHash(snapshot) { const hash = createHash('sha256'); for (const chunk of snapshotJsonChunks(snapshot)) hash.update(chunk); return hash.digest('hex'); }
 
 /** Raw sources and synthetic summaries have independent coordinates; every byte is counted. */
-export function createEvidenceIndex(snapshot, {maxTextBytes = 12000, groupAdjacentDiff = false} = {}) {
+export function createEvidenceIndex(snapshot, options) {
+  return prepareEvidenceIndex(snapshot)(options);
+}
+
+// Reuse only during one synchronous planning pass, not across approvals.
+export function prepareEvidenceIndex(snapshot) {
   if (!snapshot || !Array.isArray(snapshot.repositories) || !Array.isArray(snapshot.context)) throw new Error('无效证据快照');
+  const fingerprint = snapshotHash(snapshot);
+  let parsed;
+  return options => buildEvidenceIndex(snapshot, fingerprint, parsed ??= snapshot.repositories.map(parseRepository), options);
+}
+
+function buildEvidenceIndex(snapshot, fingerprint, parsed, {maxTextBytes = 12000, groupAdjacentDiff = false, textBudget = null} = {}) {
   if (!Number.isInteger(maxTextBytes) || maxTextBytes < 64) throw new Error('证据分片预算无效');
-  const fingerprint = snapshotHash(snapshot), items = [], excluded = [], manifest = [];
+  const items = [], excluded = [], manifest = [];
   let sourceBytes = 0;
   const account = text => {
     if (typeof text !== 'string') throw new Error('证据正文必须是文本');
     sourceBytes += bytes(text);
   };
   const append = (metadata, text, sourceStart = 0) => {
-    for (const part of textParts(text, maxTextBytes)) {
+    // The largest possible offsets bound metadata size for every emitted part.
+    const limit = textBudget ? Math.min(maxTextBytes, textBudget.available({...metadata, start: sourceStart + text.length, end: sourceStart + text.length, text: '', id: 'e-' + '0'.repeat(32)})) : maxTextBytes;
+    const fits = textBudget && textBudget.measure(text) <= limit;
+    if (textBudget && (limit < 0 || (!fits && limit < 7))) throw textBudget.error();
+    const parts = fits ? [{start: 0, end: text.length, text}] : textParts(text, limit, textBudget?.character);
+    for (const part of parts) {
       const item = {...metadata, start: sourceStart + part.start, end: sourceStart + part.end, text: part.text};
       item.id = 'e-' + evidenceHash(JSON.stringify([EVIDENCE_FORMAT_VERSION, fingerprint, item])).slice(0, 32);
       items.push(item);
@@ -218,11 +234,11 @@ export function createEvidenceIndex(snapshot, {maxTextBytes = 12000, groupAdjace
   const synthetic = (metadata, value) => { const text = JSON.stringify(value); account(text); append(metadata, text); };
   snapshot.repositories.forEach((repository, index) => {
     account(repository.diff);
-    const {blocks, manifest: files, assignedPaths} = parseRepository(repository);
+    const {blocks, manifest: files, assignedPaths} = parsed[index];
     for (const file of files) manifest.push({...file, repositoryIndex: index});
     for (const path of repository.excludedPaths ?? []) excluded.push({repository: repository.path, path, reason: 'internal-path'});
     const metadata = {repository: repository.path, repositoryType: repository.type, identity: repository.identity ?? null, a: repository.a, b: repository.b};
-    for (const block of blocks) for (const section of (groupAdjacentDiff ? analysisSections(block, maxTextBytes) : sections(block))) append({...metadata, source: 'repository:' + index, provenance: 'version-diff', kind: section.kind, file: section.file, hunk: section.hunk}, section.text, section.start);
+    for (const block of blocks) for (const section of (groupAdjacentDiff ? analysisSections(block, maxTextBytes, textBudget?.measure) : sections(block))) append({...metadata, source: 'repository:' + index, provenance: 'version-diff', kind: section.kind, file: section.file, hunk: section.hunk}, section.text, section.start);
     for (const file of files.filter(file => !assignedPaths.has(file.path))) {
       synthetic({...metadata, source: 'scope:' + index + ':' + evidenceHash(file.path).slice(0, 16), provenance: 'version-summary', kind: 'scope', file: file.path, hunk: null}, {path: file.path, kind: file.kind, item: file.item, props: file.props, status: file.status, note: '固定版本比较列出此路径，但未提供可归属的文本差异；不可据此推断内容或接口无变化。'});
     }

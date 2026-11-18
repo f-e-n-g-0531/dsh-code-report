@@ -114,7 +114,7 @@ test('partial success is resumable only by explicit subsequent call using same p
   await assert.rejects(analyzeReport(model(payload => { calls++; if (calls === 2) throw new Error('offline'); return stream(document(payload.evidence[0].id)); }), route, source, {plan, onProgress: value => progress.push(value.completed)}), error => { partial = error.completed; return /offline/.test(error.message); });
   assert.equal(calls, 2);
   assert.equal(partial.size, 1);
-  assert.deepEqual(progress, [0, 1]);
+  assert.deepEqual(progress.filter((count, index) => index === 0 || count !== progress[index - 1]), [0, 1]);
   const reused = partial;
   let resumed = 0;
   const result = await analyzeReport(model(payload => { resumed++; return stream(document(payload.evidence[0].id)); }), route, source, {plan, completed: reused});
@@ -153,6 +153,49 @@ test('plan mismatch and already aborted calls never dispatch model', async () =>
   const controller = new AbortController(); controller.abort();
   await assert.rejects(analyzeReport(llm, route, source, {signal: controller.signal}), error => error.name === 'AbortError' && error.completed.size === 0);
   assert.equal(calls, 0);
+});
+
+test('bounded workers preserve plan order, verify checkpoints, and estimate remaining time', async () => {
+  const source = snapshot('长'.repeat(12000)), plan = createAnalysisPlan(source, {inputBudget: 14000});
+  const seen = [], samples = [], persisted = [];
+  let live = 0, peak = 0, first = true;
+  const llm = model(async function* (payload) {
+    const isFirst = first; first = false;
+    live++; peak = Math.max(live, peak); seen.push(payload.evidence[0].id);
+    try {
+      if (isFirst) await new Promise(resolve => setTimeout(resolve, 20));
+      yield* stream(document(payload.evidence[0].id));
+    } finally { live--; }
+  });
+  const result = await analyzeReport(llm, route, source, {plan, concurrency: 2, onBatchComplete(id, entry) { persisted.push([id, entry]); }, onProgress(p) { samples.push(p); }});
+  assert.equal(peak, 2); assert.equal(seen.length, plan.batches.length);
+  assert.notEqual(persisted[0][0], plan.batches[0].id);
+  assert.ok(samples.some(p => p.inFlight === 2 && p.queued > 0));
+  assert.ok(samples.some(p => p.etaMs !== null && p.etaMs >= 0));
+  assert.ok(samples.every(p => p.concurrency === 2 && p.inFlight <= 2));
+  assert.equal(result.markdown, (await analyzeReport(model(p=>stream(document(p.evidence[0].id))), route, source, {plan})).markdown);
+});
+
+test('first parallel failure stops admission without dropping a successful in-flight peer', async () => {
+  const source = snapshot('长'.repeat(12000)), plan = createAnalysisPlan(source, {inputBudget: 14000});
+  let calls = 0, release, admission;
+  const resumed = new Promise(resolve => { release = resolve; });
+  const mock = model(payload => stream(document(payload.evidence[0].id)));
+  const llm = {async *stream(input, options) {
+    admission = options.admissionSignal;
+    const i = ++calls;
+    if (i === 1) { await new Promise(resolve => setImmediate(resolve)); throw new Error('fixture failed'); }
+    await resumed; yield* mock.stream(input);
+  }};
+  const result = analyzeReport(llm, route, source, {plan, concurrency: 2});
+  const check = assert.rejects(result, error => error.message === 'fixture failed' && error.completed.has(plan.batches[1].id) && error.completed.size === 1);
+  try {
+    await new Promise(resolve => setTimeout(resolve, 15));
+    assert.equal(admission.aborted, true);
+    assert.equal(calls, 2);
+  } finally { release(); }
+  await check;
+  assert.equal(calls, 2);
 });
 
 test('cancel between batches preserves only validated completed batches and prevents next dispatch', async () => {

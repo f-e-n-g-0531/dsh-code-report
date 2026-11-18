@@ -36,7 +36,7 @@ npm run test:install
 - [采集](<../src/collect.mjs>)、[预算](<../src/budget.mjs>)、[路径](<../src/paths.mjs>)、[进程](<../src/process.mjs>)：固定版本、来源、增量资源控制及取消。
 - [远端 Git](<../src/git-remote.mjs>)：读取业务仓库原始远端配置，在临时裸仓库查询和完整抓取，回调后清理；不写业务仓库。
 - [证据索引](<../src/evidence.mjs>)：格式版本 2；统一解析文件清单与差异块/源码单元，ID 绑定快照和准确文本，不重写差异正文。SVN property 头和值分开；路径只精确匹配 included 列表，不能按块序号猜测。无可归属文本的 included 文件/目录（含空字符串根路径）生成独立 scope 范围证据，计入片数及输入预算，不当作正文覆盖。SVN 在排除内部路径后逐 entry 读取时可附 diffParts:{path,start,end}，以完整 diff 的 UTF-16 连续区间绑定采集路径，不改原始正文；整仓 diff 或外部旧快照没有此元数据时不能假定同等定位能力。
-- [结构化分析](<../src/analysis.mjs>)：保守输入预算、顺序分片、输出与引用校验、确定性 Markdown。旧 analyze API 保留供直接调用兼容，宿主新生成流程不回退自由 Markdown。
+- [结构化分析](<../src/analysis.mjs>)：保守输入预算、顺序规划与有界并发派发、逐片输出与引用校验、按计划顺序合并为确定性 Markdown。旧 analyze API 保留供直接调用兼容，宿主新生成流程不回退自由 Markdown。
 - [报告组装](<../src/report.mjs>)、[文本转义](<../src/markdown-text.mjs>)：统一转义标题、来源、哈希、日期、限制与非受信任分析字符串等字段；保留原始 diff 围栏和 snapshot。旧 analyze 字符串仍原样返回，markdown 入口将自由文本安全呈现；markdown 的可选第四参 {structured:true} 仅供宿主传入 analyzeReport 程序生成且字段已转义的分析，不根据输入字符串识别可信标记，也不接受 RPC 任意声明。
 - [界面](<../src/client.jsx>)、[结果内存](<../src/result-state.mjs>)：配置、快照、报告分开；不保存模型同意，不把源码自动写入 localStorage。
 - [生命周期控制器](<../src/lifecycle-controller.mjs>)：在插件 apply 实例登记模型任务身份，协调业务与安装租约；面板挂载周期不拥有付费任务。该租约不是跨标签或跨客户端的全局锁。
