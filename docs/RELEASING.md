@@ -71,9 +71,8 @@ npm run verify:package
 npm run test:install
 git diff --check
 # 提交修改后，用本次未使用的版本替换 X.Y.Z
-git tag vX.Y.Z
-git push origin main
-git push origin vX.Y.Z
+git tag -a vX.Y.Z -m "DSH Code Report vX.Y.Z"
+git push --atomic origin refs/heads/main:refs/heads/main refs/tags/vX.Y.Z:refs/tags/vX.Y.Z
 ~~~
 
 等待四组代码测试、独立浏览器任务及发布任务结果，再从公开 npm 与 GitHub 下载包、核对字节和 SHA-256，记录提交、标签及流水线。若发布中断，报告真实状态，不把推送标签称为发布完成。

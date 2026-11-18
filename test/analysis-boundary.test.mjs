@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {reportDownloadText} from '../src/report-export.mjs';
 import assert from 'node:assert/strict';
 import {validateAnalysis, ANALYSIS_SYSTEM, createAnalysisPlan, estimatedInputBytes, analyzeReport} from '../src/analysis.mjs';
 const empty = () => ({changes: [], interfaces: [], impacts: [], qa: [], unknowns: [], evidenceDispositions: []});
@@ -108,6 +109,36 @@ test('analyzeReport explicitly restores normalized migrated checkpoints without 
   assert.deepEqual(resumed.completed, first.completed);
   assert.equal(resumed.markdown, first.markdown);
 });
+test('candidate requires changed symbol evidence within the configured project and boundary',()=>{
+ const diff={...source,provenance:'version-diff',text:'@@ -1 +1 @@\n-int query();\n+int query(int flags);'};
+ const value={...empty(),interfaces:[item('sdk-candidate')]};
+ const paths=[{repository:'app',path:'include/'}];
+ const check=(evidence,publicApiPaths=paths,normalized=false,doc=value)=>validateAnalysis(doc,['e1'],{evidence:[evidence],publicApiPaths,normalized});
+ const clean=check(diff);
+ assert.equal(clean.interfaces[0].audience,'sdk-candidate');
+ assert.deepEqual(check(diff,paths,true,clean),clean);
+ for(const unsupported of [{...diff,file:'includes/api.h'},{...diff,repository:'other'},{...diff,provenance:'current-workspace'},{...diff,text:' int query();\n+int unrelated();'},{...diff,text:'+// query update'}])assert.equal(check(unsupported).unknowns.length,1);
+ assert.equal(check(diff,[]).interfaces.length,0);
+ assert.throws(()=>check(diff,paths,false,{...value,interfaces:[{...item('sdk-candidate'),publicBasis:item().publicBasis}]}),/正式发布依据/);
+});
+for(const strategy of ['full','single-request'])test('final report shows a changed candidate in the second section without claiming publication '+strategy,async()=>{
+ const file='include/api.h';
+ const snapshot={title:'scope',publicApiPaths:[{repository:'app',path:'include/'}],repositories:[{path:'app',type:'git',a:'a',b:'b',files:[file],diff:'diff --git a/'+file+' b/'+file+'\n--- a/'+file+'\n+++ b/'+file+'\n@@ -1 +1 @@\n-int query();\n+int query(int flags);\n'}],context:[],limitations:[]};
+ const plan=createAnalysisPlan(snapshot,{inputBudget:64000,strategy});
+ const llm={async *stream(input){
+  const {evidence}=JSON.parse(input.messages[0].content[0].text);
+  const changed=evidence.find(row=>row.provenance==='version-diff'&&row.text.includes('+int query('));
+  assert.ok(changed);
+  const value={...empty(),interfaces:[{...item('sdk-candidate'),evidenceIds:[changed.id],declarationEvidenceIds:[changed.id]}],evidenceDispositions:evidence.filter(row=>row.id!==changed.id).map(row=>({evidenceId:row.id,status:'no-conclusion',reasonCode:'non-behavioral',reason:'元数据'}))};
+  yield {type:'text-delta',text:JSON.stringify(value)};
+  yield {type:'finish',reason:{kind:'stop'}};
+ }};
+ const result=await analyzeReport(llm,{provider:'test',model:'mock'},snapshot,{plan});
+ const report=reportDownloadText(result.markdown,'analysis');
+ assert.equal([...report.matchAll(/^## (.+)$/gm)][1][1],'对外接口变更');
+ assert.match(report.split('## 改动内容')[0],/SDK 候选接口（发布身份待确认）：query/);
+});
+
 test('prompt budget includes structured attribution and evidence disposition instructions', () => {
   assert.match(ANALYSIS_SYSTEM, /二进制导出≠公共SDK/); assert.match(ANALYSIS_SYSTEM, /evidenceDispositions/);
   const snapshot = {title: 'scope', repositories: [{path: 'app', type: 'git', a: 'a', b: 'b', files: ['api.h'], diff: 'diff --git a/api.h b/api.h\n--- a/api.h\n+++ b/api.h\n@@ -1 +1 @@\n-old\n+new\n'}], context: [], limitations: []};

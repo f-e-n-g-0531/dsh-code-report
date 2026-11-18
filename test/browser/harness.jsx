@@ -93,7 +93,7 @@ async function rpc(channel,endpoint,payload,signal){
    await wait(settings.delayGenerate);
    settledGenerations++;
    if(settings.failGenerate){const proof=execution('stopped');results.set(payload.operationId,{sessionId:payload.sessionId,status:'stopped',execution:proof});return fail('fixture 模型失败','code-report/analysis-failed',{execution:proof});}
-   const value={markdown:settings.richReport||('# 模型报告 '+payload.sessionId+'\n## 改动内容\n模型报告 '+payload.sessionId+'\n## 对外接口变更\n待确认\n<script>window.fixtureInjected=true</script>'),coverage:settings.singleRequest?singleCoverage():{total:settings.analysisBatches||1,completed:settings.analysisBatches||1,excluded:0}};
+   const value={markdown:settings.richReport||('# 模型报告 '+payload.sessionId+(settings.singleRequest?'\n本报告为单次摘要：模拟覆盖限制。':'')+'\n## 改动内容\n模型报告 '+payload.sessionId+'\n## 对外接口变更\n待确认\n<script>window.fixtureInjected=true</script>'),coverage:settings.singleRequest?singleCoverage():{total:settings.analysisBatches||1,completed:settings.analysisBatches||1,excluded:0}};
    value.savedReport=settings.reportSaveFailure?{status:'failed',message:'报告已生成，但保存到工作区失败；请下载报告，不要重新生成。'}:{status:'saved',path:sessions[payload.sessionId].cwd+'/dsh-code-report-reports/report.md'};
    results.set(payload.operationId,{sessionId:payload.sessionId,status:'completed',value});
    if(settings.failGenerateResponse)throw new Error('fixture response lost after generation');

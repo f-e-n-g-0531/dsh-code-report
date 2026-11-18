@@ -4,7 +4,7 @@ import {reportDownloadText} from '../src/report-export.mjs';
 import {markdownText} from '../src/markdown-text.mjs';
 import {renderReadableAnalysis} from '../src/readable-analysis.mjs';
 import {markdown} from '../src/report.mjs';
-const titles=['本次比较范围','改动内容','对外接口变更','影响范围','QA 测试范围'];
+const titles=['本次比较范围','对外接口变更','改动内容','QA 测试范围','待补充与待确认'];
 
 for(const escaped of [false,true])test('public endpoints survive source cleanup '+(escaped?'after markdownText':'as raw Markdown'),()=>{
  const endpoints=['https://api.example.com/v1/client.js','http://example.com/api.hpp?file=src/loader.cpp&next=/api/user.ts#result','/api/client.js','/v1/user.ts?file=src/api.cpp&mode=fast','//cdn.example.com/sdk.js','/api_user','https://example.com/get?q=(src/query.cpp)&next=public.js','/api?q=(src/query.cpp)&next=public.js'];
@@ -47,7 +47,7 @@ test('real readable-analysis rendering preserves escaped endpoint contracts with
 });
 test('reader export contains exactly five ordered sections and no preamble or internal appendices',()=>{
  const original='# 标题\n模型：private\n## 本次比较范围\n项目A：版本a → b\n## 改动内容\n改动\n## 对外接口变更\n接口待确认\n## 影响范围\n- 功能 [1](#evidence-1)\n## QA 测试范围\n测试显示\n## 未知和待确认\n- 测试入口尚待确认\n<details>\n<summary>技术附录：证据与覆盖记录</summary>\nSECRET_SOURCE\n</details>\n<details>\n<summary>采集附录：固定版本、完整文件清单与限制</summary>\nPRIVATE_PATH\n</details>';
- const copy=reportDownloadText(original,'analysis');assert.deepEqual([...copy.matchAll(/^## (.*)$/gm)].map(x=>x[1]),titles);assert.doesNotMatch(copy,/附录|SECRET_|PRIVATE_|#evidence-|模型：|# 标题/);assert.match(copy,/接口待确认/);assert.match(copy,/### 待补充与待确认\n\n- 测试入口尚待确认/);assert.ok(original.includes('SECRET_SOURCE'));
+ const copy=reportDownloadText(original,'analysis');assert.deepEqual([...copy.matchAll(/^## (.*)$/gm)].map(x=>x[1]),titles);assert.doesNotMatch(copy,/附录|SECRET_|PRIVATE_|#evidence-|模型：|# 标题/);assert.match(copy,/接口待确认/);assert.match(copy,/## 待补充与待确认\n\n- 测试入口尚待确认/);assert.ok(original.includes('SECRET_SOURCE'));
 });
 test('local evidence and unknown results remain byte exact',()=>{for(const kind of ['local','unknown',undefined]){const text='a\r\n<details>raw';assert.equal(reportDownloadText(text,kind),text);}});
 test('source paths, raw code blocks and nested details do not escape into the reader report',()=>{
@@ -64,12 +64,12 @@ test('single summary coverage warning is retained in comparison scope without in
  assert.doesNotMatch(copy,/本地清单含|117|已处理证据|附录|<details>/);
  assert.deepEqual([...copy.matchAll(/^## (.*)$/gm)].map(match=>match[1]),titles);
 });
-for(const escaped of [false,true])test('unknowns retain meaning and safe encoding under QA without leaking source '+escaped,()=>{
+for(const escaped of [false,true])test('unknowns retain meaning and safe encoding in the pending section without leaking source '+escaped,()=>{
  const encode=escaped?markdownText:text=>text;
  const endpoint='https://example.com/client.js?file=src/public.cpp&next=/api/test.ts';
  const input='## 本次比较范围\n'+encode('对比 src/scope.cpp 的版本')+'\n## 未知和待确认\n- '+encode('尚未确认 src/private.cpp 的兼容性；入口 '+endpoint+'；<script> & 中文😀')+' [1](#evidence-1)\n## 内部记录\nHIDDEN';
  const copy=reportDownloadText(input,'analysis');
- assert.match(copy,/### 待补充与待确认/);assert.match(copy,/尚未确认 相关源码文件 的兼容性/);
+ assert.match(copy,/## 待补充与待确认/);assert.match(copy,/尚未确认 相关源码文件 的兼容性/);
  assert.ok(copy.includes(encode(endpoint)));assert.ok(copy.includes(encode('<script> & 中文😀')));
  assert.match(copy,/对比 相关源码文件 的版本/);
  assert.doesNotMatch(copy,/private[.]cpp|scope[.]cpp|#evidence-|HIDDEN|^## 未知和待确认/m);
@@ -103,3 +103,17 @@ for(const strategy of ['full','single-request'])test('real report retains collec
  if(strategy==='single-request')assert.match(scope,/单次摘要.*覆盖可能不完整/);
 });
 test('missing sections are marked unknown rather than fabricated and unrelated headings close a section',()=>{const copy=reportDownloadText('## 影响范围\n待确认\n## 内部记录\nHIDDEN','analysis');assert.doesNotMatch(copy,/HIDDEN/);assert.equal(copy.match(/^## /gm).length,5);assert.match(copy,/未提供可对外展示的内容，待确认/);});
+
+test('final polish moves QA gaps and preserves distinct steps',()=>{
+ const input=['## QA 测试范围','### QA 可执行测试','- 登录 [1](#evidence-1)','  - 检查成功','- 登录 [2](#evidence-2)','  - 检查成功','- 登录','  - 检查错误提示','### 测试前待补充','- 补充测试账号','## 影响范围','不在正式报告','## 未知和待确认','- 补充测试账号','- 待确认兼容范围'].join('\n');
+ const copy=reportDownloadText(input,'analysis');
+ const [qa,gaps]=copy.split('## QA 测试范围')[1].split('## 待补充与待确认');
+ assert.equal(qa.match(/^- 登录$/gm).length,2);
+ assert.equal(qa.match(/检查成功/g).length,1);
+ assert.match(qa,/检查错误提示/);
+ assert.doesNotMatch(qa,/补充测试账号/);
+ assert.equal(gaps.match(/补充测试账号/g).length,1);
+ assert.match(gaps,/待确认兼容范围/);
+ assert.doesNotMatch(copy,/不在正式报告|#evidence-/);
+ assert.equal(reportDownloadText(copy,'analysis'),copy);
+});

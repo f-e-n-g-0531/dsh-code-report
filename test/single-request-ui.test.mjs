@@ -41,10 +41,10 @@ test('dirty strategy disables consent until replanned without changing frozen co
  assert.match(html,/<input type="checkbox" disabled=""\s*\/>/);
  assert.ok(html.includes('请更新分析计划并重新确认'));assert.ok(html.includes('单次摘要分析 · 非模型全文覆盖'));
 });
-test('single-request result coverage cannot label digest evidence as full source analysis',()=>{
- const html=renderToStaticMarkup(React.createElement(ReportSection,{result:{markdown:'report',coverage:{...coverage,total:8,processed:8,remaining:0,completedBatches:1,totalBatches:1,cited:2}}}));
- assert.ok(html.includes('已处理摘要证据 8 / 8'));assert.ok(html.includes('非模型全文覆盖'));assert.ok(html.includes('未发送的正文无法据此宣称已分析'));
- assert.ok(html.includes('引用有效不代表结论正确'));assert.ok(html.includes('本地差异文本字节 369000000'));
+test('single-request result keeps the scope warning without diagnostic counters',()=>{
+ const html=renderToStaticMarkup(React.createElement(ReportSection,{result:{kind:'analysis',markdown:'## 本次比较范围\n本报告为单次摘要：模型仅收到预算内的选取原文片段。\n## 改动内容\n示例改动',coverage:{...coverage,total:8,processed:8}}}));
+ assert.match(html,/不是全文语义分析/);assert.match(html,/覆盖可能不完整/);
+ assert.doesNotMatch(html,/已处理摘要证据|369000000|分析覆盖信息/);
 });
 test('missing digest statistics are disclosed, never presented as zero/full coverage',()=>{
  const html=renderPreview({preview:{...preview,analysisPlan:{strategy:'single-request',batches:[{id:'one'}]}}});

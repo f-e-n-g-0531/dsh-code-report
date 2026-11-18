@@ -29,6 +29,21 @@ export function qaParts(text) {
   return [text.slice(0, boundaries[0]), ...boundaries.map((start, index) => text.slice(start, boundaries[index + 1] ?? text.length))];
 }
 
+// Shared by both renderers; each caller retains its own citation and layout rules.
+export function reportItemGroups(section, items) {
+  return section === 'qa'
+    ? qaGroups.map(([key, heading]) => [heading, items.filter(item => qaGroup(item.text) === key)])
+    : [[null, items]];
+}
+
+export function reportItemParts(section, item) {
+  if (section === 'qa') return qaParts(item.text);
+  if (section === 'interfaces' && item.audience === 'sdk-candidate') {
+    return ['SDK 候选接口（发布身份待确认）：' + item.symbol + ' — ' + item.text];
+  }
+  return [item.text];
+}
+
 function evidenceKind(item) {
   if (item.provenance === 'version-summary' || item.kind === 'scope') return '合成范围摘要（独立来源，不是原始差异或上下文）';
   if (item.provenance === 'version-diff') return '原始差异片段';
@@ -63,17 +78,14 @@ export function renderReadableAnalysis(plan, completed) {
   const lines = [scope];
   for (const [section, title] of sections) {
     lines.push('', '## ' + title, '');
-    const groups = section === 'qa'
-      ? qaGroups.map(([key, heading]) => [heading, analysis.qa.filter(item => qaGroup(item.text) === key)])
-      : [[null, analysis[section]]];
-    for (const [heading, items] of groups) {
+    for (const [heading, items] of reportItemGroups(section, analysis[section])) {
       if (!items.length) continue;
       if (heading) lines.push('### ' + heading, '');
       for (const item of items) {
         const links = citations(item.evidenceIds);
         const suffix = links ? ' ' + links : '';
-        const parts = section === 'qa' ? qaParts(item.text) : [item.text];
-        if (parts.length === 1) lines.push('- ' + markdownText(item.text) + suffix);
+        const parts = reportItemParts(section, item);
+        if (parts.length === 1) lines.push('- ' + markdownText(parts[0]) + suffix);
         else {
           lines.push('- ' + (parts[0] ? markdownText(parts[0]) : '测试建议') + suffix);
           for (const part of parts.slice(1)) lines.push('  - ' + markdownText(part));
