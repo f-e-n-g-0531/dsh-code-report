@@ -87,6 +87,26 @@ test('SVN automatically omits common asset files but retains their directory pee
  assert.match(restored.diff,/fixture asset/);assert.match(restored.diff,/excluded test/);
 });
 
+test('filtered cross-branch SVN diff retains one-sided add and delete bodies',async t=>{
+ const {cwd,url,svn,request}=await svnFixture(t);
+ await svn(['copy',url+'@2',url+'/branch','-m','copy branch','--non-interactive']);
+ const branch=path.join(cwd,'branch');
+ await run('svn',['checkout',url+'/branch',branch,'--non-interactive'],{cwd});
+ const inBranch=args=>run('svn',args,{cwd:branch});
+ await inBranch(['delete','parent/01.txt']);
+ await writeFile(path.join(branch,'parent','onlyB.h'),'added on B\n');
+ await writeFile(path.join(branch,'parent','asset.png'),'excluded asset\n');
+ await inBranch(['add','parent/onlyB.h','parent/asset.png']);
+ await inBranch(['commit','-m','change branch','--non-interactive']);
+ const [repo]=(await collect(cwd,{...request,repositories:[{...request.repositories[0],branchB:'branch',b:'4'}],diffExclusions:[{repository:'wc',directory:'branch/'}]})).repositories;
+ assert.equal(repo.changes.find(entry=>entry.path==='parent/01.txt')?.item,'deleted');
+ assert.equal(repo.changes.find(entry=>entry.path==='parent/onlyB.h')?.item,'added');
+ const byPath=new Map(repo.diffParts.map(part=>[part.path,repo.diff.slice(part.start,part.end)]));
+ assert.match(byPath.get('parent/01.txt'),/^-old$/m);
+ assert.match(byPath.get('parent/onlyB.h'),/^\+added on B$/m);
+ assert.doesNotMatch(repo.diff,/excluded asset|hidden/);
+});
+
 test('configured SVN exclusions never read deleted descendants',async t=>{
  const {cwd,svn,request}=await svnFixture(t);
  await svn(['delete','parent']);

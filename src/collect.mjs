@@ -200,7 +200,13 @@ function svnChange(entry, urlA, urlB) {
 async function svnEntryDiff(exec,repo,entry,urlA,urlB,signal){
  if(!['file','dir'].includes(entry.kind))throw new Error('无法安全判断 SVN 变更类型');
  const suffix=entry.relative?'/'+entry.relative.split('/').map(encodeURIComponent).join('/'):'';
- return exec('svn',['diff','--internal-diff','--depth','empty','--old='+urlA+suffix+'@'+repo.a,'--new='+urlB+suffix+'@'+repo.b,...SVN_ACCESS_ARGS],{raw:true,signal,killTree:true});
+ // The pinned branch comparison identifies one-sided paths. Use the existing
+ // URL on both sides and r0 (empty repository) for the missing node so SVN
+ // does not attempt to resolve a nonexistent target on the other branch.
+ const added=urlA!==urlB&&entry.item==='added', deleted=urlA!==urlB&&entry.item==='deleted';
+ const oldTarget=(added?urlB:urlA)+suffix+'@'+(added?'0':repo.a);
+ const newTarget=(deleted?urlA:urlB)+suffix+'@'+(deleted?'0':repo.b);
+ return exec('svn',['diff','--internal-diff','--depth','empty','--old='+oldTarget,'--new='+newTarget,...SVN_ACCESS_ARGS],{raw:true,signal,killTree:true});
 }
 async function svnEvidence(exec,repo,root,row,request,a,b,budget,checkpoint,onEntry,directories,suffixes,folderNames){
  if(request.allowSvnNetwork!==true)throw new Error('SVN 历史读取需要勾选仓库访问授权');
