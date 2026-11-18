@@ -35,7 +35,7 @@ const ASSET_SUFFIXES = Object.freeze([
   'png','jpg','jpeg','gif','webp','bmp','ico','tga','dds','ktx','ktx2','psd','tif','tiff','exr','hdr',
   'wav','mp3','ogg','flac','aac','m4a','mp4','mov','webm','avi',
   'fbx','gltf','glb','dae','c3','c3_model','ska','sea','mtl','material','particle',
-  'zip','7z','rar','gz','tgz','tar','dll','exe','lib','obj','pdb','so','dylib','a','o','class','jar','wasm',
+  'zip','7z','rar','gz','tgz','tar','dll','exe','lib','obj','pdb','map','so','dylib','a','o','class','jar','wasm',
 ]);
 export const DEFAULT_DIFF_SUFFIX_TEXT = ASSET_SUFFIXES.map(ext=>'.'+ext).join(', ');
 export const MAX_DIFF_SUFFIX_TEXT = 4096;

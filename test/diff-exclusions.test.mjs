@@ -66,7 +66,7 @@ test('common assets are excluded by default and can be restored',async t=>{
  for(const dir of ['bundle.PNG','Test','nested/Test','TestExtra','lower/test','plain'])await mkdir(path.join(cwd,dir),{recursive:true});
  const included=['bundle.PNG/keep.h','material.fx','runtime.xml','compute.hlsl','TestExtra/keep.h','lower/test/keep.h','plain/Test'];
  const testFiles=['Test/root.h','nested/Test/deep.h'];
- const excluded=['root.DLL','bundle.PNG/nested.PNG','scene.SEA','skin.SKA','model.C3_MODEL','asset.c3','effect.particle','sample.material','image.TIF'];
+ const excluded=['root.DLL','bundle.PNG/nested.PNG','scene.SEA','skin.SKA','model.C3_MODEL','asset.c3','effect.particle','sample.material','image.TIF','bundle.PNG/s3engine.MAP'];
  for(const name of [...included,...excluded,...testFiles])await writeFile(path.join(cwd,name),name+' body\n');
  await git('add','.');await commit('change');
  const request={repositories:[{path:'.',type:'git',gitMode:'local',a:'HEAD^',b:'HEAD'}]};
