@@ -1,0 +1,93 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,mkdir,rm,writeFile} from 'node:fs/promises';
+import path from 'node:path';
+import {tmpdir} from 'node:os';
+import {parseDiffExclusions} from '../src/diff-exclusions.mjs';
+import {cleanConfiguration} from '../src/configuration.mjs';
+import {collect} from '../src/collect.mjs';
+import {run} from '../src/process.mjs';
+import {createAnalysisPlan,markdown} from '../src/report.mjs';
+
+test('diff exclusion syntax is literal and scoped, and persists in workspace config',()=>{
+ const rows=[{path:'.'}];
+ assert.deepEqual(parseDiffExclusions('.|Test/Env/\r\n',rows),[{repository:'.',directory:'Test/Env/'}]);
+ for(const rule of ['other|Test/Env/','.|/','.|../','.|Test/*/','.|Test/Env','.|a/\n.|a/']) assert.throws(()=>parseDiffExclusions(rule,rows),/差异排除/);
+ assert.equal(cleanConfiguration({schema:1,rows:[],title:'',context:'',provider:'',model:'',diffExclusions:'.|Test/Env/'}).diffExclusions,'.|Test/Env/');
+});
+
+test('Git filters net endpoint changes before patch decoding and discloses exclusions',async t=>{
+ const cwd=await mkdtemp(path.join(tmpdir(),'report-exclusions-'));
+ t.after(()=>rm(cwd,{recursive:true,force:true}));
+ const git=(...args)=>run('git',args,{cwd});
+ await git('init','-q');
+ const commit=message=>git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm',message);
+ for(const dir of ['Test/Env','Test/EnvExtra'])await mkdir(path.join(cwd,dir),{recursive:true});
+ const file=(name,data)=>writeFile(path.join(cwd,name),data);
+ await file('Test/Env/deleted.txt','EXCLUDED_OLD_BODY\n');
+ await file('Test/EnvExtra/keep.h','old\n');
+ await file('roundtrip.h','base\n');
+ await file('.gitattributes','Test/Env/* diff\n');
+ await git('add','.');await commit('A');
+ await file('roundtrip.h','intermediate\n');
+ await git('add','.');await commit('intermediate');
+ await file('roundtrip.h','base\n');
+ await git('rm','Test/Env/deleted.txt');
+ await mkdir(path.join(cwd,'Test/Env'),{recursive:true});
+ await file('Test/Env/new.txt',Buffer.from([0xff,0xfe,0x0a]));
+ await file('Test/EnvExtra/keep.h','new\n');
+ await git('add','.');await commit('B');
+ const request={repositories:[{path:'.',type:'git',gitMode:'local',a:'HEAD~2',b:'HEAD'}],diffExcludeFolderNames:''};
+ await assert.rejects(collect(cwd,request),/拒绝替换非法字节/);
+ const snapshot=await collect(cwd,{...request,diffExclusions:parseDiffExclusions('.|Test/Env/',request.repositories)});
+ const [repo]=snapshot.repositories;
+ assert.deepEqual(repo.files,['Test/EnvExtra/keep.h']);
+ assert.deepEqual(repo.scopeExclusions,[{path:'Test/Env/deleted.txt',item:'D',directory:'Test/Env/'},{path:'Test/Env/new.txt',item:'A',directory:'Test/Env/'}]);
+ assert.match(repo.diff,/\+new/);
+ assert.doesNotMatch(repo.diff,/EXCLUDED_OLD_BODY|Test\/Env\/|roundtrip/);
+ for(const strategy of ['full','single-request']){
+  const plan=createAnalysisPlan(snapshot,{inputBudget:64000,strategy});
+  assert.equal(plan.coverage.excluded.filter(entry=>entry.reason==='configured-directory').length,2);
+  assert.deepEqual(plan.coverage.files.map(entry=>entry.path),repo.files);
+  for(const batch of plan.batches)assert.doesNotMatch(JSON.stringify(batch.snapshot),/EXCLUDED_OLD_BODY|Test\/Env\/|roundtrip/);
+ }
+ const report=markdown(snapshot);
+ assert.match(report,/Test&#47;Env&#47;deleted\.txt.*删除/);
+ assert.doesNotMatch(report,/EXCLUDED_OLD_BODY/);
+});
+
+test('common assets are excluded by default and can be restored',async t=>{
+ const cwd=await mkdtemp(path.join(tmpdir(),'report-auto-exclusions-'));
+ t.after(()=>rm(cwd,{recursive:true,force:true}));
+ const git=(...args)=>run('git',args,{cwd});
+ await git('init','-q');
+ const commit=message=>git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm',message);
+ await git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-qm','base');
+ for(const dir of ['bundle.PNG','Test','nested/Test','TestExtra','lower/test','plain'])await mkdir(path.join(cwd,dir),{recursive:true});
+ const included=['bundle.PNG/keep.h','material.fx','runtime.xml','compute.hlsl','TestExtra/keep.h','lower/test/keep.h','plain/Test'];
+ const testFiles=['Test/root.h','nested/Test/deep.h'];
+ const excluded=['root.DLL','bundle.PNG/nested.PNG','scene.SEA','skin.SKA','model.C3_MODEL','asset.c3','effect.particle','sample.material','image.TIF'];
+ for(const name of [...included,...excluded,...testFiles])await writeFile(path.join(cwd,name),name+' body\n');
+ await git('add','.');await commit('change');
+ const request={repositories:[{path:'.',type:'git',gitMode:'local',a:'HEAD^',b:'HEAD'}]};
+ const snapshot=await collect(cwd,request), [repo]=snapshot.repositories;
+ assert.deepEqual(repo.files.toSorted(),included.toSorted());
+ assert.deepEqual(repo.scopeExclusions.map(x=>x.path).toSorted(),[...excluded,...testFiles].toSorted());
+ for(const name of included)assert.ok(repo.diff.includes(name+' body'),name);
+ for(const name of [...excluded,...testFiles])assert.ok(!repo.diff.includes(name+' body'),name);
+ const plan=createAnalysisPlan(snapshot,{inputBudget:64000});
+ assert.deepEqual(plan.coverage.excluded.filter(x=>x.reason==='folder-name').map(x=>x.path).toSorted(),testFiles.toSorted());
+ assert.match(markdown(snapshot),/按文件夹名排除 Test/);
+ assert.match(markdown(snapshot),/按后缀排除/);
+ const [restored]=(await collect(cwd,{...request,autoExcludeNonCode:false,diffExcludeFolderNames:''})).repositories;
+ assert.equal(restored.files.length,included.length+excluded.length+testFiles.length);
+ assert.ok(!restored.scopeExclusions);
+ const [custom]=(await collect(cwd,{...request,diffExcludeSuffixes:'.SEA，XML, sea, c3_model',diffExcludeFolderNames:''})).repositories;
+ assert.deepEqual(custom.scopeExclusions.map(entry=>[entry.path,entry.suffix]),[['model.C3_MODEL','.c3_model'],['runtime.xml','.xml'],['scene.SEA','.sea']]);
+ assert.match(custom.diff,/nested.PNG body/);
+ assert.doesNotMatch(custom.diff,/scene.SEA body|runtime.xml body|model.C3_MODEL body/);
+ const [cleared]=(await collect(cwd,{...request,diffExcludeSuffixes:'',diffExcludeFolderNames:'TestExtra'})).repositories;
+ assert.deepEqual(cleared.files,restored.files.filter(name=>name!=='TestExtra/keep.h'));
+ assert.deepEqual(cleared.scopeExclusions,[{path:'TestExtra/keep.h',item:'A',folderName:'TestExtra',reason:'folder-name'}]);
+ await assert.rejects(collect(cwd,{...request,diffExcludeSuffixes:'*.png'}),/不支持路径或通配符/);
+});

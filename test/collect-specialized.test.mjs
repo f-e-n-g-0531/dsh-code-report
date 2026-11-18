@@ -68,6 +68,37 @@ test('ordered SVN windows retain raw bytes, decoded ranges, metadata-only entrie
  assert.equal(empty.diff,'');
 });
 
+test('SVN automatically omits common asset files but retains their directory peers and configuration',async t=>{
+ const {cwd,svn,request}=await svnFixture(t);
+ await mkdir(path.join(cwd,'wc','parent','folder.PNG'));
+ await writeFile(path.join(cwd,'wc','parent','folder.PNG','keep.xml'),'configuration');
+ await writeFile(path.join(cwd,'wc','parent','folder.PNG','image.JPG'),'fixture asset');
+ await mkdir(path.join(cwd,'wc','parent','Test'));
+ await writeFile(path.join(cwd,'wc','parent','Test','skip.h'),'excluded test');
+ await svn(['add','parent/folder.PNG','parent/Test']);await svn(['commit','-m','add asset and config','--non-interactive']);
+ const comparison={...request,repositories:[{...request.repositories[0],a:'2',b:'3'}]};
+ const [repo]=(await collect(cwd,comparison)).repositories;
+ assert.deepEqual(repo.scopeExclusions.filter(entry=>entry.reason==='non-code-asset'),[{path:'parent/folder.PNG/image.JPG',item:'added',props:'none',suffix:'.jpg',reason:'non-code-asset'}]);
+ assert.ok(repo.files.includes('parent/folder.PNG/keep.xml'));
+ assert.deepEqual(repo.scopeExclusions.filter(entry=>entry.reason==='folder-name').map(entry=>entry.path).toSorted(),['parent/Test','parent/Test/skip.h']);
+ assert.doesNotMatch(repo.diff,/excluded test/);
+ assert.match(repo.diff,/configuration/);assert.doesNotMatch(repo.diff,/fixture asset/);
+ const [restored]=(await collect(cwd,{...comparison,autoExcludeNonCode:false,diffExcludeFolderNames:''})).repositories;
+ assert.match(restored.diff,/fixture asset/);assert.match(restored.diff,/excluded test/);
+});
+
+test('configured SVN exclusions never read deleted descendants',async t=>{
+ const {cwd,svn,request}=await svnFixture(t);
+ await svn(['delete','parent']);
+ await svn(['commit','-m','delete fixture directory','--non-interactive']);
+ const snapshot=await collect(cwd,{...request,repositories:[{...request.repositories[0],a:'2',b:'3'}],diffExclusions:[{repository:'wc',directory:'parent/'}]});
+ const [repo]=snapshot.repositories;
+ assert.equal(repo.diff,'');
+ assert.deepEqual(repo.files,[]);
+ assert.ok(repo.scopeExclusions.some(entry=>entry.path==='parent'&&entry.item==='deleted'));
+ assert.ok(repo.scopeExclusions.some(entry=>entry.path==='parent/01.txt'&&entry.item==='deleted'));
+});
+
 test('cancelling during SVN item progress rejects with the original reason and reports no later entries',async t=>{
  const {cwd,request}=await svnFixture(t), controller=new AbortController();
  const reason=new Error('fixture stop');

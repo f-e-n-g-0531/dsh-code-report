@@ -1,6 +1,7 @@
 export {createAnalysisPlan, analyzeReport} from './analysis.mjs';
 import {cancellableChunks} from './analysis.mjs';
 import {markdownText, markdownFence} from './markdown-text.mjs';
+import {diffExclusionLabel} from './diff-exclusions.mjs';
 
 export const inline = markdownText;
 export const fence = markdownFence;
@@ -27,7 +28,13 @@ export function markdown(snapshot,analysis,route,{structured=false,evidenceManif
  const out=evidenceManifest
   ? [heading,'','## 本次比较范围','',...snapshot.repositories.map(r=>'- **'+inline(r.path)+'**：'+inline(comparisonEndpoint(r,'A'))+' → '+inline(comparisonEndpoint(r,'B'))+'（'+r.files.length+' 个变更路径）'),'','### 采集覆盖限制（非业务结论）','',...limitationLines(snapshot.limitations),'',renderedAnalysis,'',interfaceSection(analysis),'','<details>','<summary>采集附录：固定版本、完整文件清单与限制</summary>','','## 发布范围','',...releaseScopeLines(snapshot.repositories),'',routeLine(route),'','## 覆盖范围与限制','',...limitationLines(snapshot.limitations),'','## 差异证据']
   : [heading,'','生成时间：'+inline(snapshot.createdAt),'','## 发布范围','',...releaseScopeLines(snapshot.repositories),'','## 改动内容、对外接口、影响范围与 QA 测试建议','',renderedAnalysis,'',interfaceSection(analysis),'',routeLine(route),'','## 覆盖范围与限制','',...limitationLines(snapshot.limitations),'','## 差异证据'];
- for(const r of snapshot.repositories)for(const line of excludedPathLines(r))out.push(line);
+ for(const r of snapshot.repositories){
+  for(const line of excludedPathLines(r))out.push(line);
+  if(r.scopeExclusions?.length){
+   out.push('', '### 按审查范围排除 · '+inline(r.path), '', '以下 '+r.scopeExclusions.length+' 条变更路径仅作记录，差异正文未采集，不属于模型分析覆盖：');
+   for(const entry of r.scopeExclusions)out.push('- '+inline(entry.path)+'；'+inline(diffExclusionLabel(entry)));
+  }
+ }
  if(evidenceManifest){
   out.push('', '以下为本地采集清单，不代表模型已逐文件阅读。主报告不包含全部原始差异，也不能单独还原全文。宿主固定快照为临时数据，生成完成或过期后会清理；当前界面不提供完整快照归档功能。', '本地差异文本（解码后 UTF-8） '+evidenceManifest.originalSourceBytes+' 字节；完整清单 '+evidenceManifest.fullManifestFiles+' 项。');
   for(const r of snapshot.repositories)out.push('', '### '+inline(r.path), '', '固定端点 '+inline(r.a)+' → '+inline(r.b)+'；差异文本 SHA-256 '+inline(r.diffHash)+'；原始字节 SHA-256 '+inline(r.rawDiffHash??'未记录'));

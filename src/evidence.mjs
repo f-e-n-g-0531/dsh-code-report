@@ -237,6 +237,7 @@ function buildEvidenceIndex(snapshot, fingerprint, parsed, {maxTextBytes = 12000
     const {blocks, manifest: files, assignedPaths} = parsed[index];
     for (const file of files) manifest.push({...file, repositoryIndex: index});
     for (const path of repository.excludedPaths ?? []) excluded.push({repository: repository.path, path, reason: 'internal-path'});
+    for (const entry of repository.scopeExclusions ?? []) excluded.push({repository: repository.path, ...entry, reason: entry.reason ?? 'configured-directory'});
     const metadata = {repository: repository.path, repositoryType: repository.type, identity: repository.identity ?? null, a: repository.a, b: repository.b};
     for (const block of blocks) for (const section of (groupAdjacentDiff ? analysisSections(block, maxTextBytes, textBudget?.measure) : sections(block))) append({...metadata, source: 'repository:' + index, provenance: 'version-diff', kind: section.kind, file: section.file, hunk: section.hunk}, section.text, section.start);
     for (const file of files.filter(file => !assignedPaths.has(file.path))) {

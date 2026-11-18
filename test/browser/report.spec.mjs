@@ -215,6 +215,34 @@ test('strategy can return to full only after replanning and fresh consent (contr
  await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告');expect((await stats(page)).modelCalls).toBe(1);
 });
 
+test('automatic non-code exclusion is default-on, persisted and invalidates preview on edit',async({page})=>{
+ await open(page);await selectGit(page);await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();
+ const field=page.getByRole('checkbox',{name:'自动排除常见非代码文件',exact:true});
+ const suffixes=page.getByRole('textbox',{name:'差异排除后缀',exact:true});
+ await expect(field).toBeChecked();await expect(suffixes).toHaveValue(/\.png/);await suffixes.fill('*.png');await expect(capture(page)).toBeDisabled();
+ await suffixes.fill('.sea, .png');await collect(page);
+ expect((await stats(page)).calls.find(call=>call.endpoint==='preview-start').payload.request.diffExcludeSuffixes).toBe('.sea, .png');
+ expect((await stats(page)).calls.find(call=>call.endpoint==='preview-start').payload.request.autoExcludeNonCode).toBe(true);
+ await consent(page).check();await field.uncheck();await expect(consent(page)).toHaveCount(0);
+ await page.getByRole('button',{name:'保存配置',exact:true}).click();await expect(page.getByRole('status').filter({hasText:'已保存到当前工作目录'})).toBeVisible();
+ await field.check();await page.getByRole('button',{name:'恢复已保存',exact:true}).click();await expect(field).not.toBeChecked();await expect(suffixes).toHaveValue('.sea, .png');
+ await collect(page);const observed=await stats(page);expect(observed.calls.filter(call=>call.endpoint==='preview-start').at(-1).payload.request.autoExcludeNonCode).toBe(false);expect(observed.modelCalls).toBe(0);
+});
+
+test('directory exclusion persists, discloses scope and invalidates approval',async({page})=>{
+ await open(page);await selectGit(page);await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();
+ const field=page.getByRole('textbox',{name:'差异排除目录',exact:true});
+ const folder=page.getByRole('textbox',{name:'差异排除文件夹名',exact:true});
+ await expect(folder).toHaveValue('Test');await folder.fill('../Test');await expect(capture(page)).toBeDisabled();await folder.fill('');
+ await field.fill('client|../');await expect(capture(page)).toBeDisabled();
+ await field.fill('client|Test/Env/');await page.getByRole('button',{name:'保存配置',exact:true}).click();await field.fill('');await page.getByRole('button',{name:'恢复已保存',exact:true}).click();await expect(field).toHaveValue('client|Test/Env/');await expect(folder).toHaveValue('');
+ await collect(page);
+ expect((await stats(page)).calls.find(call=>call.endpoint==='preview-start').payload.request.diffExclusions).toEqual([{repository:'client',directory:'Test/Env/'}]);
+ await page.getByText('client · 明确排除 1 条变更路径',{exact:true}).click();await expect(page.getByText('Test/Env/fixture.txt · 删除；按配置排除目录 Test/Env/')).toBeVisible();
+ expect((await stats(page)).calls.find(call=>call.endpoint==='preview-start').payload.request.diffExcludeFolderNames).toBe('');
+ await consent(page).check();await folder.fill('Test');await expect(consent(page)).toHaveCount(0);expect((await stats(page)).modelCalls).toBe(0);
+});
+
 test('public SDK boundary textarea persists, normalizes capture and invalidates approved preview without model calls',async({page})=>{
  await open(page);await selectGit(page);await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();
  const boundary=page.getByRole('textbox',{name:'公共SDK边界',exact:true}),text=' client | sdk_inc/ \nclient|include/api.h\nclient|sdk_inc/';

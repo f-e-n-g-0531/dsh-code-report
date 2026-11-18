@@ -43,6 +43,7 @@ export function buildSingleRequestEvidence(snapshot,{inputBudget,estimate,estima
     const summary={repository:repository.path,repositoryIndex:index,repositoryType:repository.type,a:repository.a,b:repository.b,requestedA:repository.requestedA??null,requestedB:repository.requestedB??null,branchA:repository.branchA??null,branchB:repository.branchB??null,gitSource:repository.gitSource??null,remote:repository.remote??null,observedAt:repository.observedAt??null,identity:repository.type==='svn'?{uuid:repository.identity?.uuid??null}:null,sourceBytes:repositoryBytes,sourceHash:evidenceHash(repository.diff),rawHash:repository.rawDiffHash??null,fileCount:records.length,generatedFileCount:records.filter(entry=>entry.record.generated).length,manifestHash:digest(records.map(({record})=>record)),unassignedSourceBytes:blocks.filter(block=>block.file===null).reduce((n,block)=>n+bytes(block.text),0)};
     repositories.push(summary);
     for(const path of repository.excludedPaths??[])excluded.push({repository:repository.path,repositoryIndex:index,path,reason:'internal-path'});
+    for(const entry of repository.scopeExclusions??[])excluded.push({repository:repository.path,repositoryIndex:index,...entry,reason:entry.reason??'configured-directory'});
     lanes.push(records.map(({record,parts})=>({record,parts,repository,index})));
   });
   snapshot.context.forEach((context,index)=>{

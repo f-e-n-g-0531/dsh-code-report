@@ -8,6 +8,7 @@ import {runtimeGate} from './protocol.mjs';
 import {createLifecycleController} from './lifecycle-controller.mjs';
 import {createClientRpc} from './client-rpc.mjs';
 import {capturePreview} from './preview-client.mjs';
+import {parseDiffExclusions,diffExclusionLabel,MAX_DIFF_EXCLUSIONS_TEXT,parseDiffSuffixes,DEFAULT_DIFF_SUFFIX_TEXT,MAX_DIFF_SUFFIX_TEXT,parseDiffFolderNames,DEFAULT_DIFF_FOLDER_TEXT,MAX_DIFF_FOLDER_TEXT} from './diff-exclusions.mjs';
 import {parsePublicApiPaths} from './public-api.mjs';
 import {reportDownloadText} from './report-export.mjs';
 import {fresh,mergeRepositories,repositoryIssues} from './repositories.mjs';
@@ -125,6 +126,10 @@ export function apply(ctx){
   },[sessionKey]);
   const [scanState,setScanState]=useState('idle'),[scanError,setScanError]=useState(''),[scanWarnings,setScanWarnings]=useState([]),[visited,setVisited]=useState(null);
   const [analysisStrategy,setAnalysisStrategy]=useState('full'),[publicApiPaths,setPublicApiPaths]=useState('');
+  const [diffExclusions,setDiffExclusions]=useState('');
+  const [autoExcludeNonCode,setAutoExcludeNonCode]=useState(true);
+  const [diffExcludeSuffixes,setDiffExcludeSuffixes]=useState(DEFAULT_DIFF_SUFFIX_TEXT);
+  const [diffExcludeFolderNames,setDiffExcludeFolderNames]=useState(DEFAULT_DIFF_FOLDER_TEXT);
   const [inputBudget,setInputBudget]=useState(''),[planDirty,setPlanDirty]=useState(false),[,refreshExpiry]=useState(0);
   const initialScanStarted=useRef(false),controller=useRef(null),mounted=useRef(true);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;controller.current?.abort();};},[]);
@@ -168,7 +173,7 @@ export function apply(ctx){
   const removeRow=useCallback(index=>{invalidate();setRows(previous=>previous.filter((_,i)=>i!==index));},[invalidate]);
   const store=async()=>{
    if(configRequest.current||!configReady)return;configRequest.current=true;setConfigBusy(true);
-   try{await rpc('configuration-save',{sessionId:session.id,configuration:cleanConfiguration({schema:1,rows,title,context,versionContext,publicApiPaths,analysisStrategy,allowBatches:true,provider,model,useDefaultModel,scan:scanSettings,allowSvnNetwork:network})});if(mounted.current)setConfigNotice('已保存到当前工作目录 .dsh-code-report.json；不保存密码、报告、源码内容或模型发送确认。');}
+   try{await rpc('configuration-save',{sessionId:session.id,configuration:cleanConfiguration({schema:1,rows,title,context,versionContext,publicApiPaths,diffExclusions,autoExcludeNonCode,diffExcludeSuffixes,diffExcludeFolderNames,analysisStrategy,allowBatches:true,provider,model,useDefaultModel,scan:scanSettings,allowSvnNetwork:network})});if(mounted.current)setConfigNotice('已保存到当前工作目录 .dsh-code-report.json；不保存密码、报告、源码内容或模型发送确认。');}
    catch(error){if(mounted.current)setConfigNotice('保存失败：'+error.message);}
    finally{configRequest.current=false;if(mounted.current)setConfigBusy(false);}
   };
@@ -179,7 +184,7 @@ export function apply(ctx){
     const value=loaded?cleanConfiguration(loaded):null;
     if(!mounted.current)return;
     if(!value){setConfigNotice('此工作区尚无已保存配置。');return;}
-    invalidate();setRows(value.rows);setTitle(value.title);setContext(value.context);setVersionContext(value.versionContext||'');setPublicApiPaths(value.publicApiPaths||'');setAnalysisStrategy(value.analysisStrategy||'full');
+    invalidate();setRows(value.rows);setTitle(value.title);setContext(value.context);setVersionContext(value.versionContext||'');setPublicApiPaths(value.publicApiPaths||'');setDiffExclusions(value.diffExclusions||'');setAutoExcludeNonCode(value.autoExcludeNonCode!==false);setDiffExcludeSuffixes(value.diffExcludeSuffixes??DEFAULT_DIFF_SUFFIX_TEXT);setDiffExcludeFolderNames(value.diffExcludeFolderNames??DEFAULT_DIFF_FOLDER_TEXT);setAnalysisStrategy(value.analysisStrategy||'full');
     setProvider(value.provider);setModel(value.model);setUseDefaultModel(value.useDefaultModel!==false);setNetwork(value.allowSvnNetwork===true);
     setScanState('idle');setScanWarnings([]);setScanError('');setConfigNotice(restoredNotice(value.allowSvnNetwork));
    }catch(error){if(mounted.current)setConfigNotice('恢复失败：'+error.message);}
@@ -191,7 +196,7 @@ export function apply(ctx){
    rpc('configuration-load',{sessionId:session.id},ac.signal).then(value=>{
     if(ac.signal.aborted||!value)return;
     const config=cleanConfiguration(value);
-    setRows(config.rows);setTitle(config.title);setContext(config.context);setVersionContext(config.versionContext||'');setPublicApiPaths(config.publicApiPaths||'');setAnalysisStrategy(config.analysisStrategy||'full');
+    setRows(config.rows);setTitle(config.title);setContext(config.context);setVersionContext(config.versionContext||'');setPublicApiPaths(config.publicApiPaths||'');setDiffExclusions(config.diffExclusions||'');setAutoExcludeNonCode(config.autoExcludeNonCode!==false);setDiffExcludeSuffixes(config.diffExcludeSuffixes??DEFAULT_DIFF_SUFFIX_TEXT);setDiffExcludeFolderNames(config.diffExcludeFolderNames??DEFAULT_DIFF_FOLDER_TEXT);setAnalysisStrategy(config.analysisStrategy||'full');
     setProvider(config.provider);setModel(config.model);setUseDefaultModel(config.useDefaultModel!==false);setNetwork(config.allowSvnNetwork===true);setConsent(false);
     setConfigNotice(restoredNotice(config.allowSvnNetwork));
    }).catch(error=>{if(!ac.signal.aborted)setConfigNotice('工作目录配置未恢复：'+error.message);})
@@ -238,16 +243,16 @@ export function apply(ctx){
    });
   };
   useEffect(()=>{if(session?.id&&configReady&&!configBusy&&!compatibility&&!lifecycle.getSnapshot().lease&&!initialScanStarted.current){initialScanStarted.current=true;void scan();}},[session?.id,configReady,configBusy,compatibility,lifecycleState.revision]);
-  const {versionContexts,parsedPublicApiPaths,contextIssue}=useMemo(()=>{
-   try{return {versionContexts:parseVersionContexts(versionContext,rows),parsedPublicApiPaths:parsePublicApiPaths(publicApiPaths,rows.filter(row=>row.enabled)),contextIssue:''};}
+  const {versionContexts,parsedPublicApiPaths,parsedDiffExclusions,contextIssue}=useMemo(()=>{
+   try{parseDiffSuffixes(diffExcludeSuffixes);parseDiffFolderNames(diffExcludeFolderNames);return {versionContexts:parseVersionContexts(versionContext,rows),parsedPublicApiPaths:parsePublicApiPaths(publicApiPaths,rows.filter(row=>row.enabled)),parsedDiffExclusions:parseDiffExclusions(diffExclusions,rows.filter(row=>row.enabled)),contextIssue:''};}
    catch(error){return {contextIssue:error.message};}
-  },[versionContext,publicApiPaths,rows]);
+  },[versionContext,publicApiPaths,diffExclusions,diffExcludeSuffixes,diffExcludeFolderNames,rows]);
   const issues=useMemo(()=>repositoryIssues(rows),[rows]),captureReason=!configReady||configBusy?'正在读写工作目录配置。':globalBusy?'当前插件实例有任务或更新尚未确认，请先完成或恢复。':captureBlocker(rows,network,busy,compatibility,issues,contextIssue);
   const capture=()=>{
    if(captureReason)return;
    return perform('采集版本差异',async signal=>{
     setPreview(null);setConsent(false);setPlanDirty(false);
-    const value=await capturePreview({rpc,signal,onProgress:value=>{if(mounted.current&&!signal.aborted)setProgress(value);},onWarning:value=>{if(mounted.current&&!signal.aborted)setProgressWarning(value);},payload:{sessionId:session.id,...(!useDefaultModel?{route:{provider:provider.trim(),model:model.trim()}}:{}),request:{title,analysisStrategy,repositories:rows.filter(row=>row.enabled).map(({enabled,...row})=>row),contextPaths:context.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),versionContexts,publicApiPaths:parsedPublicApiPaths,allowSvnNetwork:network,allowBatches:true}}});
+    const value=await capturePreview({rpc,signal,onProgress:value=>{if(mounted.current&&!signal.aborted)setProgress(value);},onWarning:value=>{if(mounted.current&&!signal.aborted)setProgressWarning(value);},payload:{sessionId:session.id,...(!useDefaultModel?{route:{provider:provider.trim(),model:model.trim()}}:{}),request:{title,analysisStrategy,repositories:rows.filter(row=>row.enabled).map(({enabled,...row})=>row),contextPaths:context.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),versionContexts,publicApiPaths:parsedPublicApiPaths,diffExclusions:parsedDiffExclusions,autoExcludeNonCode,diffExcludeSuffixes,diffExcludeFolderNames,allowSvnNetwork:network,allowBatches:true}}});
     if(!signal.aborted&&mounted.current){setPreview(value);setAnalysisStrategy(value.analysisPlan?.strategy||'full');setInputBudget('');keepResult({markdown:value.markdown,stale:false,kind:'local'});}
    });
   };
@@ -312,6 +317,14 @@ export function apply(ctx){
      </fieldset>
      <details className="cr-optional"><summary>2. 附带项目源码（可选）{context.trim()||versionContext.trim()?' · 已填写':''}</summary><fieldset disabled={!configReady||configBusy||!!busy||globalBusy}><legend>源码路径</legend><p>每行填写一个工作区内的文件或文件夹路径，根目录可填「.」。文件夹递归展开；不会自动附带未填写的目录或扫描调用链。</p>
       <textarea aria-label="源码上下文路径" rows={4} placeholder={'app/src/api.ts\napp/src/components'} value={context} onChange={event=>{invalidate();setContext(event.target.value);}}/>
+      <label className="cr-check"><input type="checkbox" checked={autoExcludeNonCode} onChange={event=>{invalidate();setAutoExcludeNonCode(event.target.checked);}}/>自动排除常见非代码文件</label>
+      <label>差异排除后缀<textarea aria-label="差异排除后缀" rows={3} maxLength={MAX_DIFF_SUFFIX_TEXT} value={diffExcludeSuffixes} disabled={!autoExcludeNonCode} onChange={event=>{invalidate();setDiffExcludeSuffixes(event.target.value);}}/></label>
+      <button type="button" onClick={()=>{invalidate();setAutoExcludeNonCode(true);setDiffExcludeSuffixes(DEFAULT_DIFF_SUFFIX_TEXT);}}>恢复默认后缀</button>
+      <p className="cr-hint">默认排除常见资源、归档和编译产物。可增删后缀，用逗号或换行分隔，不区分大小写；清空或取消勾选即不按后缀排除。</p>
+      <label>差异排除文件夹名<input aria-label="差异排除文件夹名" maxLength={MAX_DIFF_FOLDER_TEXT} value={diffExcludeFolderNames} onChange={event=>{invalidate();setDiffExcludeFolderNames(event.target.value);}}/></label>
+      <p className="cr-hint">默认排除任意层级的 Test 文件夹，名称区分大小写。多个名称用逗号分隔；清空则不按文件夹名排除。</p>
+      <label>差异排除目录（每行：仓库路径|目录/）<textarea aria-label="差异排除目录" rows={3} maxLength={MAX_DIFF_EXCLUSIONS_TEXT} placeholder="c3engineplus|Test/Env/" value={diffExclusions} onChange={event=>{invalidate();setDiffExclusions(event.target.value);}}/></label>
+      <p className="cr-hint">仅排除明确不审查的目录，留空表示不追加目录规则。按大小写精确匹配，不按后缀猜测；排除项仅列入清单，不采集差异正文、不发送模型。另行附带的源码上下文按原设置采集。</p>
       <label>公共 SDK 候选边界（每行：仓库路径|公开头文件或目录，目录以 / 结尾）<textarea aria-label="公共SDK边界" rows={3} placeholder="app|sdk_inc/" value={publicApiPaths} onChange={event=>{invalidate();setPublicApiPaths(event.target.value);}}/></label><p className="cr-hint">这是本次操作者声明的候选范围，不是历史已发布证明；请附带正式发布清单或接入契约。DLL 导出宏、public 方法和内部跨模块协议不能单独证明对外性，无法确认的条目归待确认。</p>
       <label>固定版本源码（仅文件；每行：仓库路径|A或B|仓库相对路径）<textarea aria-label="固定版本源码路径" rows={3} placeholder="app|A|src/api.ts" value={versionContext} onChange={event=>{invalidate();setVersionContext(event.target.value);}}/></label>
       <p className="cr-hint">工作区路径条目、展开文件数、单文件大小和总证据不设固定规模上限，仍受可用内存等系统资源约束。支持无 NUL 的 UTF-8、GBK / GB18030 文本，优先 UTF-8，失败后严格按 GB18030 解码；差异逐行选择编码，预览标记结果。二进制、两种编码均无法解码或无法读取会使整次采集失败，不静默跳过或截断。当前工作区与历史 A/B 版本分开标记。</p><p className="cr-hint">目录展开跳过点前缀隐藏、敏感、依赖、构建和缓存路径、链接及非普通文件，排除计数见预览限制；显式填写敏感路径仍拒绝。不按 Windows Hidden 属性筛选。源码目录展开不设固定条目、目录或深度上限。发送前检查展开后的实际文件清单及限制，并自行检查源码内的密钥。</p>{contextIssue&&<p role="alert" className="cr-error">{contextIssue}</p>}
@@ -343,6 +356,7 @@ function PreviewSection({preview,busy,expired,useDefaultModel=true,setUseDefault
   <p>证据 {preview.bytes} 字节（约 {(preview.bytes/1024).toFixed(1)} KiB）；{preview.repositories.length} 个项目，{preview.repositories.reduce((total,row)=>total+(row.files?.length||0),0)} 条变更路径，{preview.context.length} 个实际源码文件（目录已展开）。<PreviewCountdown key={preview.expiresAt} deadline={previewDeadline(preview.expiresAt)} expired={expired}/></p>
   {expired&&<div className="cr-error" role="status">快照已过期，请重新采集并确认发送。<button disabled={!!compatibility} onClick={onCapture}>重新采集</button></div>}
   <ul className="cr-preview-repos">{preview.repositories.map((row,index)=><li key={index}><strong>{row.path}</strong> · {row.type} · {row.files.length} 个变更路径<br/><code>{sideLabel(row,'A')} → {sideLabel(row,'B')}</code>{row.type==='git'&&<p>{row.gitSource==='remote'?'远端实时读取 · '+(row.remote||'origin')+' · 观察时间 '+(row.observedAt||'未记录')+'（本次快照，之后不自动更新）':row.gitSource==='local'?'本地离线读取':'Git 来源未记录'}</p>}<br/>差异解码 {row.diffEncoding||'未记录'} · 原始字节 SHA-256 {row.rawDiffHash||'未记录'}</li>)}</ul>
+  {preview.repositories.filter(row=>row.scopeExclusions?.length).map(row=><LazyDetails key={preview.previewId+':'+row.path} summary={row.path+' · 明确排除 '+row.scopeExclusions.length+' 条变更路径'}>{()=><ul>{row.scopeExclusions.map(entry=><li key={entry.path}>{entry.path} · {diffExclusionLabel(entry)}</li>)}</ul>}</LazyDetails>)}
   <LazyDetails key={preview.previewId} summary="查看源码上下文及限制">{()=><><p className="cr-hint">以下为本次实际附带的文件清单（目录已展开）；请核对来源与排除限制后再授权模型。</p><ul aria-label="实际源码文件清单">{preview.context.map((item,index)=><li key={index}>{item.repository?item.repository+' / ':''}{item.path} · {item.provenance==='version-A'?'版本 A':item.provenance==='version-B'?'版本 B':'当前工作区'} {item.revision||''} · 编码 {item.encoding||'未记录'} · 原始字节 SHA-256 {item.rawHash||item.hash}</li>)}</ul><ul aria-label="源码及采集限制">{preview.limitations.map((text,index)=><li key={index}>{text}</li>)}</ul></>}</LazyDetails>
   <label>分析策略<select aria-label="分析策略" value={analysisStrategy|| (single?'single-request':'full')} onChange={event=>onStrategy(event.target.value)}><option value="full">全量差异分片（默认，可能多次计费）</option><option value="single-request">快速摘要（抽样，不完整）</option></select></label>
   <div className="cr-budget-row"><label>{single?'单次输入预算（保守字节估算，非 token）':'单片输入预算（保守字节估算，非 token）'}<input aria-label={single?'单次输入预算':'单片输入预算'} type="number" min={4000} max={plan?.capacity?.inputBudget} placeholder="留空：按所选模型容量自动规划" value={inputBudget} onChange={event=>onBudget(event.target.value)}/></label>

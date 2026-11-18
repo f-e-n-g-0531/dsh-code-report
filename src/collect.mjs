@@ -1,6 +1,7 @@
 import path from 'node:path';
 import {scanOptions} from './configuration.mjs';
 import {normalizePublicApiPaths} from './public-api.mjs';
+import {normalizeDiffExclusions,matchingDiffDirectory,nonCodeAsset,gitNonCodeExclusions,parseDiffSuffixes,parseDiffFolderNames,matchingDiffFolderName,gitFolderNameExclusions} from './diff-exclusions.mjs';
 import {realpath,open} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {XMLParser,XMLValidator} from 'fast-xml-parser';
@@ -144,14 +145,31 @@ export async function listRefs(cwd, repoPath, signal, {gitMode,gitRemote,sshDire
  budget.check();
  return refs.split('\n').map(value => value.replace(/\r$/, '')).filter(Boolean);
 }
-async function gitEvidence(exec,root,repo,a,b,{temporary=false}={}){
+async function gitEvidence(exec,root,repo,a,b,{temporary=false,directories=[],suffixes,folderNames}={}){
  if(!temporary){const top=(await exec('git',['rev-parse','--show-toplevel'])).trim();if(await realpath(top)!==await realpath(root))throw new Error('请指定 Git 仓库根目录');}
  const resolve=async (ref,side)=>{try{const id=(await exec('git',['rev-parse','--verify','--end-of-options',ref+'^{commit}'])).trim();if(!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(id))throw new Error('无法解析提交');return id;}catch(error){if(error?.name==='AbortError'||(!error.message?.startsWith('git 读取失败:')&&error.message!=='无法解析提交'))throw error;throw new Error('项目 '+repo.path+' 的 Git '+side+' 无法解析为提交：'+ref+'（'+(repo.gitSource==='remote'?'远端 '+repo.remote+' 固定快照':'本地离线')+'）。请检查分支、标签或 SHA；不会自动替换分支。');}};
  repo.a=await resolve(a,'A');repo.b=await resolve(b,'B');
- repo.files=(await exec('git',['diff',...GIT_DIFF_FLAGS,'--no-renames','--name-only','-z',repo.a,repo.b,'--'])).split('\0').filter(Boolean);
+ const fields=(await exec('git',['diff',...GIT_DIFF_FLAGS,'--name-status','-z',repo.a,repo.b,'--'])).split('\0');
+ const changes=[];
+ for(let i=0;i+1<fields.length;i+=2)changes.push({item:fields[i],path:fields[i+1]});
+ repo.files=changes.map(entry=>entry.path);
  repo.excludedPaths=repo.files.filter(internalPath);repo.files=repo.files.filter(p=>!internalPath(p));
  assertNoSecretPaths(repo);
- const exclusions=repo.excludedPaths.length?GIT_INTERNAL_EXCLUSIONS:[];
+ const scopeExclusions=changes.flatMap(entry=>{
+  if(internalPath(entry.path))return [];
+  const directory=matchingDiffDirectory(directories,entry.path);
+  if(directory)return [{...entry,directory}];
+  const folderName=matchingDiffFolderName(folderNames,entry.path);
+  if(folderName)return [{...entry,folderName,reason:'folder-name'}];
+  const suffix=nonCodeAsset(suffixes,entry.path);
+  return suffix?[{...entry,suffix,reason:'non-code-asset'}]:[];
+ });
+ if(scopeExclusions.length){
+  repo.scopeExclusions=scopeExclusions;
+  const omitted=new Set(scopeExclusions.map(entry=>entry.path));
+  repo.files=repo.files.filter(file=>!omitted.has(file));
+ }
+ const exclusions=[...(repo.excludedPaths.length?GIT_INTERNAL_EXCLUSIONS:[]),...directories.map(directory=>':(top,exclude,glob)'+directory+'**'),...gitFolderNameExclusions(folderNames),...(scopeExclusions.some(entry=>entry.reason==='non-code-asset')?gitNonCodeExclusions(suffixes):[])];
  const diffBytes=await exec('git',['-c','core.quotePath=false','-c','diff.suppressBlankEmpty=false','diff',...GIT_DIFF_FLAGS,...GIT_PATCH_FLAGS,'--submodule=short','--unified=3',repo.a,repo.b,'--',...exclusions],{raw:true});
  setDiff(repo,diffBytes);
  repo.summary=await exec('git',['diff',...GIT_DIFF_FLAGS,'--stat',repo.a,repo.b,'--',...exclusions]);
@@ -184,7 +202,7 @@ async function svnEntryDiff(exec,repo,entry,urlA,urlB,signal){
  const suffix=entry.relative?'/'+entry.relative.split('/').map(encodeURIComponent).join('/'):'';
  return exec('svn',['diff','--internal-diff','--depth','empty','--old='+urlA+suffix+'@'+repo.a,'--new='+urlB+suffix+'@'+repo.b,...SVN_ACCESS_ARGS],{raw:true,signal,killTree:true});
 }
-async function svnEvidence(exec,repo,root,row,request,a,b,budget,checkpoint,onEntry){
+async function svnEvidence(exec,repo,root,row,request,a,b,budget,checkpoint,onEntry,directories,suffixes,folderNames){
  if(request.allowSvnNetwork!==true)throw new Error('SVN 历史读取需要勾选仓库访问授权');
  const branchA=svnBranch(row.branchA),branchB=svnBranch(row.branchB);
  const info=xml(await exec('svn',['info','--xml','--non-interactive','--',root+'@'])).info.entry;
@@ -198,10 +216,25 @@ async function svnEvidence(exec,repo,root,row,request,a,b,budget,checkpoint,onEn
  if (!summary || !Object.hasOwn(summary,'paths')) throw new Error('无效 SVN 变更清单');
  const entries = list(summary.paths?.path).map(x=>svnChange(x,urlA,urlB));
  repo.excludedPaths=entries.filter(x=>internalPath(x.relative)).map(x=>x.relative);
- const included=entries.filter(x=>!internalPath(x.relative));repo.files=included.map(x=>x.relative);
+ assertNoSecretPaths({...repo,files:entries.filter(entry=>!internalPath(entry.relative)).map(entry=>entry.relative)});
+ const included=[], scopeExclusions=[];
+ for(const entry of entries){
+  if(internalPath(entry.relative))continue;
+  const {relative:path,item,props,kind}=entry;
+  const directory=matchingDiffDirectory(directories,path,kind);
+  if(directory)scopeExclusions.push({path,item,props,directory});
+  else {
+   const folderName=matchingDiffFolderName(folderNames,path,kind);
+   if(folderName){scopeExclusions.push({path,item,props,folderName,reason:'folder-name'});continue;}
+   const suffix=nonCodeAsset(suffixes,path,kind);
+   if(suffix)scopeExclusions.push({path,item,props,suffix,reason:'non-code-asset'});
+   else included.push(entry);
+  }
+ }
+ if(scopeExclusions.length)repo.scopeExclusions=scopeExclusions;
+ repo.files=included.map(x=>x.relative);
  repo.changes = included.map(({relative:path,kind,item,props}) => ({path,kind,item,props}));
- assertNoSecretPaths(repo);
- if(!repo.excludedPaths.length)setDiff(repo,await exec('svn',['diff','--internal-diff',...targets,...SVN_ACCESS_ARGS],{raw:true}));
+ if(!repo.excludedPaths.length&&!repo.scopeExclusions?.length)setDiff(repo,await exec('svn',['diff','--internal-diff',...targets,...SVN_ACCESS_ARGS],{raw:true}));
  else{
   // Never request a recursive parent diff after exclusions: deleted directories contain old bodies too.
   repo.diff = ''; // Preserve snapshot serialization order; assemble the body only at the end.
@@ -253,7 +286,7 @@ async function svnEvidence(exec,repo,root,row,request,a,b,budget,checkpoint,onEn
  }
  repo.summary=repo.files.join('\n');
 }
-async function collectRepository(cwd,row,request,budget,result,onEntry,remoteContexts,onProgress){
+async function collectRepository(cwd,row,request,budget,result,onEntry,remoteContexts,onProgress,directories,suffixes,folderNames){
  budget.check();if(!row||!['git','svn'].includes(row.type))throw new Error('仅支持 Git / SVN');
  const requested=side=>{const value=row[side];if(typeof value!=='string')throw new Error('版本必须是文本，留空表示分支最新提交');return value.trim();};
  const versionA=requested('a'),versionB=requested('b');
@@ -271,11 +304,11 @@ async function collectRepository(cwd,row,request,budget,result,onEntry,remoteCon
    await withRemoteRepository(root,{remote:row.gitRemote??'origin',signal:budget.signal,onProgress,sshDirectory:row.sshDirectory},async(temporary,source)=>{
     budget.check();repo.remote=source.remote;repo.observedAt=source.observedAt;
     repo.identity={gitSource:'remote',remote:source.remote,observedAt:source.observedAt};
-    await gitEvidence(boundedExec(temporary,budget,checkpoint),temporary,repo,normalizeRemoteRef(a,source.remote),normalizeRemoteRef(b,source.remote),{temporary:true});
+    await gitEvidence(boundedExec(temporary,budget,checkpoint),temporary,repo,normalizeRemoteRef(a,source.remote),normalizeRemoteRef(b,source.remote),{temporary:true,directories,suffixes,folderNames});
     for(const entry of request.versionContexts||[])if(entry.repository===repo.path)remoteContexts.set(entry,await readVersionContext(cwd,entry,[repo],budget,checkpoint,temporary));
    });
-  }else await gitEvidence(exec,root,repo,a,b);
- }else await svnEvidence(exec,repo,root,row,request,a,b,budget,checkpoint,onEntry);
+  }else await gitEvidence(exec,root,repo,a,b,{directories,suffixes,folderNames});
+ }else await svnEvidence(exec,repo,root,row,request,a,b,budget,checkpoint,onEntry,directories,suffixes,folderNames);
  checkpoint();
  return {repo,requestedA:a,requestedB:b};
 }
@@ -322,6 +355,11 @@ async function readVersionContext(cwd, entry, repositories, budget, checkpoint, 
 
 export async function collect(cwd, request, signal, onProgress = () => {}) {
  validateRequest(request);
+ if(request.autoExcludeNonCode!==undefined&&typeof request.autoExcludeNonCode!=='boolean')throw new Error('自动排除非代码选项必须为布尔值');
+ const folderNames = parseDiffFolderNames(request.diffExcludeFolderNames);
+ const configuredSuffixes = parseDiffSuffixes(request.diffExcludeSuffixes);
+ const suffixes = request.autoExcludeNonCode===false ? new Set() : configuredSuffixes;
+ const diffExclusions = normalizeDiffExclusions(request.diffExclusions, request.repositories);
  const publicApiPaths = request.publicApiPaths === undefined ? undefined : normalizePublicApiPaths(request.publicApiPaths, request.repositories);
  const budget = createCollectionBudget({signal});
  budget.check();
@@ -357,9 +395,10 @@ export async function collect(cwd, request, signal, onProgress = () => {}) {
  for (const row of request.repositories) {
   progress('读取项目：' + row.path);
   const {repo,requestedA,requestedB} = await collectRepository(cwd, row, request, budget, result,
-   (count,entryTotal,name) => progress('读取 SVN 路径：' + row.path + '/' + name + '（' + count + '/' + entryTotal + '）'),remoteContexts,onProgress);
+   (count,entryTotal,name) => progress('读取 SVN 路径：' + row.path + '/' + name + '（' + count + '/' + entryTotal + '）'),remoteContexts,onProgress,diffExclusions.filter(rule=>rule.repository===(row.path||'.')).map(rule=>rule.directory),suffixes,folderNames);
   if(repo.type==='git')result.limitations.push(repo.gitSource==='remote'?'项目 '+repo.path+' 使用远端 '+repo.remote+'，在 '+repo.observedAt+' 取得独立临时快照并固定 A/B SHA；不更新本地跟踪引用，生成时不会重新读取远端。':'项目 '+repo.path+' 使用本地离线引用；不会联网更新，不代表远端最新。');
   if (repo.excludedPaths?.length) result.limitations.push('项目 ' + repo.path + ' 已在正文读取前排除 ' + repo.excludedPaths.length + ' 条 .git / .svn 内部路径记录；未读取其正文，不属于本报告分析覆盖。');
+  if(repo.scopeExclusions?.length)result.limitations.push('项目 '+repo.path+' 按审查范围排除 '+repo.scopeExclusions.length+' 条变更路径；未采集差异正文，不计入模型覆盖。');
   repo.requestedA = requestedA;
   repo.requestedB = requestedB;
   repo.diffHash = hash(repo.diff);
