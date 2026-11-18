@@ -199,5 +199,5 @@ test('lost background admission does not fall back to generate or release an unk
  const lifecycle=createLifecycleController({rpc:async endpoint=>{calls.push(endpoint);throw new Error('lost');},results,randomId:()=> 'lost-op',pollIntervalMs:1});
  await lifecycle.startGenerate(session,{}, {asyncGenerate:true}).promise;await tick();
  assert.deepEqual(calls,['generate-start','result']);assert.equal(lifecycle.getSnapshot().paid.status,'unknown');
- assert.equal(results.getRecovery(session).operationId,'lost-op');assert.throws(()=>lifecycle.acquireInstall());
+ assert.equal(results.getRecovery(session).operationId,'lost-op');assert.throws(()=>lifecycle.acquireBusiness('refs',session));
 });

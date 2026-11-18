@@ -76,7 +76,7 @@
 .cr-root .cr-table-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:14px;padding:12px 14px;border:1px solid var(--cr-border);border-radius:11px;background:var(--cr-raised)}
 .cr-root .cr-table-toolbar>input{flex:1 1 220px;max-width:360px}
 .cr-root .cr-table-toolbar>span{margin-left:auto;color:var(--cr-muted);font-size:11px;font-variant-numeric:tabular-nums}
-.cr-root .cr-bulk,.cr-root .cr-optional,.cr-root .cr-update-details{min-width:0;border:1px solid var(--cr-border);border-radius:12px;padding:15px 18px;background:var(--cr-card);margin:12px 0}
+.cr-root .cr-bulk,.cr-root .cr-optional,.cr-root .cr-version-details{min-width:0;border:1px solid var(--cr-border);border-radius:12px;padding:15px 18px;background:var(--cr-card);margin:12px 0}
 .cr-root summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--cr-text);overflow-wrap:anywhere}
 .cr-root summary::marker{color:var(--cr-muted)}
 .cr-root .cr-bulk-fields{display:grid;grid-template-columns:100px repeat(2,minmax(0,1fr));gap:12px;margin-top:16px}
@@ -145,8 +145,7 @@
 .cr-root #cr-capture-reason{flex:1 1 240px;min-width:0;overflow-wrap:anywhere}
 .cr-root .cr-progress{padding:18px;border:1px solid var(--cr-blue);border-radius:9px;background:var(--cr-info);margin:18px 0;font-size:12px}
 .cr-root progress{display:block;max-width:100%;width:100%;height:7px;margin-top:12px;accent-color:var(--cr-blue)}
-.cr-root .cr-update{padding:12px 0;overflow-wrap:anywhere;font-size:12px}
-.cr-root .cr-update .cr-actions{margin:0}
+.cr-root .cr-version{margin:12px 0 0;overflow-wrap:anywhere;font-size:12px}
 .cr-root .cr-report{margin:16px 0;padding:22px;border:1px solid var(--cr-border);border-radius:9px;background:var(--cr-raised);white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.85 ui-monospace,"Cascadia Code",monospace}
 .cr-root .cr-report-document{max-height:none;padding:clamp(18px,3vw,36px);background:var(--cr-card);box-shadow:var(--cr-shadow);border-radius:14px;font:14px/1.85 Inter,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;white-space:normal;color:var(--cr-text)}
 .cr-root .cr-report-document>h1,.cr-root .cr-report-document>h2,.cr-root .cr-report-document>h3,.cr-root .cr-report-document>p,.cr-root .cr-report-document>ul,.cr-root .cr-report-document>ol{max-width:88ch}

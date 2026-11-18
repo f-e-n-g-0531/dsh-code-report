@@ -1,12 +1,10 @@
 import React,{useState,useRef,useEffect,useMemo,useCallback,useSyncExternalStore} from 'react';
 import css from './style.css';
-import UpdatePanel from './UpdatePanel.jsx';
 import RepositoryCards from './RepositoryCards.jsx';
 import ReportDocument from './ReportDocument.jsx';
 import LazyDetails from './LazyDetails.jsx';
 import {version} from '../package.json';
 import {runtimeGate} from './protocol.mjs';
-import {createUpdateController} from './update-client.mjs';
 import {createLifecycleController} from './lifecycle-controller.mjs';
 import {createClientRpc} from './client-rpc.mjs';
 import {capturePreview} from './preview-client.mjs';
@@ -15,7 +13,7 @@ import {reportDownloadText} from './report-export.mjs';
 import {fresh,mergeRepositories,repositoryIssues} from './repositories.mjs';
 import {DEFAULT_SCAN,cleanConfiguration} from './configuration.mjs';
 import {createResultStore,staleResult,previewExpired,generationBlocker,parseVersionContexts,captureBlocker,completedViewResult,terminalAnalysisProgress} from './result-state.mjs';
-export const inject=['slots','connection','remote','remote.pluginManager'];
+export const inject=['slots','connection'];
 
 const progressFields=['phase','label','completed','total','queued','inFlight','etaMs','concurrency'];
 const cancellationProgress={phase:'cancel-requested',label:'已请求强制取消；后台状态核对中，不代表未计费'};
@@ -58,17 +56,13 @@ export function apply(ctx){
  const rpc=createClientRpc(ctx.connection);
  const results=createResultStore();
  const lifecycle=createLifecycleController({rpc,results});
- const updateController=createUpdateController({lifecycle});
  function Page(props){
   const session=props.useSessions(s=>Object.values(s.byId).find(row=>(row.retainedBy.mainView??0)>0));
   return <Panel key={JSON.stringify([session?.id,session?.cwd])} session={session}/>;
  }
  function Panel({session}){
-  const [updateState,setUpdateState]=useState(()=>updateController.getSnapshot());
-  useEffect(()=>updateController.subscribe(setUpdateState),[]);
-  const updating=updateState.updating,updateBarrier=updateState.barrier;
   const [runtime,setRuntime]=useState(null),[runtimeError,setRuntimeError]=useState(''),[runtimeAttempt,setRuntimeAttempt]=useState(0);
-  const compatibility=updateBarrier||(updating?'插件更新正在进行，已暂停扫描和分析。':'')||runtimeError||runtimeGate(runtime,version);
+  const compatibility=runtimeError||runtimeGate(runtime,version);
   useEffect(()=>{
    const ac=new AbortController();setRuntime(null);setRuntimeError('');
    rpc('runtime-info',{},ac.signal).then(value=>{if(!ac.signal.aborted)setRuntime(value);})
@@ -205,10 +199,9 @@ export function apply(ctx){
    return()=>ac.abort();
   },[session?.id]);
   const perform=async(label,fn)=>{
-   const update=updateController.getSnapshot();
    if(controller.current)return;
    if(!configReady||configBusy)return;
-   if(compatibility||update.updating||update.barrier){setError(compatibility||'更新未完成或需要重载');return;}
+   if(compatibility){setError(compatibility);return;}
    let lease;try{lease=lifecycle.acquireBusiness(label,session);}catch(error){setError(error.message);return;}
    const ac=new AbortController();controller.current=ac;setBusy(label);setError('');setProgressWarning('');setProgress({phase:'starting',label});
    try{
@@ -281,7 +274,7 @@ export function apply(ctx){
   };
   const abandonRecovery=()=>{
    if(!abandonConfirmed||busy)return;
-   try{lifecycle.abandon(session);setAbandonConfirmed(false);setConsent(false);setError('已标记放弃恢复，但未知任务的安全屏障继续保留；请核对到宿主明确停止或完成，不能据此重新派发或安装。');}
+   try{lifecycle.abandon(session);setAbandonConfirmed(false);setConsent(false);setError('已标记放弃恢复，但未知任务的安全屏障继续保留；请核对到宿主明确停止或完成，不能据此重新派发。');}
    catch(error){setError(error.message);}
   };
   const budgetValid=inputBudget===''||(/^\d+$/.test(inputBudget)&&Number.isSafeInteger(Number(inputBudget))&&Number(inputBudget)>=4000);
@@ -294,16 +287,16 @@ export function apply(ctx){
    });
   };
   const loadRefs=useCallback(async(repositoryPath,signal,{gitMode='remote',gitRemote='origin',sshDirectory}={})=>{
-   if(compatibility||updateController.getSnapshot().updating||updateController.getSnapshot().barrier)throw new Error('后台或更新状态尚不可用');
+   if(compatibility)throw new Error(compatibility);
    const lease=lifecycle.acquireBusiness(gitMode==='remote'?'读取远端 refs':'读取本地 refs',session);
    try{return (await rpc('refs',{sessionId:session.id,repositoryPath,gitMode,gitRemote,sshDirectory},signal)).refs;}finally{lease.release();}
   },[compatibility,sessionKey]);
   return <section className="cr-root"><style>{css}</style>
-   <header className="cr-hero"><div className="cr-hero-title"><span className="cr-hero-mark" aria-hidden="true">▤</span><div><small>RELEASE WORKSPACE <span>· v{version}</span></small><h1>发布报告配置</h1><p>从版本差异到发布决策，让每一次交付都有据可依。</p></div></div><div className="cr-actions cr-header-actions"><button type="button" className="cr-danger-ghost" disabled={!ownTask&&!busy||!!ownTask?.forceCancelling||updating} onClick={forceCancel} title="立即中断前端等待并请求后台取消；不保证撤回远端请求或免计费，未知状态仍须核对">{ownTask?.forceCancelling?'强制取消中…':ownTask?.forceRequested?'重试强制取消':'强制取消'}</button><button disabled={!session||!configReady||configBusy||!!busy||updating} onClick={store}>保存配置</button><button disabled={!session||!configReady||configBusy||!!busy||updating||!!pendingRecovery} onClick={restore}>恢复已保存</button></div></header>
+   <header className="cr-hero"><div className="cr-hero-title"><span className="cr-hero-mark" aria-hidden="true">▤</span><div><small>RELEASE WORKSPACE <span>· v{version}</span></small><h1>发布报告配置</h1><p>从版本差异到发布决策，让每一次交付都有据可依。</p></div></div><div className="cr-actions cr-header-actions"><button type="button" className="cr-danger-ghost" disabled={!ownTask&&!busy||!!ownTask?.forceCancelling} onClick={forceCancel} title="立即中断前端等待并请求后台取消；不保证撤回远端请求或免计费，未知状态仍须核对">{ownTask?.forceCancelling?'强制取消中…':ownTask?.forceRequested?'重试强制取消':'强制取消'}</button><button disabled={!session||!configReady||configBusy||!!busy} onClick={store}>保存配置</button><button disabled={!session||!configReady||configBusy||!!busy||!!pendingRecovery} onClick={restore}>恢复已保存</button></div></header>
    <nav className="cr-stage-nav" aria-label="报告工作流程"><div className="cr-stage" data-state={workflow[0]} aria-current={workflow[0]==='active'?'step':undefined}><span className="cr-stage-number">01</span><div><strong>配置发布范围</strong><span>项目与版本端点</span></div></div><div className="cr-stage" data-state={workflow[1]} aria-current={workflow[1]==='active'?'step':undefined}><span className="cr-stage-number">02</span><div><strong>核对差异证据</strong><span>固定快照 · 确认发送</span></div></div><div className="cr-stage" data-state={workflow[2]} aria-current={workflow[2]==='active'?'step':undefined}><span className="cr-stage-number">03</span><div><strong>生成与导出</strong><span>{ownTask?(ownTask.status==='running'?'模型分析进行中':'任务状态待核对'):hasCurrentReport&&!preview?'报告已生成，可下载':'影响分析与 QA 建议'}</span></div></div></nav>
-   <details className="cr-update-details"><summary>插件版本与更新 · {version}</summary><UpdatePanel rpc={rpc} manager={ctx.remote?.pluginManager} reportBusy={!!busy||!!lifecycleState.paid||lifecycleState.lease?.kind==='business'} controller={updateController} updateState={updateState}/></details>
+   <details className="cr-version-details"><summary>插件版本 · {version}</summary><p className="cr-version">界面版本：{version} · 后台版本：{runtime?.runningVersion||(runtimeError?'连接失败':'读取中')}</p></details>
    {configNotice&&<p className="cr-hint" role="status">{configNotice}</p>}
-   {compatibility&&<div className="cr-error" role="alert">{compatibility}<button disabled={!!busy||updating||!!updateBarrier} onClick={()=>setRuntimeAttempt(value=>value+1)}>重新验证后台</button></div>}
+   {compatibility&&<div className="cr-error" role="alert">{compatibility}<button disabled={!!busy} onClick={()=>setRuntimeAttempt(value=>value+1)}>重新验证后台</button></div>}
    <fieldset className="cr-report-form">
     {!session?<p role="status">请先打开一个带工作目录的会话。</p>:<>
      <div className="cr-workspace-bar"><div className="cr-workspace"><span className="cr-workspace-label">当前工作区</span><code>{session.cwd}</code></div><span className="cr-readonly-badge">仅读取，不修改版本库</span></div>
@@ -324,8 +317,8 @@ export function apply(ctx){
       <p className="cr-hint">工作区路径条目、展开文件数、单文件大小和总证据不设固定规模上限，仍受可用内存等系统资源约束。支持无 NUL 的 UTF-8、GBK / GB18030 文本，优先 UTF-8，失败后严格按 GB18030 解码；差异逐行选择编码，预览标记结果。二进制、两种编码均无法解码或无法读取会使整次采集失败，不静默跳过或截断。当前工作区与历史 A/B 版本分开标记。</p><p className="cr-hint">目录展开跳过点前缀隐藏、敏感、依赖、构建和缓存路径、链接及非普通文件，排除计数见预览限制；显式填写敏感路径仍拒绝。不按 Windows Hidden 属性筛选。源码目录展开不设固定条目、目录或深度上限。发送前检查展开后的实际文件清单及限制，并自行检查源码内的密钥。</p>{contextIssue&&<p role="alert" className="cr-error">{contextIssue}</p>}
      </fieldset></details>
      <div className="cr-actions cr-execute"><button className="cr-primary" disabled={!!captureReason} aria-describedby={captureReason?'cr-capture-reason':undefined} onClick={capture}>开始执行 · 采集差异</button>{captureReason&&<span id="cr-capture-reason" role="status" aria-live="polite">{captureReason}</span>}{busy&&<><span role="status">{busy}…</span><button onClick={()=>controller.current?.abort()}>取消</button></>}</div>
-     {lifecycleState.paid&&!ownTask&&<p className="cr-stale" role="status">其他会话有模型任务执行中或结果未知；本插件实例暂停新业务和安装。请回原会话恢复。此互斥不覆盖其他标签页或客户端。</p>}
-     {pendingRecovery&&<section className="cr-stale" aria-label="报告恢复"><p role="status">{pendingRecovery.message} 恢复只读取已有报告，不调用模型、不再次计费。任务归属保留在当前插件实例，切换会话仅分离视图，不取消模型。恢复标识按会话及工作区暂存；刷新、重载或更换客户端不保证恢复，请先下载。</p><button disabled={recovering} onClick={recover}>恢复已完成报告</button><button onClick={()=>lifecycle.cancel(session)}>取消模型任务</button><label className="cr-check"><input type="checkbox" checked={abandonConfirmed} disabled={!!busy} onChange={event=>setAbandonConfirmed(event.target.checked)}/>我确认标记放弃恢复；未知任务屏障仍保留，不解锁新业务或安装</label><button disabled={!!busy||!abandonConfirmed||pendingRecovery.status==='running'} onClick={abandonRecovery}>放弃恢复</button></section>}
+     {lifecycleState.paid&&!ownTask&&<p className="cr-stale" role="status">其他会话有模型任务执行中或结果未知；本插件实例暂停新业务。请回原会话恢复。此互斥不覆盖其他标签页或客户端。</p>}
+     {pendingRecovery&&<section className="cr-stale" aria-label="报告恢复"><p role="status">{pendingRecovery.message} 恢复只读取已有报告，不调用模型、不再次计费。任务归属保留在当前插件实例，切换会话仅分离视图，不取消模型。恢复标识按会话及工作区暂存；刷新、重载或更换客户端不保证恢复，请先下载。</p><button disabled={recovering} onClick={recover}>恢复已完成报告</button><button onClick={()=>lifecycle.cancel(session)}>取消模型任务</button><label className="cr-check"><input type="checkbox" checked={abandonConfirmed} disabled={!!busy} onChange={event=>setAbandonConfirmed(event.target.checked)}/>我确认标记放弃恢复；未知任务屏障仍保留，不解锁新业务</label><button disabled={!!busy||!abandonConfirmed||pendingRecovery.status==='running'} onClick={abandonRecovery}>放弃恢复</button></section>}
      {preview&&<PreviewSection preview={preview} busy={busy||(!configReady||configBusy?'正在读写配置':globalBusy?'等待任务核对':'')} expired={expired} useDefaultModel={useDefaultModel} setUseDefaultModel={value=>{setUseDefaultModel(value);setPlanDirty(true);}} provider={provider} model={model} consent={consent} setProvider={value=>{setProvider(value);setPlanDirty(true);}} setModel={value=>{setModel(value);setPlanDirty(true);}} setConsent={setConsent} generateReason={generateReason} onGenerate={generate} onCapture={capture} analysisStrategy={analysisStrategy} onStrategy={value=>{setAnalysisStrategy(value);setConsent(false);setPlanDirty(true);}} inputBudget={inputBudget} budgetValid={budgetValid} planDirty={planDirty} onBudget={value=>{setInputBudget(value);setConsent(false);setPlanDirty(true);}} onReplan={replan} compatibility={compatibility} concurrency={concurrency} onConcurrency={value=>{if(value!==concurrency){setConcurrency(value);setConsent(false);}}}/>}
      <OperationProgress view={progressView}/>
      {error&&error!==scanError&&<p className="cr-error" role="alert">{error}</p>}

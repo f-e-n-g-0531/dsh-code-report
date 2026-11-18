@@ -1,12 +1,15 @@
 import {randomUUID,createHash} from 'node:crypto';
 import {snapshotJsonBytes} from './snapshot-json.mjs';
 import {modelCapacity} from './model-capacity.mjs';
-import {runtimeInfo,checkUpdate} from './updates.mjs';
+import {readFileSync} from 'node:fs';
+import {PACKAGE_NAME,PROTOCOL_VERSION} from './protocol.mjs';
 import {loadWorkspaceConfiguration,saveWorkspaceConfiguration} from './workspace-configuration.mjs';
 import {collect,discover,listRefs} from './collect.mjs';
 import {createAnalysisPlan,analyzeReport,markdown} from './report.mjs';
 import {saveWorkspaceReport} from './workspace-report.mjs';
 
+// Capture at module load so replacing files does not relabel the running host.
+const RUNNING_VERSION=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8')).version;
 const PREVIEW_TTL=10*60*1000,RESUME_TTL=30*60*1000,PROGRESS_TTL=10*60*1000;
 const MODEL_SLOT_LIMIT=4,PROVIDER_SLOT_LIMIT=4,SAVE_SLOT_LIMIT=2;
 let activeSaves=0;
@@ -402,7 +405,7 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
     return acknowledgement();
   };
   return async(endpoint,payload,signal)=>{
-    if(endpoint==='runtime-info')return respond(()=>{const info=runtimeInfo();return {...info,backendInstanceId,capabilities:{...info.capabilities,asyncPreview:true,asyncGenerate:true}};});
+    if(endpoint==='runtime-info')return respond(()=>({packageName:PACKAGE_NAME,runningVersion:RUNNING_VERSION,protocol:PROTOCOL_VERSION,backendInstanceId,capabilities:{asyncPreview:true,asyncGenerate:true}}));
     if(endpoint==='configuration-load'||endpoint==='configuration-save')return respond(async()=>{
       const cwd=await sessionCwd(ctx,payload?.sessionId,signal);
       const options={signal,assertCurrent:()=>assertSession(payload,cwd,signal)};
@@ -412,7 +415,6 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
     if(endpoint==='generate-start')return respond(()=>startGenerate(payload,signal));
     if(endpoint==='generate-cancel')return respond(()=>progress.cancelGenerate(payload,signal));
     if(endpoint==='preview-cancel')return respond(()=>progress.cancel(payload,signal,(previewId,sessionId)=>previews.release({previewId,sessionId},signal)));
-    if(endpoint==='check-update')return respond(()=>checkUpdate({signal}));
     if(endpoint==='release-preview')return respond(()=>previews.release(payload,signal));
     if(endpoint==='progress')return respond(()=>progress.read(payload,signal));
     if(endpoint==='result')return respond(()=>progress.result(payload,signal));

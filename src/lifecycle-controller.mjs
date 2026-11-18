@@ -32,7 +32,7 @@ export function createLifecycleController({rpc,results,randomId=()=>crypto.rando
   for(const listener of listeners){try{listener(snapshot);}catch{/* A detached view cannot affect ownership. */}}
  };
  function acquire(kind,label,session){
-  if(lease)throw new Error(lease.kind==='install'?'插件更新尚未确认，已阻止新业务。':'当前插件实例存在执行中或结果未知的任务，请先核对；不能重复提交或更新。');
+  if(lease)throw new Error('当前插件实例存在执行中或结果未知的任务，请先核对；不能重复提交。');
   const token={kind,label,sessionKey:session?resultKey(session):null};lease=token;publish();
   return {release(){if(lease===token){lease=null;publish();}},token};
  }
@@ -142,7 +142,6 @@ export function createLifecycleController({rpc,results,randomId=()=>crypto.rando
   getSnapshot:()=>snapshot,
   subscribe(listener){listeners.add(listener);listener(snapshot);return()=>listeners.delete(listener);},
   acquireBusiness(label,session){return acquire('business',label,session);},
-  acquireInstall(){return acquire('install','插件更新');},
   hasPaid(session){return !!paid&&(!session||paid.sessionKey===resultKey(session));},
   async recover(session){
    if(!paid||paid.sessionKey!==resultKey(session))throw new Error('此会话没有可恢复的分析任务');
@@ -158,7 +157,7 @@ export function createLifecycleController({rpc,results,randomId=()=>crypto.rando
   abandon(session){
    if(!paid||paid.sessionKey!==resultKey(session))return;
    if(paid.status==='running')throw new Error('任务仍在执行，请先取消并核对结果');
-   paid.abandoned=true;paid.message='已标记放弃恢复，但任务是否停止仍未知。安全屏障继续保留，不能重新派发或安装；请只读核对直到宿主确认终止或完成。';publish();
+   paid.abandoned=true;paid.message='已标记放弃恢复，但任务是否停止仍未知。安全屏障继续保留，不能重新派发；请只读核对直到宿主确认终止或完成。';publish();
   },
   startGenerate(session,payload,{asyncGenerate=false,backendInstanceId}={}){
    if(!session?.id||!session?.cwd)throw new Error('需要有效会话及工作区');

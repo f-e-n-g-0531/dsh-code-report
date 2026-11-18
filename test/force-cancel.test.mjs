@@ -24,7 +24,7 @@ test('force cancellation immediately marks unknown, sends one independent reques
   return Promise.resolve({status:'pending'});
  }});
  const operation=lifecycle.startGenerate(session,{});const cancel=lifecycle.forceCancel(session);assert.equal(lifecycle.getSnapshot().paid.forceRequested,true);assert.equal(lifecycle.getSnapshot().paid.status,'unknown');assert.ok(lifecycle.getSnapshot().lease);
- assert.equal(lifecycle.forceCancel(session),cancel);assert.equal(cancels,1);assert.throws(()=>lifecycle.acquireInstall());
+ assert.equal(lifecycle.forceCancel(session),cancel);assert.equal(cancels,1);assert.throws(()=>lifecycle.acquireBusiness('refs',session));
  resolveCancel({cancelRequested:true,status:'pending'});await cancel;assert.ok(lifecycle.getSnapshot().lease);assert.equal(results.getRecovery(session).operationId,operation.operationId);
  const retry=lifecycle.forceCancel(session);assert.equal(cancels,2);assert.equal(lifecycle.getSnapshot().paid.forceCancelling,true);resolveCancel({cancelRequested:true,status:'pending'});await retry;assert.ok(lifecycle.getSnapshot().lease);
  resolveGenerate({markdown:'completed despite cancel'});await operation.promise;assert.equal(results.get(session).markdown,'completed despite cancel');assert.equal(lifecycle.getSnapshot().lease,null);

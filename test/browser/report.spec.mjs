@@ -151,7 +151,7 @@ for(const theme of ['light','dark'])for(const width of [390,1280])test('visual r
  const motion=await page.locator('.cr-root, .cr-root *').evaluateAll(elements=>elements.filter(e=>e.getClientRects().length).flatMap(e=>[null,'::before','::after'].map(pseudo=>{const s=getComputedStyle(e,pseudo);return {node:e.tagName+'.'+e.className+(pseudo||''),animation:s.animationName,duration:s.animationDuration,transition:s.transitionDuration,scroll:s.scrollBehavior};})));for(const m of motion){expect(m.duration.split(',').every(t=>parseFloat(t)<=.001),m.node+' reduced animation').toBe(true);expect(m.transition.split(',').every(t=>parseFloat(t)<=.001),m.node+' reduced transition').toBe(true);expect(m.scroll,m.node+' no smooth scroll').not.toBe('smooth');}
  const shot=async(label,locator)=>{const path=info.outputPath('refresh-'+theme+'-'+width+'-'+label+'.png');if(locator)await locator.screenshot({path});else await page.screenshot({path});await info.attach('refresh-'+theme+'-'+width+'-'+label,{path,contentType:'image/png'});};
  await page.locator('.cr-root').evaluate(e=>e.scrollTop=0);await shot('configuration');await shot('project-expanded',page.locator('#cr-row-0'));await page.getByRole('button',{name:'收起项目 1',exact:true}).click();await expect(selected).toBeChecked();await expect(page.getByRole('button',{name:'展开项目 1',exact:true})).toHaveAttribute('aria-expanded','false');await shot('projects-collapsed',page.locator('.cr-repositories'));await assertNoNestedScroll(page);
- await collect(page);const result=page.locator('.cr-result');await expect(result.getByRole('heading',{name:'采集证据（尚未生成发布报告）',exact:true})).toBeVisible();await expect(result.getByRole('status').filter({hasText:'仅采集完成，未调用模型'})).toBeVisible();await expect(result.getByRole('button',{name:'下载证据清单 .md',exact:true})).toBeEnabled();await assertNoNestedScroll(page);await shot('local-evidence',result);expect((await stats(page)).modelCalls).toBe(0);expect((await stats(page)).calls.filter(call=>call.endpoint==='generate')).toHaveLength(0);expect((await stats(page)).calls.filter(call=>call.endpoint==='preview-start')).toHaveLength(1);expect((await stats(page)).installCalls).toBe(0);
+ await collect(page);const result=page.locator('.cr-result');await expect(result.getByRole('heading',{name:'采集证据（尚未生成发布报告）',exact:true})).toBeVisible();await expect(result.getByRole('status').filter({hasText:'仅采集完成，未调用模型'})).toBeVisible();await expect(result.getByRole('button',{name:'下载证据清单 .md',exact:true})).toBeEnabled();await assertNoNestedScroll(page);await shot('local-evidence',result);expect((await stats(page)).modelCalls).toBe(0);expect((await stats(page)).calls.filter(call=>call.endpoint==='generate')).toHaveLength(0);expect((await stats(page)).calls.filter(call=>call.endpoint==='preview-start')).toHaveLength(1);
 });
 
 for(const width of [380,1280])test('one constrained outer scroll reaches 500 projects and long code table raw report '+width,async({page},info)=>{
@@ -174,7 +174,7 @@ for(const width of [380,1280])test('projects default collapsed, toggle independe
  await toggle(1).click();await expect(toggle(1)).toHaveAttribute('aria-expanded','false');await expect(toggle(2)).toHaveAttribute('aria-expanded','true');await expect(row1.locator('[aria-label="版本 A 1"]')).toHaveCount(0);await expect(row1.locator('.cr-project-comparison')).toHaveText('A：main @ v1 → B：release @ 最新提交');await expect(page.getByRole('checkbox',{name:'纳入项目 1',exact:true})).toBeChecked();await toggle(2).click();await expandProject(page,2);
  const search=page.getByRole('textbox',{name:'搜索项目路径',exact:true});await search.fill('project-1');await expect(row1).toHaveCount(0);await page.locator('.cr-bulk summary').click();await page.locator('.cr-bulk').getByRole('textbox',{name:'B 目标',exact:true}).fill('v2');await page.getByRole('button',{name:'应用到已选 GIT 项目',exact:true}).click();await search.fill('');await expect(row1.locator('[aria-label="版本 A 1"]')).toHaveCount(0);await expect(row1.locator('.cr-project-comparison')).toHaveText('A：main @ v1 → B：release @ v2');await expect(toggle(1)).toHaveAttribute('aria-expanded','false');await expect(toggle(2)).toHaveAttribute('aria-expanded','true');
  await expandProject(page);await expect(row1.locator('[aria-label="版本 A 1"]')).toHaveValue('v1');await expect(row1.locator('[aria-label="版本 B 1"]')).toHaveValue('v2');await expect(page.getByRole('combobox',{name:'GIT 分支 A 1',exact:true})).toHaveValue('main');await page.getByRole('textbox',{name:'项目路径 1',exact:true}).fill('');await toggle(1).click();await expect(row1.locator('.cr-project-error')).toBeVisible();await search.fill('project-1');await page.getByRole('button',{name:'定位首个错误项目',exact:true}).click();await expect(search).toHaveValue('');await expect(toggle(1)).toHaveAttribute('aria-expanded','true');await expect(page.getByRole('textbox',{name:'项目路径 1',exact:true})).toBeFocused();
- const observed=await stats(page);expect(observed.calls.filter(call=>['refs','preview-start','generate'].includes(call.endpoint))).toHaveLength(0);expect(observed.modelCalls).toBe(0);expect(observed.installCalls).toBe(0);await expect(page.getByRole('checkbox',{name:'纳入项目 2',exact:true})).toBeChecked();const screenshot=info.outputPath('project-collapse-'+width+'.png');await page.locator('.cr-repositories').screenshot({path:screenshot});await info.attach('project-collapse-'+width,{path:screenshot,contentType:'image/png'});
+ const observed=await stats(page);expect(observed.calls.filter(call=>['refs','preview-start','generate'].includes(call.endpoint))).toHaveLength(0);expect(observed.modelCalls).toBe(0);await expect(page.getByRole('checkbox',{name:'纳入项目 2',exact:true})).toBeChecked();const screenshot=info.outputPath('project-collapse-'+width+'.png');await page.locator('.cr-repositories').screenshot({path:screenshot});await info.attach('project-collapse-'+width,{path:screenshot,contentType:'image/png'});
 });
 
 test('reader report renders semantic headings tables decoded identifiers and inert source with collapsed appendices (contract mock)',async({page},info)=>{
@@ -202,7 +202,7 @@ test('single request preview distinguishes local coverage and budgeted excerpts,
  await route(page);await expect(consent(page)).toHaveAccessibleName(/一次请求可能计费/);await expect(consent(page)).toHaveAccessibleName(/未发送正文不属于模型全文分析/);await expect(generate(page)).toBeDisabled();await consent(page).check();await budget.fill('48000');await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();await page.getByRole('button',{name:'更新分析计划',exact:true}).click();await expect(consent(page)).toBeEnabled();await expect(budget).toHaveValue('48000');
  expect((await stats(page)).calls.filter(call=>call.endpoint==='analysis-plan').at(-1).payload).toMatchObject({inputBudget:48000,strategy:'single-request'});expect((await stats(page)).modelCalls).toBe(0);await consent(page).check();await generate(page).click();
  const recover=page.getByRole('button',{name:'恢复已完成报告',exact:true});await expect(recover).toBeVisible();expect((await stats(page)).modelCalls).toBe(1);await recover.click();await expect(recover).toBeEnabled();await page.evaluate(()=>window.fixture.configure({resultPending:false}));await recover.click();await expect(report(page)).toContainText('模型报告 a');await expect(scope).toContainText('本地完整统计不等于模型全文覆盖');await expect(scope).toContainText('完全未发送文件专属证据 5 个');
- const observed=await stats(page);expect(observed.modelCalls).toBe(1);expect(observed.calls.filter(call=>call.endpoint==='generate')).toHaveLength(1);expect(paidReads(observed.calls).length).toBeGreaterThanOrEqual(2);expect(observed.installCalls).toBe(0);
+ const observed=await stats(page);expect(observed.modelCalls).toBe(1);expect(observed.calls.filter(call=>call.endpoint==='generate')).toHaveLength(1);expect(paidReads(observed.calls).length).toBeGreaterThanOrEqual(2);
 });
 
 test('strategy can return to full only after replanning and fresh consent (contract mock)',async({page})=>{
@@ -293,7 +293,7 @@ test('classified remote authentication failure is safe, remains remote and permi
  let calls=(await stats(page)).calls.filter(call=>call.endpoint==='refs');expect(calls).toHaveLength(1);expect(calls[0].payload).toMatchObject({gitMode:'remote',gitRemote:'origin'});
  expect((await stats(page)).calls.some(call=>call.endpoint==='preview-start'||call.endpoint==='generate')).toBe(false);
  await page.evaluate(()=>window.fixture.configure({refsAuthFailure:false}));await query.click();await expect(alert).toHaveCount(0);await expect(page.locator('#cr-refs-0 option')).toHaveCount(3);
- calls=(await stats(page)).calls.filter(call=>call.endpoint==='refs');expect(calls).toHaveLength(2);expect(calls.every(call=>call.payload.gitMode==='remote'&&call.payload.gitRemote==='origin')).toBe(true);expect((await stats(page)).modelCalls).toBe(0);expect((await stats(page)).installCalls).toBe(0);
+ calls=(await stats(page)).calls.filter(call=>call.endpoint==='refs');expect(calls).toHaveLength(2);expect(calls.every(call=>call.payload.gitMode==='remote'&&call.payload.gitRemote==='origin')).toBe(true);expect((await stats(page)).modelCalls).toBe(0);
 });
 
 test('Git local offline mode is explicit and stays local for refs and collection',async({page})=>{
@@ -402,16 +402,14 @@ test('pending lost response blocks duplicate generation and manual recovery is r
  expect((await stats(page)).modelCalls).toBe(1);expect((await stats(page)).calls.filter(x=>x.endpoint==='generate')).toHaveLength(1);expect(paidReads((await stats(page)).calls)).toHaveLength(3);
 });
 
-test('pending recovery survives session switch and blocks duplicate work and native installation',async({page})=>{
+test('pending recovery survives session switch and blocks duplicate work',async({page})=>{
  await open(page,{failGenerateResponse:true,resultPending:true});await selectGit(page);await collect(page);await route(page);
- await page.getByText(/插件版本与更新 ·/).click();await page.getByRole('button',{name:'检查更新',exact:true}).click();await page.getByRole('checkbox',{name:/我确认将此插件更新到/}).check();
- await expect(page.getByRole('button',{name:'更新到 99.0.0',exact:true})).toBeEnabled();await consent(page).check();await generate(page).click();
- const recover=page.getByRole('button',{name:'恢复已完成报告',exact:true});await expect(recover).toBeVisible();await expect(page.getByRole('button',{name:'更新到 99.0.0',exact:true})).toBeDisabled();
+ await consent(page).check();await generate(page).click();
+ const recover=page.getByRole('button',{name:'恢复已完成报告',exact:true});await expect(recover).toBeVisible();
  await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await expect(recover).toHaveCount(0);
  await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await expect(recover).toBeVisible();await expect(capture(page)).toBeDisabled();
  if(await generate(page).count())await expect(generate(page)).toBeDisabled();
- await page.getByText(/插件版本与更新 ·/).click();await expect(page.getByRole('button',{name:'检查更新',exact:true})).toBeDisabled();
- expect((await stats(page)).installCalls).toBe(0);await page.evaluate(()=>window.fixture.configure({resultPending:false}));await recover.click();
+ await page.evaluate(()=>window.fixture.configure({resultPending:false}));await recover.click();
  await expect(report(page)).toContainText('模型报告 a');expect((await stats(page)).modelCalls).toBe(1);expect((await stats(page)).calls.filter(x=>x.endpoint==='generate')).toHaveLength(1);
 });
 
@@ -479,22 +477,22 @@ test('no workspace and incompatible backend never dispatch collection or model',
  expect((await stats(page)).calls.filter(x=>['discover','preview-start','generate'].includes(x.endpoint))).toHaveLength(0);expect((await stats(page)).modelCalls).toBe(0);
 });
 
-test('native update restart barrier survives session remount and prevents repeat installation',async({page})=>{
- await open(page);await expect(page.getByRole('checkbox',{name:'纳入项目 1',exact:true})).toBeVisible();
- await page.getByText(/插件版本与更新 ·/).click();await page.getByRole('button',{name:'检查更新',exact:true}).click();
- await page.getByRole('checkbox',{name:/我确认将此插件更新到/}).check();await page.getByRole('button',{name:'更新到 99.0.0',exact:true}).click();
- await expect(page.getByText(/新版已安装/).first()).toBeVisible();await expect(page.getByRole('button',{name:'扫描 / 重新发现'})).toBeDisabled();
- await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await expect(page.getByRole('button',{name:'扫描 / 重新发现'})).toBeDisabled();
- expect((await stats(page)).installCalls).toBe(1);expect((await stats(page)).modelCalls).toBe(0);
+test('plugin version details show the UI and backend versions without an update button',async({page})=>{
+ await open(page);
+ const {version}=JSON.parse(await readFile(new URL('../../package.json',import.meta.url),'utf8'));
+ const detail=page.getByText(`界面版本：${version} · 后台版本：${version}`,{exact:true});
+ await expect(detail).toBeHidden();
+ await page.getByText(`插件版本 · ${version}`,{exact:true}).click();
+ await expect(detail).toBeVisible();
+ await expect(page.getByRole('button',{name:'检查更新',exact:true,includeHidden:true})).toHaveCount(0);
+ await expect.poll(async()=>(await stats(page)).calls.some(call=>call.endpoint==='runtime-info')).toBe(true);
 });
-
-
 async function startHeldAnalysis(page,options={}){
  await open(page,{holdGenerate:true,...options});await selectGit(page);await collect(page);await route(page);await consent(page).check();await generate(page).click();
  await expect.poll(async()=>(await stats(page)).modelCalls).toBe(1);await workflow(page,['complete','complete','active']);
 }
-async function assertPaidProof(page,{dispatches=1,installs=0}={}){
- const value=await stats(page);expect(value.modelCalls).toBe(dispatches);expect(value.calls.filter(call=>call.endpoint==='generate')).toHaveLength(dispatches);expect(value.installCalls).toBe(installs);
+async function assertPaidProof(page,{dispatches=1}={}){
+ const value=await stats(page);expect(value.modelCalls).toBe(dispatches);expect(value.calls.filter(call=>call.endpoint==='generate')).toHaveLength(dispatches);
  const identifiers=value.calls.filter(call=>call.endpoint==='generate').map(call=>call.payload.operationId);expect(new Set(identifiers).size).toBe(identifiers.length);
  return value;
 }
@@ -543,14 +541,14 @@ test('header force cancellation retains unknown identity and later completion re
  await expect.poll(async()=>(await stats(page)).calls.filter(call=>call.endpoint==='generate-cancel').length).toBe(1);
  await expect(page.getByRole('button',{name:'恢复已完成报告',exact:true})).toBeVisible();await expect(capture(page)).toBeDisabled();
  const before=await assertPaidProof(page);expect(before.generateAborts).toBe(1);const operation=before.calls.find(call=>call.endpoint==='generate').payload.operationId;
- await page.getByRole('checkbox',{name:'我确认标记放弃恢复；未知任务屏障仍保留，不解锁新业务或安装',exact:true}).check();await page.getByRole('button',{name:'放弃恢复',exact:true}).click();await expect(capture(page)).toBeDisabled();await expect(generate(page)).toBeDisabled();
+ await page.getByRole('checkbox',{name:'我确认标记放弃恢复；未知任务屏障仍保留，不解锁新业务',exact:true}).check();await page.getByRole('button',{name:'放弃恢复',exact:true}).click();await expect(capture(page)).toBeDisabled();await expect(generate(page)).toBeDisabled();
  await page.getByRole('button',{name:'恢复已完成报告',exact:true}).click();await expect(capture(page)).toBeDisabled();
  await page.evaluate(()=>window.fixture.releaseGenerate());await expect.poll(async()=>(await stats(page)).settledGenerations).toBe(1);
  await page.getByRole('button',{name:'恢复已完成报告',exact:true}).click();await expect(report(page)).toContainText('模型报告 a');
  const after=await assertPaidProof(page);expect(paidReads(after.calls).every(call=>call.payload.operationId===operation)).toBe(true);
 });
 
-test('unknown paid work in A blocks installation and refs in B while downloads remain local',async({page})=>{
+test('unknown paid work in A blocks collection and refs in B while downloads remain local',async({page})=>{
  await open(page);await selectGit(page);await collect(page);await analyze(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
  await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await selectGit(page);await collect(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
  await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await collect(page);await route(page);
@@ -558,27 +556,16 @@ test('unknown paid work in A blocks installation and refs in B while downloads r
  await page.getByRole('button',{name:'取消模型任务',exact:true}).click();await expect(page.getByRole('button',{name:'恢复已完成报告',exact:true})).toBeVisible();
  await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await expect(report(page)).toContainText('本地证据 b');await expect(capture(page)).toBeDisabled();
  await expect(page.getByRole('button',{name:'展开项目 1',exact:true})).toBeDisabled();await expect(page.getByRole('button',{name:/^读取(?:远端|本地)分支\/标签$/,includeHidden:true})).toHaveCount(0);
- await page.getByText(/插件版本与更新 ·/).click();const update=page.getByRole('button',{name:'检查更新',exact:true});if(await update.isEnabled())await update.click();
- const install=page.getByRole('button',{name:'更新到 99.0.0',exact:true});if(await install.count())await expect(install).toBeDisabled();
  const before=await stats(page);expect(await downloadCurrent(page)).toContain('本地证据 b');expect((await stats(page)).calls).toEqual(before.calls);
  await page.evaluate(()=>window.fixture.releaseGenerate());await expect.poll(async()=>(await stats(page)).settledGenerations).toBe(2);
  await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await page.getByRole('button',{name:'恢复已完成报告',exact:true}).click();await expect(report(page)).toContainText('模型报告 a');await assertPaidProof(page,{dispatches:2});
 });
 
-test('native installation lease blocks cross-session refs and collection but preserves downloads',async({page})=>{
- await open(page,{holdInstall:true});await selectGit(page);await collect(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
- await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await selectGit(page);await collect(page);await page.getByRole('button',{name:'保存配置',exact:true}).click();
- await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await page.getByText(/插件版本与更新 ·/).click();await page.getByRole('button',{name:'检查更新',exact:true}).click();await page.getByRole('checkbox',{name:/我确认将此插件更新到/}).check();await page.getByRole('button',{name:'更新到 99.0.0',exact:true}).click();
- await expect.poll(async()=>(await stats(page)).installCalls).toBe(1);await page.getByRole('button',{name:'测试会话 B',exact:true}).click();
- await expect(capture(page)).toBeDisabled();await expect(page.getByRole('button',{name:'展开项目 1',exact:true})).toBeDisabled();await expect(page.getByRole('button',{name:/^读取(?:远端|本地)分支\/标签$/,includeHidden:true})).toHaveCount(0);const before=await stats(page);expect(await downloadCurrent(page)).toContain('本地证据 b');expect((await stats(page)).calls).toEqual(before.calls);
- await page.evaluate(()=>window.fixture.releaseInstall());await expect(page.getByRole('alert').filter({hasText:/重启/}).first()).toBeVisible();await assertPaidProof(page,{dispatches:0,installs:1});
-});
-
-test('a held refs request owns the business lease and prevents concurrent native installation',async({page})=>{
- await open(page,{holdRefs:true});await selectGit(page);await page.getByText(/插件版本与更新 ·/).click();await page.getByRole('button',{name:'检查更新',exact:true}).click();await page.getByRole('checkbox',{name:/我确认将此插件更新到/}).check();
+test('a held refs request blocks collection until it completes',async({page})=>{
+ await open(page,{holdRefs:true});await selectGit(page);
  await page.getByRole('button',{name:/^读取(?:远端|本地)分支\/标签$/}).click();await expect.poll(async()=>(await stats(page)).calls.filter(call=>call.endpoint==='refs').length).toBe(1);
- await expect(page.getByRole('button',{name:'更新到 99.0.0',exact:true})).toBeDisabled();await expect(capture(page)).toBeDisabled();await assertPaidProof(page,{dispatches:0});
- await page.evaluate(()=>window.fixture.releaseRefs());await expect(page.getByText('已载入 3 个远端引用，在 A/B 输入中选择；此次查询观察值，采集时会重新获取。')).toBeVisible();await expect(page.getByRole('button',{name:'更新到 99.0.0',exact:true})).toBeEnabled();
+ await expect(capture(page)).toBeDisabled();await assertPaidProof(page,{dispatches:0});
+ await page.evaluate(()=>window.fixture.releaseRefs());await expect(page.getByText('已载入 3 个远端引用，在 A/B 输入中选择；此次查询观察值，采集时会重新获取。')).toBeVisible();await expect(capture(page)).toBeEnabled();
 });
 
 for(const width of [320,680,1280])test('viewport '+width+' supports long paths, 500 rows and keyboard selection',async({page},testInfo)=>{
