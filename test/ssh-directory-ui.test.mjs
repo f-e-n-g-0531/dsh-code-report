@@ -11,7 +11,7 @@ function harness(row,loadRefs){
  const hooks={...React,memo:fn=>fn,useMemo:fn=>fn(),useCallback:fn=>fn,useState(initial){const i=cursor++;if(!(i in states))states[i]=initial;return [states[i],value=>{states[i]=typeof value==='function'?value(states[i]):value;}];},useRef(initial){const i=refCursor++;return refs[i]??=( {current:initial});},useEffect(fn,deps){const i=effectCursor++,previous=effects[i];if(!previous||deps.some((v,n)=>!Object.is(v,previous.deps[n])))effects[i]={fn,deps,pending:true};}};
  const sandbox={module:{exports:{}},require:()=>hooks,AbortController};vm.runInNewContext(compiled.outputFiles[0].text,sandbox);
  const cards=sandbox.module.exports.default({rows:[row]});
- const element=nodes(cards).find(node=>typeof node.type==='function');
+ const element=nodes(cards).find(node=>typeof node.type==='function'&&node.props?.row===row);
  states=[];refs=[];effects=[];
  const changes=[];
  return {changes,render(next=row){cursor=refCursor=effectCursor=0;const tree=element.type({...element.props,row:next,expanded:true,loadRefs,change:(...args)=>changes.push(args)});for(const effect of effects)if(effect.pending){effect.pending=false;effect.fn();}return nodes(tree);}};

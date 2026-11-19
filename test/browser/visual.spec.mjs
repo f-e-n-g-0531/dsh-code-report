@@ -47,7 +47,7 @@ for(const theme of ['light','dark'])for(const width of [380,768,1280])test('visu
  const prefix=(before?'before':'after')+'-'+theme+'-'+width;
  const workspace=info.outputPath(prefix+'-workspace.png');await page.screenshot({path:workspace});await info.attach(prefix+'-workspace',{path:workspace,contentType:'image/png'});
  if(!before&&theme==='dark'&&width===1280&&process.env.DSH_SHOWCASE_PATH){await page.setViewportSize({width,height:1500});await page.locator('.cr-root').screenshot({path:process.env.DSH_SHOWCASE_PATH});await info.attach('dark-workspace-showcase',{path:process.env.DSH_SHOWCASE_PATH,contentType:'image/png'});await page.setViewportSize({width,height:1100});}
- await page.getByRole('button',{name:'开始执行 · 采集差异',exact:true}).click();const preview=page.getByRole('group',{name:'3. 确认分析范围',exact:true});await expect(preview).toBeVisible();await preview.scrollIntoViewIfNeeded();
+ await page.getByRole('button',{name:'开始执行 · 采集差异',exact:true}).click();const preview=page.getByRole('group',{name:'4. 确认分析范围',exact:true});await expect(preview).toBeVisible();await preview.scrollIntoViewIfNeeded();
  const evidence=info.outputPath(prefix+'-preview.png');await page.screenshot({path:evidence});await info.attach(prefix+'-preview',{path:evidence,contentType:'image/png'});
  expect(await page.evaluate(()=>window.fixture.getStats().modelCalls)).toBe(0);expect(errors).toEqual([]);
 });

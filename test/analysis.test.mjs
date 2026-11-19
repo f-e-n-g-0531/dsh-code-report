@@ -3,7 +3,7 @@ import {withDispositions} from './analysis-fixture.mjs';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createAnalysisPlan, analyzeReport, analyze, markdown} from '../src/report.mjs';
-import {validateAnalysis, consumeStructuredAnalysis, estimatedInputBytes, ANALYSIS_PLAN_VERSION, ANALYSIS_SYSTEM} from '../src/analysis.mjs';
+import {validateAnalysis, consumeStructuredAnalysis, estimatedInputBytes, ANALYSIS_PLAN_VERSION, MODEL_SYSTEM, modelEvidencePayload} from '../src/analysis.mjs';
 import {createEvidenceIndex, evidenceHash} from '../src/evidence.mjs';
 
 const route = {provider: 'fixture', model: 'structured'};
@@ -25,8 +25,8 @@ test('linear packing matches reference JSON packing and preserves payload and pl
       group.push(item);
     }
     if (group.length) groups.push(group);
-    const payloadHashes = groups.map(items => evidenceHash(JSON.stringify(payloadFor(items))));
-    const id = 'plan-' + evidenceHash(JSON.stringify([ANALYSIS_PLAN_VERSION, 2, index.snapshotHash, inputBudget, ANALYSIS_SYSTEM, payloadHashes]));
+    const payloadHashes = groups.map((items,index) => evidenceHash(JSON.stringify(modelEvidencePayload(payloadFor(items),index+1))));
+    const id = 'plan-' + evidenceHash(JSON.stringify([ANALYSIS_PLAN_VERSION, 2, index.snapshotHash, inputBudget, MODEL_SYSTEM, payloadHashes]));
     const plan = createAnalysisPlan(source, {inputBudget});
     assert.equal(plan.id, id);
     assert.deepEqual(plan.batches.map(batch => batch.payloadHash), payloadHashes);
@@ -67,9 +67,77 @@ test('over 32 batches cancel with exact complete coverage and explicitly resume 
 test('strict schema rejects arbitrary objects, extras, invalid references and unsupported unknown claims', () => {
   const valid = document('e1');
   assert.deepEqual(validateAnalysis(valid, ['e1']), {...valid, evidenceDispositions: []});
-  const invalid = [null, [], {}, {...valid, extra: []}, {...valid, changes: {}}, {...valid, changes: [{text: 'x', evidenceIds: ['wrong']}]}, {...valid, changes: [{text: 'x', evidenceIds: []}]}, {...valid, changes: [{text: 'x', evidenceIds: ['e1', 'e1']}]}, {...valid, changes: [{text: 'x', evidenceIds: ['e1'], url: 'evil'}]}, {...valid, changes: [{text: '', evidenceIds: ['e1']}]}, {...valid, unknowns: [{text: '确定安全', evidenceIds: []}]}];
+  const invalid = [null, [], {}, {...valid, extra: []}, {...valid, changes: {}}, {...valid, changes: [{text: 'x', evidenceIds: ['wrong']}]}, {...valid, changes: [{text: 'x', evidenceIds: []}]}, {...valid, changes: [{text: 'x', evidenceIds: ['e1'], url: 'evil'}]}, {...valid, changes: [{text: '', evidenceIds: ['e1']}]}, {...valid, unknowns: [{text: '确定安全', evidenceIds: []}]}];
   for (const value of invalid) assert.throws(() => validateAnalysis(value, ['e1']));
   assert.throws(() => validateAnalysis({...valid, changes: Array(201).fill(valid.changes[0])}, ['e1']));
+});
+
+test('model duplicate references normalize without changing attribution or saved checkpoints', async () => {
+  const valid = document('e1'), changes = [{text:'fixture', evidenceIds:['e2','e1','e2']}];
+  assert.deepEqual(validateAnalysis({...valid,changes},['e1','e2']).changes[0].evidenceIds,['e2','e1']);
+  assert.deepEqual(changes[0].evidenceIds,['e2','e1','e2']);
+  assert.throws(()=>validateAnalysis({...valid,changes},['e1','e2'],{normalized:true}),error=>error.details.referenceFailure.reason==='duplicate');
+  const evidence=[{id:'e1',repository:'app',provenance:'version-diff',text:'+int fixture();'}, {id:'e2',repository:'app',text:'外部接入契约：fixture'}];
+  const item={text:'fixture',symbol:'fixture',audience:'public-sdk',evidenceIds:['e1','e1'],declarationEvidenceIds:['e1','e1'],publicBasis:{kind:'integration-contract',description:'fixture',quote:evidence[1].text,evidenceIds:['e2','e2']}};
+  const [entry]=validateAnalysis({...valid,interfaces:[item]},['e1','e2'],{evidence}).interfaces;
+  assert.deepEqual(entry.evidenceIds,['e1','e2']);assert.deepEqual(entry.declarationEvidenceIds,['e1']);assert.deepEqual(entry.publicBasis.evidenceIds,['e2']);
+  const source=snapshot(),plan=createAnalysisPlan(source);
+  let calls=0;
+  const result=await analyzeReport(model(payload=>{calls++;const id=payload.evidence[0].id;return stream({...document(id),changes:[{text:'fixture',evidenceIds:[id,id]}]});}),route,source,{plan});
+  assert.equal(calls,plan.batches.length);assert.equal(result.coverage.dispositionComplete,true);
+});
+
+test('reference diagnostics identify fixed fields and reasons without copying model data', () => {
+  const valid = document('e1'), ids = ['e1', 'e2'];
+  for (const [evidenceIds, reason] of [['SECRET', 'not-array'], [[1], 'not-string'], [['e1','e1','SECRET'], 'out-of-batch'], [['SECRET'], 'out-of-batch'], [[], 'empty']]) {
+    assert.throws(() => validateAnalysis({...valid, changes:[{text:'SECRET', evidenceIds}]}, ids), error => {
+      assert.equal(error.code, 'code-report/analysis-reference');
+      assert.deepEqual(error.details.referenceFailure, {section:'changes', field:'evidenceIds', reason});
+      assert.doesNotMatch(error.message + JSON.stringify(error.details), /SECRET/);
+      return true;
+    });
+  }
+  const entry={text:'fixture',symbol:'fixture',audience:'public-sdk',evidenceIds:['e1'],declarationEvidenceIds:['e1'],publicBasis:{kind:'sdk-publication',description:'fixture',quote:'fixture',evidenceIds:['SECRET']}};
+  for(const [item,field] of [[{...entry,declarationEvidenceIds:['SECRET']},'declarationEvidenceIds'],[entry,'publicBasis.evidenceIds']]){
+    assert.throws(()=>validateAnalysis({...valid,interfaces:[item]},ids),error=>{
+      assert.deepEqual(error.details.referenceFailure,{section:'interfaces',field,reason:'out-of-batch'});return true;
+    });
+  }
+});
+
+test('wire references reject another batch and restore original IDs in the disposition ledger',async()=>{
+  const source=snapshot('旧😀'.repeat(2200)),plan=createAnalysisPlan(source,{inputBudget:14000});
+  assert.ok(plan.batches.length>1);
+  let calls=0;
+  const rejected=async alias=>assert.rejects(analyzeReport(model(payload=>{
+    calls++;assert.equal(payload.evidence[0].id,'B1-E1');
+    assert.equal(evidenceHash(JSON.stringify(payload)),plan.batches[0].payloadHash);
+    assert.ok(estimatedInputBytes(payload)<=plan.batches[0].inputBytes);
+    return stream(document(alias));
+  }),route,source,{plan}),error=>error.details.referenceFailure.reason==='out-of-batch'&&error.details.referenceFailure.batchNumber===1);
+  await rejected('B2-E1');await rejected(plan.batches[0].evidenceIds[0]);assert.equal(calls,2);
+  const result=await analyzeReport(model(()=>stream({changes:[],interfaces:[],impacts:[],qa:[],unknowns:[]})),route,source,{plan});
+  for(const batch of plan.batches){
+    const ledger=result.completed.get(batch.id).analysis.evidenceDispositions;
+    assert.deepEqual(ledger.map(item=>item.evidenceId),batch.evidenceIds);
+  }
+});
+
+test('reference diagnostic uses the original plan ordinal on failure and resume', async () => {
+  const source = snapshot('旧😀'.repeat(2200)), plan = createAnalysisPlan(source, {inputBudget: 14000});
+  assert.ok(plan.batches.length > 1);
+  let calls=0, checkpoint;
+  const bad=()=>stream(document('SECRET'));
+  await assert.rejects(analyzeReport(model(payload=>++calls===1?stream(document(payload.evidence[0].id)):bad()),route,source,{plan}), error=>{
+    checkpoint=error.completed;
+    assert.equal(error.details.referenceFailure.batchNumber,2);
+    assert.match(error.message,/^第 2 \/ /);
+    assert.doesNotMatch(error.message + JSON.stringify(error.details), /SECRET/);
+    return true;
+  });
+  assert.equal(calls,2);assert.equal(checkpoint.size,1);
+  await assert.rejects(analyzeReport(model(()=>{calls++;return bad();}),route,source,{plan,completed:checkpoint}),error=>error.details.referenceFailure.batchNumber===2);
+  assert.equal(calls,3);
 });
 
 test('structured report produces deterministic escaped Markdown and evidence index', async () => {
@@ -125,7 +193,7 @@ test('partial success is resumable only by explicit subsequent call using same p
   await assert.rejects(analyzeReport({}, route, source, {plan, completed: new Map([['unknown', [...reused.values()][0]]])}), /不可复用/);
   const bad = new Map(reused), [id, entry] = [...bad][0];
   bad.set(id, {...entry, analysis: document(plan.batches[1].evidenceIds[0])});
-  await assert.rejects(analyzeReport({}, route, source, {plan, completed: bad}), /非本批/);
+  await assert.rejects(analyzeReport({}, route, source, {plan, completed: bad}), error=>error.code==='code-report/analysis-reference'&&error.details.referenceFailure.reason==='out-of-batch');
 });
 
 test('format versions and payload hashes bind plans and reject legacy checkpoints', async () => {
@@ -133,7 +201,7 @@ test('format versions and payload hashes bind plans and reject legacy checkpoint
   assert.equal(plan.formatVersion, ANALYSIS_PLAN_VERSION);
   assert.equal(plan.evidenceVersion, 2);
   const {evidenceHash} = await import('../src/evidence.mjs');
-  assert.equal(plan.batches[0].payloadHash, evidenceHash(JSON.stringify(plan.batches[0].snapshot)));
+  assert.equal(plan.batches[0].payloadHash, evidenceHash(JSON.stringify(modelEvidencePayload(plan.batches[0].snapshot, 1))));
   const result = await analyzeReport(model(payload => stream(document(payload.evidence[0].id))), route, source, {plan});
   const [id, checkpoint] = [...result.completed][0];
   assert.equal(checkpoint.formatVersion, ANALYSIS_PLAN_VERSION);

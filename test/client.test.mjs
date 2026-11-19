@@ -103,7 +103,7 @@ test('workspace groups workflow stages without changing initial approval state',
  const stages=nodes(navigation).filter(node=>node.props?.className==='cr-stage');
  assert.deepEqual(stages.map(node=>node.props['data-state']),['active','pending','pending']);
  assert.ok(all.some(node=>node.props?.className==='cr-hero'));
- assert.ok(all.some(node=>node.props?.className==='cr-guide'&&node.type==='details'&&!node.props.open));
+ assert.ok(all.some(node=>node.props?.label==='版本填写与远端读取'));
  assert.equal(all.some(node=>node.props?.onGenerate),false);
 });
 

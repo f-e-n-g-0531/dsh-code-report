@@ -83,7 +83,7 @@ CI 在标签或手动触发时另跑 Ubuntu / Node 24 浏览器任务，发布�
 ### 模型、容量与故障
 
 - [ ] 公共 SDK 候选边界按每行 `仓库路径|公开文件或目录/` 保存恢复并传入已选仓库，目录 `/` 后缀与不支持 glob 的校验正确；不将候选路径当历史发布证明。有固定 A/B 变更证据但缺少发布契约的边界内接口，应在第二节标为 SDK 候选；DLL 导出或 public 声明单独不证明对外发布。
-- [ ] schema 3 验证 public-sdk/sdk-candidate/internal/unknown、真实引用摘录及对应证据；公开条目须有 symbol 与非空 declarationEvidenceIds，每份声明包含同一符号且在已配置候选边界内，发布 quote 提及同一符号且证据同项目，不借其他接口串证，无法绑定降 unknown；internal 移入改动，unknown 移入待确认。full 所有证据须有结论引用或唯一结构化未结论原因；记录完整不当作语义完整。
+- [ ] schema 4 验证 public-sdk/sdk-candidate/internal/unknown、真实引用摘录及对应证据；公开条目须有 symbol 与非空 declarationEvidenceIds，每份声明包含同一符号且在已配置候选边界内，发布 quote 提及同一符号且证据同项目，不借其他接口串证，无法绑定降 unknown；internal 移入改动，unknown 移入待确认。full 所有证据须有结论引用或唯一结构化未结论原因；记录完整不当作语义完整。
 - [ ] 正式导出保持五节，采集 limitations 经安全转义复制到比较范围正文，移除附录时覆盖限制与未知项不丢失；未知项与 QA 缺项归入第五节「待补充与待确认」，源码路径使用中性占位不留删词残句，公共 URL/端点仍保留。不把路径清理当完整脱敏。
 
 - [ ] 未确认范围/路由时零模型派发；明确授权后调用正确提供方及模型。

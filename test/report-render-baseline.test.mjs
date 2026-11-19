@@ -35,13 +35,13 @@ async function renderFixture(strategy) {
   assert.match(report.split('## 待补充与待确认')[1],/测试账号/);
   return {internal:digest(result.markdown),formal:digest(report)};
 }
-// Captured from the pre-refactor working tree, including its uncommitted changes.
+// Formal baselines are unchanged; schema 4 updates single-request internal plan metadata.
 const baseline = {
   full: {internal:'25a797907d33abe4c81642aaabaa4a97f332deea7cef6c9609f1bb8a677b51d5',formal:'41c4ba21e6e838e27c40fb0a7a70637d6f1695893f4d590a12ef6de9dff5db89'},
-  'single-request': {internal:'fb0859ff7ea92795b94c58cadd4657a25461a3d492eb32356bd88af1b069d7f8',formal:'6b955ebd917fc88729c190a1cd82d242284d512c800967738f47bb7b7556d022'},
+  'single-request': {internal:'f55e9587568c0fa8efbc92402f983ad32981ea694298db056c4b208e7e2453f6',formal:'6b955ebd917fc88729c190a1cd82d242284d512c800967738f47bb7b7556d022'},
 };
 for (const [strategy, expected] of Object.entries(baseline)) {
-  test(strategy+' report retains the pre-refactor Markdown bytes', async () => {
+  test(strategy+' report matches the expected internal and formal Markdown bytes', async () => {
     assert.deepEqual(await renderFixture(strategy), expected);
   });
 }

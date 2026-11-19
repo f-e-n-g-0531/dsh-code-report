@@ -33,6 +33,21 @@ async function collect(page){await capture(page).click();await expect(report(pag
 async function route(page){await page.getByRole('checkbox',{name:'使用 DSH 默认模型',exact:true}).uncheck();await page.getByRole('textbox',{name:'DSH 提供方 ID',exact:true}).fill('fixture');await page.getByRole('textbox',{name:'模型 ID',exact:true}).fill('mock');await page.getByRole('button',{name:'更新分析计划',exact:true}).click();await expect(consent(page)).toBeEnabled();}
 async function analyze(page){await route(page);await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告');}
 
+test('workbench separates configuration, confirmation, and results',async({page})=>{
+ await open(page);await selectGit(page);
+ const config=page.getByRole('region',{name:'配置发布范围',exact:true});
+ const review=page.getByRole('region',{name:'采集与确认',exact:true});
+ const output=page.getByRole('region',{name:'执行与结果',exact:true});
+ await expect(config.getByRole('textbox',{name:'报告标题'})).toBeVisible();
+ await expect(config.getByRole('button',{name:'开始执行 · 采集差异'})).toHaveCount(0);
+ await expect(review.getByRole('button',{name:'开始执行 · 采集差异'})).toBeEnabled();
+ await collect(page);
+ await expect(review.getByRole('region',{name:'发送确认'})).toBeVisible();
+ await expect(review.getByRole('button',{name:'开始执行 · 生成报告'})).toBeDisabled();
+ await expect(output.locator('article.cr-report')).toContainText('本地证据');
+ expect((await stats(page)).modelCalls).toBe(0);
+});
+
 test('background analysis honors selected concurrency and recovers by task identity',async({page})=>{
  await open(page,{asyncGenerate:true,holdGenerate:true,analysisBatches:8});await selectGit(page);await collect(page);
  const width=page.getByRole('combobox',{name:'模型并发路数'});await expect(width).toHaveValue('4');
@@ -216,6 +231,32 @@ test('strategy can return to full only after replanning and fresh consent (contr
  await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告');expect((await stats(page)).modelCalls).toBe(1);
 });
 
+test('version and remote guidance uses the shared tooltip',async({page})=>{
+ await page.setViewportSize({width:390,height:900});await open(page);await selectGit(page);
+ const trigger=page.getByRole('button',{name:'版本填写与远端读取说明',exact:true});
+ const tip=page.getByRole('tooltip',{includeHidden:true}).filter({hasText:'远端失败不回退本地'});
+ await expect(tip).toBeHidden();await trigger.hover();await expect(tip).toBeVisible();
+ await expect(tip).toContainText('SVN 仍需历史读取授权');
+ const box=await tip.boundingBox();expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(390);
+ await trigger.focus();await page.keyboard.press('Escape');await expect(tip).toBeHidden();
+ await trigger.click();await expect(tip).toBeVisible();
+});
+
+test('filter help is shown only on demand and fits a narrow viewport',async({page})=>{
+ await page.setViewportSize({width:390,height:900});await open(page);await selectGit(page);
+ await page.locator('summary').filter({hasText:/^2[.] 差异过滤/}).click();
+ for(const [field,copy] of [['差异排除后缀','默认排除常见资源'],['差异排除文件夹名','默认排除任意层级'],['差异排除目录','仅排除明确不审查的目录']]){
+  const trigger=page.getByRole('button',{name:field+'说明',exact:true});
+  const tip=page.getByRole('tooltip',{includeHidden:true}).filter({hasText:copy});
+  await expect(tip).toBeHidden();await trigger.hover();await expect(tip).toBeVisible();
+  const box=await tip.boundingBox();expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(390);
+  await tip.hover();await expect(tip).toBeVisible();await page.mouse.move(0,0);await expect(tip).toBeHidden();
+  await trigger.focus();await expect(tip).toBeVisible();await page.keyboard.press('Escape');await expect(tip).toBeHidden();
+  await trigger.click();await expect(tip).toBeVisible();await page.getByRole('textbox',{name:field,exact:true}).focus();await expect(tip).toBeHidden();
+ }
+ expect((await stats(page)).modelCalls).toBe(0);
+});
+
 test('automatic non-code exclusion is default-on, persisted and invalidates preview on edit',async({page})=>{
  await open(page);await selectGit(page);await page.locator('summary').filter({hasText:/^2[.] 差异过滤/}).click();
  const field=page.getByRole('checkbox',{name:'自动排除常见非代码文件',exact:true});
@@ -310,7 +351,7 @@ test('Git defaults to explicit remote origin in refs and collection with visible
  await page.getByRole('button',{name:'读取远端分支/标签',exact:true}).click();await expect.poll(async()=>(await stats(page)).calls.filter(call=>call.endpoint==='refs').length).toBe(1);
  const refs=(await stats(page)).calls.find(call=>call.endpoint==='refs').payload;expect(refs).toMatchObject({sessionId:'a',repositoryPath:'client',gitMode:'remote',gitRemote:'origin'});
  await collect(page);const row=(await stats(page)).calls.find(call=>call.endpoint==='preview-start').payload.request.repositories[0];expect(row).toMatchObject({gitMode:'remote',gitRemote:'origin'});
- await expect(page.getByRole('group',{name:'3. 确认分析范围',exact:true})).toContainText('origin');await expect(page.getByRole('group',{name:'3. 确认分析范围',exact:true})).toContainText('2026-11-03T10:00:00.000Z');expect((await stats(page)).modelCalls).toBe(0);
+ await expect(page.getByRole('group',{name:'4. 确认分析范围',exact:true})).toContainText('origin');await expect(page.getByRole('group',{name:'4. 确认分析范围',exact:true})).toContainText('2026-11-03T10:00:00.000Z');expect((await stats(page)).modelCalls).toBe(0);
 });
 
 test('classified remote authentication failure is safe, remains remote and permits explicit retry (contract mock)',async({page})=>{
@@ -330,7 +371,7 @@ test('Git local offline mode is explicit and stays local for refs and collection
  await page.getByRole('button',{name:'读取本地分支/标签',exact:true}).click();await expect(page.getByText('已载入 3 个本地引用，在 A/B 输入中选择；不会 fetch。')).toBeVisible();
  const refs=(await stats(page)).calls.find(call=>call.endpoint==='refs').payload;expect(refs).toMatchObject({sessionId:'a',repositoryPath:'client',gitMode:'local',gitRemote:'origin'});
  await collect(page);expect((await stats(page)).calls.find(call=>call.endpoint==='preview-start').payload.request.repositories[0].gitMode).toBe('local');
- await expect(page.getByRole('group',{name:'3. 确认分析范围',exact:true})).toContainText('本地');expect((await stats(page)).modelCalls).toBe(0);
+ await expect(page.getByRole('group',{name:'4. 确认分析范围',exact:true})).toContainText('本地');expect((await stats(page)).modelCalls).toBe(0);
 });
 
 test('Git mode and remote edits invalidate preview and consent without changing user A B selections',async({page})=>{
@@ -385,6 +426,7 @@ test('large context lists and over 32 batches remain bound to explicit preview a
  const files=page.getByRole('list',{name:'实际源码文件清单',exact:true});await expect(files).toHaveCount(0);await page.getByText('查看源码上下文及限制',{exact:true}).click();await expect(files.getByRole('listitem')).toHaveCount(50);await expect(files).toContainText('client/src/dir-24/file.ts');await expect(files).toContainText('src/old-24.ts');
  await expect(page.getByText('证据 9437184 字节（约 9216.0 KiB）；',{exact:false})).toBeVisible();
  await expect(page.getByText('本计划 40 片，最多同时调用 4 路模型请求，可能产生多次费用；',{exact:false})).toBeVisible();
+ await page.getByText('预算与分片明细',{exact:true}).click();
  await expect(page.getByText('分片诊断：基础规划 88 片，最终 40 片；',{exact:false})).toContainText('输出处置限制 15 次');
  await route(page);await expect(generate(page)).toBeDisabled();expect((await stats(page)).modelCalls).toBe(0);
  await consent(page).check();await expect(generate(page)).toBeEnabled();await generate(page).click();await expect(report(page)).toContainText('模型报告');
@@ -528,7 +570,7 @@ test('terminal paid completion and stopped proof clear a previously polled analy
   const before=await stats(page);const operationId=before.calls.find(call=>call.endpoint==='generate').payload.operationId;
   expect(before.calls.some(call=>call.endpoint==='progress'&&call.payload.operationId===operationId)).toBe(true);
   await page.evaluate(()=>window.fixture.releaseGenerate());
-  if(failGenerate){await expect(page.getByRole('alert').filter({hasText:'fixture 模型失败'})).toBeVisible();await expect(page.locator('.cr-progress')).toContainText('fixture 模型失败');}
+  if(failGenerate){const alert=page.getByRole('alert').filter({hasText:'fixture 模型失败'});await expect(alert).toHaveCount(1);await expect(alert).toBeVisible();const failure=page.getByRole('region',{name:'报告生成失败'});await expect(failure).toContainText('fixture 模型失败');await expect(failure.getByRole('progressbar')).toHaveCount(0);}
   else {await expect(report(page)).toContainText('模型报告 a');await expect(page.locator('.cr-progress')).toContainText('模型分析完成');}
   await expect(page.locator('.cr-progress')).not.toContainText('fixture analyzing');await expect(capture(page)).toBeEnabled();await assertPaidProof(page);
  }
@@ -565,6 +607,7 @@ test('header force cancellation retains unknown identity and later completion re
  await expect.poll(async()=>(await stats(page)).calls.filter(call=>call.endpoint==='generate-cancel').length).toBe(1);
  await expect(page.getByRole('button',{name:'恢复已完成报告',exact:true})).toBeVisible();await expect(capture(page)).toBeDisabled();
  const before=await assertPaidProof(page);expect(before.generateAborts).toBe(1);const operation=before.calls.find(call=>call.endpoint==='generate').payload.operationId;
+ await page.getByText('放弃恢复选项',{exact:true}).click();
  await page.getByRole('checkbox',{name:'我确认标记放弃恢复；未知任务屏障仍保留，不解锁新业务',exact:true}).check();await page.getByRole('button',{name:'放弃恢复',exact:true}).click();await expect(capture(page)).toBeDisabled();await expect(generate(page)).toBeDisabled();
  await page.getByRole('button',{name:'恢复已完成报告',exact:true}).click();await expect(capture(page)).toBeDisabled();
  await page.evaluate(()=>window.fixture.releaseGenerate());await expect.poll(async()=>(await stats(page)).settledGenerations).toBe(1);

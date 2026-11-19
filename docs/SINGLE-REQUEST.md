@@ -21,7 +21,7 @@
 
 ## 公开边界与结构化处置
 
-公共 SDK 候选边界支持每行 `仓库路径|公开文件或目录/`，可保存配置；不支持 glob，须属于已选项目。候选范围不是历史发布证明，不自动附带正文；另附真实发布或接入契约，DLL/public 不能单独证明对外性。schema 3 的 interfaces 要求 audience（public-sdk/sdk-candidate/internal/unknown）与 publicBasis；`public-sdk` 条目须提供所引用证据正文中的真实契约摘录，并指定单个 symbol 与 declarationEvidenceIds。每份声明证据必须包含同一符号，配置候选边界时每份均在边界内；发布 quote 也须明确绑定该符号，且与声明同项目，不能借其他接口串证。无法绑定时降 unknown。有边界内同符号 A/B 差异、但缺少发布契约的 `sdk-candidate` 仍列入第二节，并标注发布身份待确认；`internal` 移入改动，`unknown` 移入待确认。full 的每条证据须被结论引用或记录唯一的结构化未结论原因（evidenceDispositions）；处置完整不等于语义完整、引用有效不等于结论正确。
+公共 SDK 候选边界支持每行 `仓库路径|公开文件或目录/`，可保存配置；不支持 glob，须属于已选项目。候选范围不是历史发布证明，不自动附带正文；另附真实发布或接入契约，DLL/public 不能单独证明对外性。schema 4 的 interfaces 要求 audience（public-sdk/sdk-candidate/internal/unknown）与 publicBasis；`public-sdk` 条目须提供所引用证据正文中的真实契约摘录，并指定单个 symbol 与 declarationEvidenceIds。每份声明证据必须包含同一符号，配置候选边界时每份均在边界内；发布 quote 也须明确绑定该符号，且与声明同项目，不能借其他接口串证。无法绑定时降 unknown。有边界内同符号 A/B 差异、但缺少发布契约的 `sdk-candidate` 仍列入第二节，并标注发布身份待确认；`internal` 移入改动，`unknown` 移入待确认。full 的每条证据须被结论引用或记录唯一的结构化未结论原因（evidenceDispositions）；处置完整不等于语义完整、引用有效不等于结论正确。
 
 ## 主报告与完整证据保存
 

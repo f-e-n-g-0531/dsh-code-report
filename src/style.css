@@ -70,7 +70,7 @@
 .cr-root .cr-check{align-items:flex-start;margin-top:16px;line-height:1.7;color:var(--cr-text)}
 .cr-root .cr-check input{margin-top:3px}
 .cr-root .cr-selection{white-space:nowrap;font-size:12px}
-.cr-root .cr-scan-settings{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:14px 0}
+.cr-root .cr-scan-settings{position:relative;display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:14px 0}
 .cr-root .cr-scan-settings .cr-tip{flex:1 1 300px}
 .cr-root .cr-repositories{display:grid;gap:12px;min-width:0;margin-bottom:16px}
 .cr-root .cr-table-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:14px;padding:12px 14px;border:1px solid var(--cr-border);border-radius:11px;background:var(--cr-raised)}
@@ -106,9 +106,16 @@
 .cr-root .cr-project-path input{font-family:ui-monospace,"Cascadia Code",monospace}
 .cr-root .cr-ssh-settings{grid-column:1/-1;min-width:0}
 .cr-root .cr-ssh-heading{position:relative;display:flex;align-items:center;gap:6px;margin-bottom:6px}
-.cr-root .cr-ssh-tip-trigger{min-height:24px;width:24px;padding:0;border-radius:50%;color:var(--cr-blue)}
 .cr-root .cr-ssh-hint{position:absolute;z-index:5;top:100%;left:0;width:min(480px,100%);display:grid;gap:4px;list-style:none;margin:0;padding:12px 14px;border:1px solid var(--cr-border);border-radius:9px;background:var(--cr-card);box-shadow:var(--cr-shadow);line-height:1.7}
 .cr-root .cr-ssh-hint[hidden]{display:none}
+.cr-root .cr-help-field{position:relative;display:flex;align-items:center;gap:6px;margin:8px 0 4px}
+.cr-root .cr-help-field label{margin:0;min-width:0}
+.cr-root .cr-help-tip{display:inline-flex;flex:none}
+.cr-root :is(.cr-help-trigger,.cr-ssh-tip-trigger){min-height:24px;width:24px;flex:0 0 24px;padding:0;border-color:transparent;border-radius:6px;background:transparent;color:var(--cr-muted)}
+.cr-root :is(.cr-help-trigger,.cr-ssh-tip-trigger):is(:hover,:focus-visible):not(:disabled){border-color:transparent;background:var(--cr-raised);color:var(--cr-blue);box-shadow:none}
+.cr-root .cr-help-popup{position:absolute;z-index:5;top:100%;inset-inline-start:0;width:min(480px,100%);padding:10px 12px;border:1px solid var(--cr-border);border-radius:9px;background:var(--cr-card);box-shadow:var(--cr-shadow);line-height:1.6}
+.cr-root .cr-help-popup[hidden]{display:none}
+.cr-root .cr-scan-settings .cr-help-field{position:static;margin:0}
 .cr-root .cr-ssh-hint strong{font-weight:600}
 .cr-root .cr-source-notice{margin-top:14px;padding:10px 12px;border:1px solid var(--cr-border);border-radius:7px;background:var(--cr-raised);font-size:11px;color:var(--cr-muted)}
 .cr-root .cr-source-notice[data-remote=true]{border-left:3px solid var(--cr-blue)}
@@ -203,6 +210,9 @@
 .cr-root .cr-progress{background:var(--cr-tint);border-color:var(--cr-line);border-inline-start:3px solid var(--cr-blue);box-shadow:var(--cr-shadow)}
 .cr-root .cr-progress>[role=status]{font-weight:650;overflow-wrap:anywhere}
 .cr-root .cr-progress .cr-tip{margin-bottom:0}
+.cr-root .cr-operation-failed{border-inline-start-color:var(--cr-danger);background:var(--cr-card)}
+.cr-root .cr-operation-failed h3{margin:0 0 6px}
+.cr-root .cr-operation-failed p{margin:0;line-height:1.6;overflow-wrap:anywhere}
 .cr-root .cr-result{padding:clamp(12px,2.4vw,28px);border:1px solid var(--cr-border);border-radius:16px;background:var(--cr-card);box-shadow:var(--cr-soft-shadow)}
 .cr-root .cr-result-toolbar{margin:0 0 14px;padding-bottom:12px;border-bottom:1px solid var(--cr-border)}
 .cr-root .cr-result-toolbar>h2{margin-inline-end:auto}
@@ -214,4 +224,32 @@
 .cr-root .cr-report-table tbody tr:nth-child(even){background:var(--cr-tint)}
 @container(max-width:680px){.cr-root .cr-preview-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}
 @container(max-width:440px){.cr-root .cr-result-toolbar>h2{flex-basis:100%}.cr-root .cr-result[data-kind=analysis] .cr-report-document>h2{gap:8px;padding:8px 10px}}
+/* One visual surface per workflow region; individual settings stay subordinate. */
+.cr-root .cr-hero{background:none;border:0;box-shadow:none;padding:0 0 12px;margin:0;gap:16px}
+.cr-root .cr-hero h1{font-size:clamp(22px,2.5vw,28px);margin:2px 0 0;letter-spacing:-.3px}
+.cr-root .cr-hero p{margin:2px 0 0}
+.cr-root .cr-stage-nav{margin:8px 0 20px;gap:6px}
+.cr-root .cr-stage{padding:8px 12px;border-radius:8px;box-shadow:none}
+.cr-root .cr-stage[data-state=active]{box-shadow:inset 0 -2px 0 var(--cr-blue)}
+.cr-root .cr-stage>div>span{margin-top:0}
+.cr-root .cr-workflow-region{min-width:0;margin:16px 0;padding:clamp(12px,2vw,22px);border:1px solid var(--cr-border);border-radius:12px;background:var(--cr-card)}
+.cr-root .cr-region-heading{margin:0 0 12px}
+.cr-root .cr-region-heading p{margin:2px 0 0;color:var(--cr-muted);font-size:12px}
+.cr-root .cr-workflow-region .cr-panel{border:0;box-shadow:none;background:none;padding:0;margin:12px 0 0}
+.cr-root .cr-workflow-region .cr-panel>legend{padding:0;font-size:14px}
+.cr-root .cr-workspace-bar{padding:8px 12px;border-inline-start:1px solid var(--cr-border);background:var(--cr-raised)}
+.cr-root .cr-extra-settings{display:grid;gap:8px;margin-top:14px}
+.cr-root .cr-extra-settings .cr-optional{margin:0;padding:8px 12px;border-radius:8px;box-shadow:none}
+.cr-root .cr-extra-settings .cr-optional>fieldset{margin-top:8px;padding:10px 12px}
+.cr-root .cr-review-region .cr-execute{margin:0;padding:0;border:0;box-shadow:none;background:none}
+.cr-root .cr-review-region .cr-preview{border-block-start:1px solid var(--cr-border);border-radius:0;padding-block-start:8px}
+.cr-root .cr-plan-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:0;border:0;background:none}
+.cr-root .cr-plan-group,.cr-root .cr-send-group{min-width:0;padding:12px;border:1px solid var(--cr-border);border-radius:9px;background:var(--cr-raised)}
+.cr-root :is(.cr-plan-group,.cr-send-group)>h3{margin:0 0 8px}
+.cr-root :is(.cr-plan-group,.cr-send-group) .cr-check{margin-top:6px}
+.cr-root .cr-plan-diagnostics{margin-block:8px}
+.cr-root .cr-send-group>.cr-actions{margin:10px 0 0}
+.cr-root .cr-output-region .cr-result{border:0;padding:0;box-shadow:none;margin:12px 0 0}
+.cr-root .cr-output-region .cr-progress{margin-block:8px;box-shadow:none}
+@container(max-width:680px){.cr-root .cr-plan-controls{grid-template-columns:minmax(0,1fr)}.cr-root .cr-stage{gap:6px;padding:6px}.cr-root .cr-stage>div>span{display:none}}
 @media(prefers-reduced-motion:reduce){.cr-root *{transition:none!important;scroll-behavior:auto!important}}

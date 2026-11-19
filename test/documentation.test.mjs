@@ -42,7 +42,7 @@ test('current analysis documentation states full default public evidence and rea
   assert.match(source,/候选[^。\n]*(?:不是历史|不证明历史)|不将候选路径当历史/,'candidate scope is not historical publication evidence');
   for(const text of ['public-sdk','internal','unknown','摘录','语义完整','五节','未知项','占位'])assert.ok(source.includes(text),text);
   assert.match(source,/未结论|no-conclusion/,'explicit no-conclusion dispositions');
-  assert.match(source,/schema 3|格式版本均为 3/,'schema 3 contract');
+  assert.match(source,/schema 4|格式版本均为 4/,'schema 4 contract');
  }
  assert.ok(readme.includes('不证明发布已完成，也不代表已在当前 GUI 生效'));
  assert.ok(strategy.includes('不代表已发布、已安装或验收通过'));

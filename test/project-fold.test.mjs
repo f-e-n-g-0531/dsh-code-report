@@ -10,7 +10,7 @@ const Cards=sandbox.module.exports.default;
 test('all project cards render collapsed with accessible controls and retained configuration',()=>{
  const rows=[{path:'client',type:'git',enabled:true,gitMode:'remote',gitRemote:'origin',a:'v1',b:'v2',branchA:'main',branchB:'release'},{path:'server',type:'svn',enabled:false,a:'10',b:'20',branchA:'trunk',branchB:'branches/release'}];
  const html=renderToStaticMarkup(React.createElement(Cards,{rows,scanState:'done'}));
- assert.equal((html.match(/data-expanded="false"/g)||[]).length,2);assert.equal((html.match(/aria-expanded="false"/g)||[]).length,2);assert.equal((html.match(/hidden=""/g)||[]).length,6);
+ assert.equal((html.match(/data-expanded="false"/g)||[]).length,2);assert.equal((html.match(/aria-expanded="false"/g)||[]).length,2);assert.equal((html.match(/<td[^>]* hidden=""/g)||[]).length,6);
  for(let index=0;index<rows.length;index++){const n=index+1;assert.ok(html.includes('aria-label="展开项目 '+n+'"'));assert.ok(html.includes('aria-controls="cr-project-config-'+index+' cr-project-a-'+index+' cr-project-b-'+index+'"'));assert.ok(html.includes('aria-label="纳入项目 '+n+'"'));assert.ok(html.includes('aria-label="移除项目 '+n+'"'));}
  assert.ok(!html.includes('aria-label="项目路径 1"'));assert.ok(!html.includes('aria-label="版本 A 1"'));
  for(const value of ['v1','v2','main','release','10','20','trunk','branches/release'])assert.ok(html.includes(value),value);
