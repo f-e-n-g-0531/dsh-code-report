@@ -78,7 +78,7 @@ export function apply(ctx){
   const [context,setContext]=useState(''),[versionContext,setVersionContext]=useState('');
   const [network,setNetwork]=useState(false);
   const [provider,setProvider]=useState(''),[model,setModel]=useState(''),[consent,setConsent]=useState(false);
-  const [useDefaultModel,setUseDefaultModel]=useState(true),[concurrency,setConcurrency]=useState(4);
+  const [useDefaultModel,setUseDefaultModel]=useState(true),[concurrency,setConcurrency]=useState(2);
   const [preview,setPreview]=useState(null),[result,setResult]=useState(()=>results.get(session));
   const [latestAnalysis,setLatestAnalysis]=useState(()=>results.getAnalysis(session));
   const [lifecycleState,setLifecycleState]=useState(()=>lifecycle.getSnapshot());

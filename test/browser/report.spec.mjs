@@ -39,7 +39,7 @@ test('background analysis honors selected concurrency and recovers by task ident
  await consent(page).check();await width.selectOption('4');await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();
  await consent(page).check();await generate(page).click();
  await expect.poll(async()=>(await stats(page)).calls.filter(x=>x.endpoint==='generate-start').length).toBe(1);
- const call=(await stats(page)).calls.find(x=>x.endpoint==='generate-start');expect(call.payload.concurrency).toBe(4);expect(call.payload.backendInstanceId).toBe('fixture-backend');
+ const call=(await stats(page)).calls.find(x=>x.endpoint==='generate-start');expect(call.payload.concurrency).toBe(2);expect(call.payload.backendInstanceId).toBe('fixture-backend');
  await page.evaluate(()=>window.fixture.releaseGenerate());await expect(report(page)).toContainText('模型报告 a');
  const snapshot=await stats(page);expect(snapshot.modelCalls).toBe(1);expect(snapshot.calls.filter(x=>x.endpoint==='generate')).toHaveLength(0);
  expect(snapshot.calls.some(x=>x.endpoint==='result'&&x.payload.operationId===call.payload.operationId)).toBe(true);
@@ -159,7 +159,7 @@ for(const width of [380,1280])test('one constrained outer scroll reaches 500 pro
  const markdown=['# 模型报告 · 长内容滚动验收','','## 改动内容','','模型报告 · 长内容滚动验收','',...Array.from({length:30},(_,i)=>'段落 '+i+'：'+token+'\n'),'| '+Array.from({length:8},(_,i)=>'列'+i).join(' | ')+' |','| '+Array(8).fill('---').join(' | ')+' |','| '+Array(8).fill(token).join(' | ')+' |','','~~~text',...Array.from({length:90},(_,i)=>'line '+i+' '+token),'~~~','','<details>','<summary>技术附录 · 长内容</summary>','',...Array.from({length:20},(_,i)=>'附录 '+i+' '+token+'\n'),'附录终点 END_APPENDIX','</details>','','正文终点 END_REPORT'].join('\n');
  await open(page,{count:500,richReport:markdown});await constrainHost(page);await expect(page.getByRole('checkbox',{name:/^纳入项目 [0-9]+$/})).toHaveCount(500);await assertNoNestedScroll(page);await wheelOuter(page,page.locator('#cr-row-1'));
  await expect(page.locator('.cr-project-config input,.cr-project-endpoint input')).toHaveCount(0);await expect(page.locator('.cr-root details[open]')).toHaveCount(0);await page.getByRole('button',{name:'展开项目 500',exact:true}).scrollIntoViewIfNeeded();await expect(page.getByRole('button',{name:'展开项目 500',exact:true})).toBeInViewport();await selectGit(page);await page.getByRole('button',{name:'收起项目 1',exact:true}).click();
- await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();const textarea=page.getByRole('textbox',{name:'源码上下文路径',exact:true});const originalHeight=await textarea.evaluate(element=>element.clientHeight);const paths=Array.from({length:70},(_,i)=>'client/source-'+i+'.ts').join('\n');await textarea.fill(paths);await expect(textarea).toHaveValue(paths);const textareaMetrics=await textarea.evaluate(element=>({height:element.clientHeight,scrollHeight:element.scrollHeight,fieldSizing:getComputedStyle(element).fieldSizing,overflow:getComputedStyle(element).overflow}));expect(textareaMetrics.height).toBeGreaterThan(originalHeight);await info.attach('textarea-autogrow-'+width,{body:JSON.stringify({initialHeight:originalHeight,...textareaMetrics,lines:70}),contentType:'application/json'});await assertNoNestedScroll(page);await wheelOuter(page,textarea);await expect(textarea).toHaveValue(paths);
+ await page.getByText('3. 附带项目源码（可选）',{exact:true}).click();const textarea=page.getByRole('textbox',{name:'源码上下文路径',exact:true});const originalHeight=await textarea.evaluate(element=>element.clientHeight);const paths=Array.from({length:70},(_,i)=>'client/source-'+i+'.ts').join('\n');await textarea.fill(paths);await expect(textarea).toHaveValue(paths);const textareaMetrics=await textarea.evaluate(element=>({height:element.clientHeight,scrollHeight:element.scrollHeight,fieldSizing:getComputedStyle(element).fieldSizing,overflow:getComputedStyle(element).overflow}));expect(textareaMetrics.height).toBeGreaterThan(originalHeight);await info.attach('textarea-autogrow-'+width,{body:JSON.stringify({initialHeight:originalHeight,...textareaMetrics,lines:70}),contentType:'application/json'});await assertNoNestedScroll(page);await wheelOuter(page,textarea);await expect(textarea).toHaveValue(paths);
  await collect(page);await analyze(page);const document=report(page);await assertNoNestedScroll(page);await wheelOuter(page,document.locator('.cr-report-table'));
  await expect(document.getByText('附录终点 END_APPENDIX',{exact:true})).toHaveCount(0);await document.getByText('正文终点 END_REPORT',{exact:true}).scrollIntoViewIfNeeded();await expect(document.getByText('正文终点 END_REPORT',{exact:true})).toBeInViewport();
  await expect(page.locator('.cr-report-raw')).toHaveCount(0);await assertNoNestedScroll(page);expect((await stats(page)).modelCalls).toBe(1);expect((await stats(page)).calls.filter(call=>call.endpoint==='generate')).toHaveLength(1);
@@ -217,7 +217,7 @@ test('strategy can return to full only after replanning and fresh consent (contr
 });
 
 test('automatic non-code exclusion is default-on, persisted and invalidates preview on edit',async({page})=>{
- await open(page);await selectGit(page);await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();
+ await open(page);await selectGit(page);await page.getByText('3. 附带项目源码（可选）',{exact:true}).click();
  const field=page.getByRole('checkbox',{name:'自动排除常见非代码文件',exact:true});
  const suffixes=page.getByRole('textbox',{name:'差异排除后缀',exact:true});
  await expect(field).toBeChecked();await expect(suffixes).toHaveValue(/\.png/);await suffixes.fill('*.png');await expect(capture(page)).toBeDisabled();
@@ -231,7 +231,7 @@ test('automatic non-code exclusion is default-on, persisted and invalidates prev
 });
 
 test('directory exclusion persists, discloses scope and invalidates approval',async({page})=>{
- await open(page);await selectGit(page);await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();
+ await open(page);await selectGit(page);await page.getByText('3. 附带项目源码（可选）',{exact:true}).click();
  const field=page.getByRole('textbox',{name:'差异排除目录',exact:true});
  const folder=page.getByRole('textbox',{name:'差异排除文件夹名',exact:true});
  await expect(folder).toHaveValue('Test');await folder.fill('../Test');await expect(capture(page)).toBeDisabled();await folder.fill('');
@@ -245,7 +245,7 @@ test('directory exclusion persists, discloses scope and invalidates approval',as
 });
 
 test('public SDK boundary textarea persists, normalizes capture and invalidates approved preview without model calls',async({page})=>{
- await open(page);await selectGit(page);await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();
+ await open(page);await selectGit(page);await page.getByText('3. 附带项目源码（可选）',{exact:true}).click();
  const boundary=page.getByRole('textbox',{name:'公共SDK边界',exact:true}),text=' client | sdk_inc/ \nclient|include/api.h\nclient|sdk_inc/';
  await boundary.fill(text);await page.getByRole('button',{name:'保存配置',exact:true}).click();await boundary.fill('');await page.getByRole('button',{name:'恢复已保存',exact:true}).click();await expect(boundary).toHaveValue(text);
  await collect(page);let observed=await stats(page);expect(observed.calls.find(call=>call.endpoint==='preview-start').payload.request.publicApiPaths).toEqual([{repository:'client',path:'sdk_inc/'},{repository:'client',path:'include/api.h'}]);
@@ -254,7 +254,7 @@ test('public SDK boundary textarea persists, normalizes capture and invalidates 
 });
 
 for(const declaration of ['client|../private.h','missing|sdk/','client|sdk/*.h','client|.env','client|sdk/|extra'])test('invalid public SDK boundary blocks capture before dispatch: '+declaration,async({page})=>{
- await open(page);await selectGit(page);await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();await page.getByRole('textbox',{name:'公共SDK边界',exact:true}).fill(declaration);await expect(capture(page)).toBeDisabled();
+ await open(page);await selectGit(page);await page.getByText('3. 附带项目源码（可选）',{exact:true}).click();await page.getByRole('textbox',{name:'公共SDK边界',exact:true}).fill(declaration);await expect(capture(page)).toBeDisabled();
  await expect(page.getByRole('alert').filter({hasText:'公开 API 边界必须指定已选项目'})).toBeVisible();const observed=await stats(page);expect(observed.calls.filter(call=>call.endpoint==='preview-start'||call.endpoint==='generate')).toHaveLength(0);expect(observed.modelCalls).toBe(0);
 });
 
@@ -505,21 +505,12 @@ test('no workspace and incompatible backend never dispatch collection or model',
  await expect(page.getByRole('alert').filter({hasText:/界面与后台版本/}).first()).toBeVisible();
  expect((await stats(page)).calls.filter(x=>['discover','preview-start','generate'].includes(x.endpoint))).toHaveLength(0);expect((await stats(page)).modelCalls).toBe(0);
 });
-
-test('plugin version details show the UI and backend versions without an update button',async({page})=>{
+test('plugin version details are removed without an update button',async({page})=>{
  await open(page);
- const {version}=JSON.parse(await readFile(new URL('../../package.json',import.meta.url),'utf8'));
- const detail=page.getByText(`界面版本：${version} · 后台版本：${version}`,{exact:true});
- await expect(detail).toBeHidden();
- await page.getByText(`插件版本 · ${version}`,{exact:true}).click();
- await expect(detail).toBeVisible();
+ await expect(page.getByText(/插件版本 ·/)).toHaveCount(0);
  await expect(page.getByRole('button',{name:'检查更新',exact:true,includeHidden:true})).toHaveCount(0);
  await expect.poll(async()=>(await stats(page)).calls.some(call=>call.endpoint==='runtime-info')).toBe(true);
 });
-async function startHeldAnalysis(page,options={}){
- await open(page,{holdGenerate:true,...options});await selectGit(page);await collect(page);await route(page);await consent(page).check();await generate(page).click();
- await expect.poll(async()=>(await stats(page)).modelCalls).toBe(1);await workflow(page,['complete','complete','active']);
-}
 async function assertPaidProof(page,{dispatches=1}={}){
  const value=await stats(page);expect(value.modelCalls).toBe(dispatches);expect(value.calls.filter(call=>call.endpoint==='generate')).toHaveLength(dispatches);
  const identifiers=value.calls.filter(call=>call.endpoint==='generate').map(call=>call.payload.operationId);expect(new Set(identifiers).size).toBe(identifiers.length);
