@@ -35,8 +35,8 @@ async function analyze(page){await route(page);await consent(page).check();await
 
 test('background analysis honors selected concurrency and recovers by task identity',async({page})=>{
  await open(page,{asyncGenerate:true,holdGenerate:true,analysisBatches:8});await selectGit(page);await collect(page);
- const width=page.getByRole('combobox',{name:'模型并发路数'});await expect(width).toHaveValue('2');
- await consent(page).check();await width.selectOption('4');await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();
+ const width=page.getByRole('combobox',{name:'模型并发路数'});await expect(width).toHaveValue('4');
+ await consent(page).check();await width.selectOption('2');await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();
  await consent(page).check();await generate(page).click();
  await expect.poll(async()=>(await stats(page)).calls.filter(x=>x.endpoint==='generate-start').length).toBe(1);
  const call=(await stats(page)).calls.find(x=>x.endpoint==='generate-start');expect(call.payload.concurrency).toBe(2);expect(call.payload.backendInstanceId).toBe('fixture-backend');
@@ -217,7 +217,7 @@ test('strategy can return to full only after replanning and fresh consent (contr
 });
 
 test('automatic non-code exclusion is default-on, persisted and invalidates preview on edit',async({page})=>{
- await open(page);await selectGit(page);await page.getByText('3. 附带项目源码（可选）',{exact:true}).click();
+ await open(page);await selectGit(page);await page.locator('summary').filter({hasText:/^2[.] 差异过滤/}).click();
  const field=page.getByRole('checkbox',{name:'自动排除常见非代码文件',exact:true});
  const suffixes=page.getByRole('textbox',{name:'差异排除后缀',exact:true});
  await expect(field).toBeChecked();await expect(suffixes).toHaveValue(/\.png/);await suffixes.fill('*.png');await expect(capture(page)).toBeDisabled();
@@ -231,7 +231,7 @@ test('automatic non-code exclusion is default-on, persisted and invalidates prev
 });
 
 test('directory exclusion persists, discloses scope and invalidates approval',async({page})=>{
- await open(page);await selectGit(page);await page.getByText('3. 附带项目源码（可选）',{exact:true}).click();
+ await open(page);await selectGit(page);await page.locator('summary').filter({hasText:/^2[.] 差异过滤/}).click();
  const field=page.getByRole('textbox',{name:'差异排除目录',exact:true});
  const folder=page.getByRole('textbox',{name:'差异排除文件夹名',exact:true});
  await expect(folder).toHaveValue('Test');await folder.fill('../Test');await expect(capture(page)).toBeDisabled();await folder.fill('');
@@ -294,7 +294,7 @@ test('mixed Git and SVN requires explicit history authorization before capture',
 test('local refs and automatic batch/context inputs retain authorization boundaries',async({page})=>{
  await open(page);await selectGit(page);await page.getByRole('combobox',{name:'Git 读取方式 1',exact:true}).selectOption('local');await page.getByRole('button',{name:/^读取(?:远端|本地)分支\/标签$/}).click();
  await expect(page.getByText('已载入 3 个本地引用，在 A/B 输入中选择；不会 fetch。')).toBeVisible();
- await expect(page.getByRole('checkbox',{name:/允许分批分析较大差异/})).toHaveCount(0);await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();
+ await expect(page.getByRole('checkbox',{name:/允许分批分析较大差异/})).toHaveCount(0);await page.getByText('3. 附带项目源码（可选）',{exact:true}).click();
  await page.getByRole('textbox',{name:'源码上下文路径',exact:true}).fill('client/current.ts');
  await page.getByRole('textbox',{name:'固定版本源码路径',exact:true}).fill('client|A|src/api.ts');await collect(page);
  const request=(await stats(page)).calls.find(x=>x.endpoint==='preview-start').payload.request;expect(request.allowBatches).toBe(true);expect(request.contextPaths).toEqual(['client/current.ts']);expect(request.versionContexts).toEqual([{repository:'client',side:'A',path:'src/api.ts'}]);
@@ -353,7 +353,7 @@ test('folder input preserves original request and expanded preview is visible be
   {repository:'client',path:'src/api.ts',provenance:'version-A',revision:'a'.repeat(40),hash:'4'.repeat(64)}
  ],limitations:['目录展开排除计数（契约模拟）：hidden=1、sensitive=1、dependency/build/cache=2、links=1、nonregular=1；未读取真实文件系统']};
  await open(page,{directoryContextPreview});await selectGit(page);
- await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();
+ await page.getByText('3. 附带项目源码（可选）',{exact:true}).click();
  const input=page.getByRole('textbox',{name:'源码上下文路径',exact:true});
  await expect(input).toHaveAttribute('placeholder',/app\/src\/components/);
  await input.fill('client/src/components\nclient/current.ts');
@@ -377,14 +377,14 @@ test('large context lists and over 32 batches remain bound to explicit preview a
  const versionContexts=Array.from({length:25},(_,index)=>({repository:'client',side:'A',path:'src/old-'+index+'.ts'}));
  const directoryContextPreview={bytes:9*1024*1024,context:[...contextPaths.map((path,index)=>({path:path+'/file.ts',provenance:'workspace',hash:String(index).padStart(64,'0')})),...versionContexts.map((item,index)=>({...item,provenance:'version-A',revision:'a'.repeat(40),hash:String(index+25).padStart(64,'0')}))],limitations:['大范围契约模拟；未读取真实大仓库，不代表性能验收']};
  await open(page,{directoryContextPreview,analysisBatches:40,packing:{originalBatches:88,input:20,output:15,both:4,inputLowerBound:32,outputLowerBound:35}});await selectGit(page);
- await page.getByText('2. 附带项目源码（可选）',{exact:true}).click();
+ await page.getByText('3. 附带项目源码（可选）',{exact:true}).click();
  await page.getByRole('textbox',{name:'源码上下文路径',exact:true}).fill(contextPaths.join('\n'));
  await page.getByRole('textbox',{name:'固定版本源码路径',exact:true}).fill(versionContexts.map(item=>item.repository+'|'+item.side+'|'+item.path).join('\n'));
  await expect(capture(page)).toBeEnabled();await collect(page);
  const previewCall=(await stats(page)).calls.find(call=>call.endpoint==='preview-start');expect(previewCall.payload.request.contextPaths).toEqual(contextPaths);expect(previewCall.payload.request.versionContexts).toEqual(versionContexts);expect(previewCall.payload.request.allowBatches).toBe(true);
  const files=page.getByRole('list',{name:'实际源码文件清单',exact:true});await expect(files).toHaveCount(0);await page.getByText('查看源码上下文及限制',{exact:true}).click();await expect(files.getByRole('listitem')).toHaveCount(50);await expect(files).toContainText('client/src/dir-24/file.ts');await expect(files).toContainText('src/old-24.ts');
  await expect(page.getByText('证据 9437184 字节（约 9216.0 KiB）；',{exact:false})).toBeVisible();
- await expect(page.getByText('本计划 40 片，最多同时调用 2 路模型请求，可能产生多次费用；',{exact:false})).toBeVisible();
+ await expect(page.getByText('本计划 40 片，最多同时调用 4 路模型请求，可能产生多次费用；',{exact:false})).toBeVisible();
  await expect(page.getByText('分片诊断：基础规划 88 片，最终 40 片；',{exact:false})).toContainText('输出处置限制 15 次');
  await route(page);await expect(generate(page)).toBeDisabled();expect((await stats(page)).modelCalls).toBe(0);
  await consent(page).check();await expect(generate(page)).toBeEnabled();await generate(page).click();await expect(report(page)).toContainText('模型报告');
@@ -511,6 +511,10 @@ test('plugin version details are removed without an update button',async({page})
  await expect(page.getByRole('button',{name:'检查更新',exact:true,includeHidden:true})).toHaveCount(0);
  await expect.poll(async()=>(await stats(page)).calls.some(call=>call.endpoint==='runtime-info')).toBe(true);
 });
+async function startHeldAnalysis(page,options={}){
+ await open(page,{holdGenerate:true,...options});await selectGit(page);await collect(page);await route(page);await consent(page).check();await generate(page).click();
+ await expect.poll(async()=>(await stats(page)).modelCalls).toBe(1);await workflow(page,['complete','complete','active']);
+}
 async function assertPaidProof(page,{dispatches=1}={}){
  const value=await stats(page);expect(value.modelCalls).toBe(dispatches);expect(value.calls.filter(call=>call.endpoint==='generate')).toHaveLength(dispatches);
  const identifiers=value.calls.filter(call=>call.endpoint==='generate').map(call=>call.payload.operationId);expect(new Set(identifiers).size).toBe(identifiers.length);

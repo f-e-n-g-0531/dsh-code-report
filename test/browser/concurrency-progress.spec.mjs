@@ -27,9 +27,9 @@ async function open(page,options={}){
       }};
      });
      return {...plugin,apply(ctx){
-      const call=ctx.connection.rpc.call;let operation;
+      const call=ctx.connection.rpc.call;let operation,width;
       plugin.apply({...ctx,connection:{rpc:{async call(channel,endpoint,payload,signal){
-       if(endpoint==='generate')operation=payload.operationId;
+       if(endpoint==='generate'){operation=payload.operationId;width=payload.concurrency;}
        if(endpoint==='runtime-info'){
         // Exercise the bounded legacy view poll even when the shared fixture gains async capability.
         const reply=await call(channel,endpoint,payload,signal);
@@ -38,7 +38,7 @@ async function open(page,options={}){
        if(endpoint==='progress'&&payload.operationId===operation){
         probe.polls++;
         if(probe.polls<=probe.hangs){signal.addEventListener('abort',()=>probe.aborted++,{once:true});return new Promise(()=>{});}
-        return {ok:true,value:{phase:'analyzing',label:'fixture 模型分析',completed:probe.polls%2,total:6,queued:0,inFlight:2,etaMs:3200,concurrency:4}};
+        return {ok:true,value:{phase:'analyzing',label:'fixture 模型分析',completed:probe.polls%2,total:6,queued:0,inFlight:2,etaMs:3200,concurrency:width}};
        }
        return call(channel,endpoint,payload,signal);
       }}}});
@@ -64,10 +64,10 @@ test('full concurrency is transient, clears consent, and leaves expensive region
  expect(beforeCountdown.panel).toBeGreaterThan(0);expect(beforeCountdown.table).toBeGreaterThan(0);expect(beforeCountdown.report).toBeGreaterThan(0);
  await expect(countdown).not.toHaveText(value);
  expect(await renderCounts(page)).toEqual(beforeCountdown);
- await expect(concurrency(page)).toHaveValue('2');
+ await expect(concurrency(page)).toHaveValue('4');
  await expect(concurrency(page).locator('option')).toHaveCount(3);
  await consent(page).check();await expect(generate(page)).toBeEnabled();
- await concurrency(page).selectOption('4');
+ await concurrency(page).selectOption('2');
  await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();
  await page.getByRole('button',{name:'保存配置',exact:true}).click();
  await expect(page.getByText(/已保存到当前工作目录/)).toBeVisible();
@@ -75,12 +75,12 @@ test('full concurrency is transient, clears consent, and leaves expensive region
  expect((await stats(page)).modelCalls).toBe(0);
  await consent(page).check();await generate(page).click();
  const progress=page.locator('.cr-progress [role=status]');
- await expect(progress).toContainText('排队 0 片 · 进行中 2 片 · 并发 4 路 · 预计剩余约 4 秒');
+ await expect(progress).toContainText('排队 0 片 · 进行中 2 片 · 并发 2 路 · 预计剩余约 4 秒');
  const first=await progress.textContent(),beforePolling=await renderCounts(page);
  await expect(progress).not.toHaveText(first);
  expect(await renderCounts(page)).toEqual(beforePolling);
  const generated=(await stats(page)).calls.filter(call=>call.endpoint==='generate');
- expect(generated).toHaveLength(1);expect(generated[0].payload).toMatchObject({concurrency:4,sendToModel:true});
+ expect(generated).toHaveLength(1);expect(generated[0].payload).toMatchObject({concurrency:2,sendToModel:true});
  await page.evaluate(()=>window.fixture.releaseGenerate());
  await expect(page.locator('article.cr-report')).toContainText('模型报告');
  expect(errors).toEqual([]);
@@ -108,7 +108,7 @@ test('hung progress observations time out, warn and recover without re-dispatch'
  await expect(page.getByText(/进度连接暂时失联/)).toHaveCount(0);
  await expect(page.locator('.cr-progress [role=status]')).toContainText('fixture 模型分析');
  const generated=(await stats(page)).calls.filter(call=>call.endpoint==='generate');
- expect(generated).toHaveLength(1);expect(generated[0].payload.concurrency).toBe(2);
+ expect(generated).toHaveLength(1);expect(generated[0].payload.concurrency).toBe(4);
  await page.evaluate(()=>window.fixture.releaseGenerate());
  await page.clock.runFor(100);
  await expect(page.locator('article.cr-report')).toContainText('模型报告');
