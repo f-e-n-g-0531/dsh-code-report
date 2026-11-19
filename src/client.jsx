@@ -78,7 +78,7 @@ export function apply(ctx){
   const [context,setContext]=useState(''),[versionContext,setVersionContext]=useState('');
   const [network,setNetwork]=useState(false);
   const [provider,setProvider]=useState(''),[model,setModel]=useState(''),[consent,setConsent]=useState(false);
-  const [useDefaultModel,setUseDefaultModel]=useState(true),[concurrency,setConcurrency]=useState(2);
+  const [useDefaultModel,setUseDefaultModel]=useState(true),[concurrency,setConcurrency]=useState(4);
   const [preview,setPreview]=useState(null),[result,setResult]=useState(()=>results.get(session));
   const [latestAnalysis,setLatestAnalysis]=useState(()=>results.getAnalysis(session));
   const [lifecycleState,setLifecycleState]=useState(()=>lifecycle.getSnapshot());
@@ -130,6 +130,7 @@ export function apply(ctx){
   const [autoExcludeNonCode,setAutoExcludeNonCode]=useState(true);
   const [diffExcludeSuffixes,setDiffExcludeSuffixes]=useState(DEFAULT_DIFF_SUFFIX_TEXT);
   const [diffExcludeFolderNames,setDiffExcludeFolderNames]=useState(DEFAULT_DIFF_FOLDER_TEXT);
+  const [onlySelected,setOnlySelected]=useState(false);
   const [inputBudget,setInputBudget]=useState(''),[planDirty,setPlanDirty]=useState(false),[,refreshExpiry]=useState(0);
   const initialScanStarted=useRef(false),controller=useRef(null),mounted=useRef(true);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;controller.current?.abort();};},[]);
@@ -173,7 +174,7 @@ export function apply(ctx){
   const removeRow=useCallback(index=>{invalidate();setRows(previous=>previous.filter((_,i)=>i!==index));},[invalidate]);
   const store=async()=>{
    if(configRequest.current||!configReady)return;configRequest.current=true;setConfigBusy(true);
-   try{await rpc('configuration-save',{sessionId:session.id,configuration:cleanConfiguration({schema:1,rows,title,context,versionContext,publicApiPaths,diffExclusions,autoExcludeNonCode,diffExcludeSuffixes,diffExcludeFolderNames,analysisStrategy,allowBatches:true,provider,model,useDefaultModel,scan:scanSettings,allowSvnNetwork:network})});if(mounted.current)setConfigNotice('已保存到当前工作目录 .dsh-code-report.json；不保存密码、报告、源码内容或模型发送确认。');}
+   try{await rpc('configuration-save',{sessionId:session.id,configuration:cleanConfiguration({schema:1,rows,title,context,versionContext,publicApiPaths,diffExclusions,autoExcludeNonCode,diffExcludeSuffixes,diffExcludeFolderNames,onlySelected,analysisStrategy,allowBatches:true,provider,model,useDefaultModel,scan:scanSettings,allowSvnNetwork:network})});if(mounted.current)setConfigNotice('已保存到当前工作目录 .dsh-code-report.json；不保存密码、报告、源码内容或模型发送确认。');}
    catch(error){if(mounted.current)setConfigNotice('保存失败：'+error.message);}
    finally{configRequest.current=false;if(mounted.current)setConfigBusy(false);}
   };
@@ -185,7 +186,7 @@ export function apply(ctx){
     if(!mounted.current)return;
     if(!value){setConfigNotice('此工作区尚无已保存配置。');return;}
     invalidate();setRows(value.rows);setTitle(value.title);setContext(value.context);setVersionContext(value.versionContext||'');setPublicApiPaths(value.publicApiPaths||'');setDiffExclusions(value.diffExclusions||'');setAutoExcludeNonCode(value.autoExcludeNonCode!==false);setDiffExcludeSuffixes(value.diffExcludeSuffixes??DEFAULT_DIFF_SUFFIX_TEXT);setDiffExcludeFolderNames(value.diffExcludeFolderNames??DEFAULT_DIFF_FOLDER_TEXT);setAnalysisStrategy(value.analysisStrategy||'full');
-    setProvider(value.provider);setModel(value.model);setUseDefaultModel(value.useDefaultModel!==false);setNetwork(value.allowSvnNetwork===true);
+    setProvider(value.provider);setModel(value.model);setUseDefaultModel(value.useDefaultModel!==false);setOnlySelected(value.onlySelected===true);setNetwork(value.allowSvnNetwork===true);
     setScanState('idle');setScanWarnings([]);setScanError('');setConfigNotice(restoredNotice(value.allowSvnNetwork));
    }catch(error){if(mounted.current)setConfigNotice('恢复失败：'+error.message);}
    finally{configRequest.current=false;if(mounted.current)setConfigBusy(false);}
@@ -197,7 +198,7 @@ export function apply(ctx){
     if(ac.signal.aborted||!value)return;
     const config=cleanConfiguration(value);
     setRows(config.rows);setTitle(config.title);setContext(config.context);setVersionContext(config.versionContext||'');setPublicApiPaths(config.publicApiPaths||'');setDiffExclusions(config.diffExclusions||'');setAutoExcludeNonCode(config.autoExcludeNonCode!==false);setDiffExcludeSuffixes(config.diffExcludeSuffixes??DEFAULT_DIFF_SUFFIX_TEXT);setDiffExcludeFolderNames(config.diffExcludeFolderNames??DEFAULT_DIFF_FOLDER_TEXT);setAnalysisStrategy(config.analysisStrategy||'full');
-    setProvider(config.provider);setModel(config.model);setUseDefaultModel(config.useDefaultModel!==false);setNetwork(config.allowSvnNetwork===true);setConsent(false);
+    setProvider(config.provider);setModel(config.model);setUseDefaultModel(config.useDefaultModel!==false);setOnlySelected(config.onlySelected===true);setNetwork(config.allowSvnNetwork===true);setConsent(false);
     setConfigNotice(restoredNotice(config.allowSvnNetwork));
    }).catch(error=>{if(!ac.signal.aborted)setConfigNotice('工作目录配置未恢复：'+error.message);})
     .finally(()=>{if(!ac.signal.aborted)setConfigReady(true);});
@@ -299,37 +300,37 @@ export function apply(ctx){
   return <section className="cr-root"><style>{css}</style>
    <header className="cr-hero"><div className="cr-hero-title"><span className="cr-hero-mark" aria-hidden="true">▤</span><div><small>RELEASE WORKSPACE <span>· v{version}</span></small><h1>发布报告配置</h1><p>比较 Git / SVN 版本差异，生成可交付的发布报告。</p></div></div><div className="cr-actions cr-header-actions"><button type="button" className="cr-danger-ghost" disabled={!ownTask&&!busy||!!ownTask?.forceCancelling} onClick={forceCancel} title="立即中断前端等待并请求后台取消；不保证撤回远端请求或免计费，未知状态仍须核对">{ownTask?.forceCancelling?'强制取消中…':ownTask?.forceRequested?'重试强制取消':'强制取消'}</button><button disabled={!session||!configReady||configBusy||!!busy} onClick={store}>保存配置</button><button disabled={!session||!configReady||configBusy||!!busy||!!pendingRecovery} onClick={restore}>恢复已保存</button></div></header>
    <nav className="cr-stage-nav" aria-label="报告工作流程"><div className="cr-stage" data-state={workflow[0]} aria-current={workflow[0]==='active'?'step':undefined}><span className="cr-stage-number">01</span><div><strong>配置发布范围</strong><span>项目与版本端点</span></div></div><div className="cr-stage" data-state={workflow[1]} aria-current={workflow[1]==='active'?'step':undefined}><span className="cr-stage-number">02</span><div><strong>核对差异证据</strong><span>固定快照 · 确认发送</span></div></div><div className="cr-stage" data-state={workflow[2]} aria-current={workflow[2]==='active'?'step':undefined}><span className="cr-stage-number">03</span><div><strong>生成与导出</strong><span>{ownTask?(ownTask.status==='running'?'模型分析进行中':'任务状态待核对'):hasCurrentReport&&!preview?'报告已生成，可下载':'影响分析与 QA 建议'}</span></div></div></nav>
-   <details className="cr-version-details"><summary>插件版本 · {version}</summary><p className="cr-version">界面版本：{version} · 后台版本：{runtime?.runningVersion||(runtimeError?'连接失败':'读取中')}</p></details>
-   {configNotice&&<p className="cr-hint" role="status">{configNotice}</p>}
+   {configNotice&&<p className="cr-tip" role="status">{configNotice}</p>}
    {compatibility&&<div className="cr-error" role="alert">{compatibility}<button disabled={!!busy} onClick={()=>setRuntimeAttempt(value=>value+1)}>重新验证后台</button></div>}
    <fieldset className="cr-report-form">
     {!session?<p role="status">请先打开一个带工作目录的会话。</p>:<>
      <div className="cr-workspace-bar"><div className="cr-workspace"><span className="cr-workspace-label">当前工作区</span><code>{session.cwd}</code></div><span className="cr-readonly-badge">仅读取，不修改版本库</span></div>
-     <div className="cr-scan-settings"><button disabled={!configReady||configBusy||!!busy||!!compatibility||globalBusy} onClick={scan}>扫描 / 重新发现</button>{busy==='扫描项目'&&<button onClick={()=>controller.current?.abort()}>取消扫描</button>}<span className="cr-hint">只检查工作区根目录及一级子文件夹，不递归。{visited!==null?'上次检查 '+visited+' 个目录。':''}嵌套项目可手动添加；已保存的项目不会自动删除。</span></div>
+     <div className="cr-scan-settings"><button disabled={!configReady||configBusy||!!busy||!!compatibility||globalBusy} onClick={scan}>扫描 / 重新发现</button>{busy==='扫描项目'&&<button onClick={()=>controller.current?.abort()}>取消扫描</button>}<span className="cr-tip">只检查工作区根目录及一级子文件夹，不递归。{visited!==null?'上次检查 '+visited+' 个目录。':''}嵌套项目可手动添加；已保存的项目不会自动删除。</span></div>
      <fieldset className="cr-panel cr-scope" disabled={!configReady||configBusy||!!busy||globalBusy}><legend>1. 发布范围</legend><label className="cr-wide">报告标题<input value={title} onChange={event=>{invalidate();setTitle(event.target.value);}} maxLength={160}/></label>
       <div className="cr-section-intro"><div className="cr-section-heading"><h2>工作区项目</h2><p>{scanStateLabel(scanState)}当前列表 {rows.length} 个项目 · 已纳入 {rows.filter(row=>row.enabled).length} / 12。勾选需要生成报告的项目。</p></div><div className="cr-actions"><button onClick={()=>{invalidate();setRows(rows.map(row=>({...row,enabled:false})));}}>全部取消</button><button onClick={()=>{invalidate();setRows(rows.map((row,index)=>({...row,enabled:index<12})));}}>纳入前 12 项</button></div></div>
       {scanError&&<p className="cr-error" role="alert">{scanError}</p>}{scanWarnings.length>0&&<ul className="cr-scan-warnings">{scanWarnings.map((warning,index)=><li key={index}>{warning}</li>)}</ul>}
-      <RepositoryCards replace={replaceRows} scanState={scanState} rows={rows} change={change} remove={removeRow} loadRefs={loadRefs} refsDisabled={!configReady||configBusy||!!compatibility||globalBusy}/>
+      <RepositoryCards replace={replaceRows} scanState={scanState} rows={rows} change={change} remove={removeRow} loadRefs={loadRefs} refsDisabled={!configReady||configBusy||!!compatibility||globalBusy} onlySelected={onlySelected} setOnlySelected={value=>{invalidate();setOnlySelected(value);}}/>
       <button disabled={rows.length>=500} onClick={()=>{invalidate();setRows([...rows,fresh()]);}}>＋ 添加项目</button>
-      <details className="cr-guide"><summary>版本填写与远端读取说明</summary><p className="cr-hint">自动扫描当前工作区，保留已经填写的版本。路径相对于工作区，根目录填「.」。版本留空默认取对应 A/B 分支最新提交；两侧分支相同且版本均留空时无差异。Git 默认远端实时读取，可填 main / develop / origin/develop 等；会联网并可能要求身份验证，在隔离临时目录完整抓取，不创建业务本地分支、不修改业务 refs 或工作区。显式选择“本地离线”才仅用本地对象、不自动 fetch；远端失败不回退本地。SVN 仍需历史读取授权。</p></details>
+      <details className="cr-guide"><summary>版本填写与远端读取说明</summary><p className="cr-tip">自动扫描当前工作区，保留已经填写的版本。路径相对于工作区，根目录填「.」。版本留空默认取对应 A/B 分支最新提交；两侧分支相同且版本均留空时无差异。Git 默认远端实时读取，可填 main / develop / origin/develop 等；会联网并可能要求身份验证，在隔离临时目录完整抓取，不创建业务本地分支、不修改业务 refs 或工作区。显式选择“本地离线”才仅用本地对象、不自动 fetch；远端失败不回退本地。SVN 仍需历史读取授权。</p></details>
       <label className="cr-check"><input type="checkbox" checked={network} onChange={event=>{invalidate();setNetwork(event.target.checked);}}/> 允许通过 SVN 工作副本地址读取历史版本（可能访问网络；此勾选随工作区配置保存，不保存密码）</label>
-      <p className="cr-hint">本地采集不设固定证据总量上限；默认将已采集差异全文分片分析，不以头文件前缀代替实现改动。可在预览中显式选择快速摘要；全量分片可能多次计费，确认前请核对片数与范围。两种策略均不会自动重试。</p>
+      <p className="cr-tip">本地采集不设固定证据总量上限；默认将已采集差异全文分片分析，不以头文件前缀代替实现改动。可在预览中显式选择快速摘要；全量分片可能多次计费，确认前请核对片数与范围。两种策略均不会自动重试。</p>
      </fieldset>
-     <details className="cr-optional"><summary>2. 附带项目源码（可选）{context.trim()||versionContext.trim()?' · 已填写':''}</summary><fieldset disabled={!configReady||configBusy||!!busy||globalBusy}><legend>源码路径</legend><p>每行填写一个工作区内的文件或文件夹路径，根目录可填「.」。文件夹递归展开；不会自动附带未填写的目录或扫描调用链。</p>
-      <textarea aria-label="源码上下文路径" rows={4} placeholder={'app/src/api.ts\napp/src/components'} value={context} onChange={event=>{invalidate();setContext(event.target.value);}}/>
-      <div className="cr-option-group"><h3>差异过滤</h3>
+     <details className="cr-optional"><summary>2. 差异过滤{diffExclusions.trim()||diffExcludeSuffixes.trim()||diffExcludeFolderNames.trim()?' · 已配置':''}</summary><fieldset disabled={!configReady||configBusy||!!busy||globalBusy}><legend>差异过滤</legend>
       <label className="cr-check"><input type="checkbox" checked={autoExcludeNonCode} onChange={event=>{invalidate();setAutoExcludeNonCode(event.target.checked);}}/>自动排除常见非代码文件</label>
       <label>差异排除后缀<textarea aria-label="差异排除后缀" rows={3} maxLength={MAX_DIFF_SUFFIX_TEXT} value={diffExcludeSuffixes} disabled={!autoExcludeNonCode} onChange={event=>{invalidate();setDiffExcludeSuffixes(event.target.value);}}/></label>
       <button type="button" onClick={()=>{invalidate();setAutoExcludeNonCode(true);setDiffExcludeSuffixes(DEFAULT_DIFF_SUFFIX_TEXT);}}>恢复默认后缀</button>
-      <p className="cr-hint">默认排除常见资源、归档和编译产物。可增删后缀，用逗号或换行分隔，不区分大小写；清空或取消勾选即不按后缀排除。</p>
+      <p className="cr-tip">默认排除常见资源、归档和编译产物。可增删后缀，用逗号或换行分隔，不区分大小写；清空或取消勾选即不按后缀排除。</p>
       <label>差异排除文件夹名<input aria-label="差异排除文件夹名" maxLength={MAX_DIFF_FOLDER_TEXT} value={diffExcludeFolderNames} onChange={event=>{invalidate();setDiffExcludeFolderNames(event.target.value);}}/></label>
-      <p className="cr-hint">默认排除任意层级的 Test 文件夹，名称区分大小写。多个名称用逗号分隔；清空则不按文件夹名排除。</p>
+      <p className="cr-tip">默认排除任意层级的 Test 文件夹，名称区分大小写。多个名称用逗号分隔；清空则不按文件夹名排除。</p>
       <label>差异排除目录（每行：仓库路径|目录/）<textarea aria-label="差异排除目录" rows={3} maxLength={MAX_DIFF_EXCLUSIONS_TEXT} placeholder="c3engineplus|Test/Env/" value={diffExclusions} onChange={event=>{invalidate();setDiffExclusions(event.target.value);}}/></label>
-      <p className="cr-hint">仅排除明确不审查的目录，留空表示不追加目录规则。按大小写精确匹配，不按后缀猜测；排除项仅列入清单，不采集差异正文、不发送模型。另行附带的源码上下文按原设置采集。</p>
-      </div><div className="cr-option-group"><h3>接口与版本证据</h3>
-      <label>公共 SDK 候选边界（每行：仓库路径|公开头文件或目录，目录以 / 结尾）<textarea aria-label="公共SDK边界" rows={3} placeholder="app|sdk_inc/" value={publicApiPaths} onChange={event=>{invalidate();setPublicApiPaths(event.target.value);}}/></label><p className="cr-hint">边界内有 A/B 差异证据的候选接口变更列入「对外接口变更」。候选边界不证明历史发布；无发布或接入契约的条目标记为发布身份待确认。</p>
+      <p className="cr-tip">仅排除明确不审查的目录，留空表示不追加目录规则。按大小写精确匹配，不按后缀猜测；排除项仅列入清单，不采集差异正文、不发送模型。</p>
+     </fieldset></details>
+     <details className="cr-optional"><summary>3. 附带项目源码（可选）{context.trim()||versionContext.trim()?' · 已填写':''}</summary><fieldset disabled={!configReady||configBusy||!!busy||globalBusy}><legend>源码路径</legend><p>每行填写一个工作区内的文件或文件夹路径，根目录可填「.」。文件夹递归展开；不会自动附带未填写的目录或扫描调用链。</p>
+      <textarea aria-label="源码上下文路径" rows={4} placeholder={'app/src/api.ts\napp/src/components'} value={context} onChange={event=>{invalidate();setContext(event.target.value);}}/>
+      <div className="cr-option-group"><h3>接口与版本证据</h3>
+      <label>公共 SDK 候选边界（每行：仓库路径|公开头文件或目录，目录以 / 结尾）<textarea aria-label="公共SDK边界" rows={3} placeholder="app|sdk_inc/" value={publicApiPaths} onChange={event=>{invalidate();setPublicApiPaths(event.target.value);}}/></label><p className="cr-tip">边界内有 A/B 差异证据的候选接口变更列入「对外接口变更」。候选边界不证明历史发布；无发布或接入契约的条目标记为发布身份待确认。</p>
       <label>固定版本源码（仅文件；每行：仓库路径|A或B|仓库相对路径）<textarea aria-label="固定版本源码路径" rows={3} placeholder="app|A|src/api.ts" value={versionContext} onChange={event=>{invalidate();setVersionContext(event.target.value);}}/></label>
-      <p className="cr-hint">工作区路径条目、展开文件数、单文件大小和总证据不设固定规模上限，仍受可用内存等系统资源约束。支持无 NUL 的 UTF-8、GBK / GB18030 文本，优先 UTF-8，失败后严格按 GB18030 解码；差异逐行选择编码，预览标记结果。二进制、两种编码均无法解码或无法读取会使整次采集失败，不静默跳过或截断。当前工作区与历史 A/B 版本分开标记。</p><p className="cr-hint">目录展开跳过点前缀隐藏、敏感、依赖、构建和缓存路径、链接及非普通文件，排除计数见预览限制；显式填写敏感路径仍拒绝。不按 Windows Hidden 属性筛选。源码目录展开不设固定条目、目录或深度上限。发送前检查展开后的实际文件清单及限制，并自行检查源码内的密钥。</p>{contextIssue&&<p role="alert" className="cr-error">{contextIssue}</p>}
+      <p className="cr-tip">工作区路径条目、展开文件数、单文件大小和总证据不设固定规模上限，仍受可用内存等系统资源约束。支持无 NUL 的 UTF-8、GBK / GB18030 文本，优先 UTF-8，失败后严格按 GB18030 解码；差异逐行选择编码，预览标记结果。二进制、两种编码均无法解码或无法读取会使整次采集失败，不静默跳过或截断。当前工作区与历史 A/B 版本分开标记。</p><p className="cr-tip">目录展开跳过点前缀隐藏、敏感、依赖、构建和缓存路径、链接及非普通文件，排除计数见预览限制；显式填写敏感路径仍拒绝。不按 Windows Hidden 属性筛选。源码目录展开不设固定条目、目录或深度上限。发送前检查展开后的实际文件清单及限制，并自行检查源码内的密钥。</p>{contextIssue&&<p role="alert" className="cr-error">{contextIssue}</p>}
       </div>
      </fieldset></details>
      <div className="cr-actions cr-execute"><button className="cr-primary" disabled={!!captureReason} aria-describedby={captureReason?'cr-capture-reason':undefined} onClick={capture}>开始执行 · 采集差异</button>{captureReason&&<span id="cr-capture-reason" role="status" aria-live="polite">{captureReason}</span>}{busy&&<><span role="status">{busy}…</span><button onClick={()=>controller.current?.abort()}>取消</button></>}</div>
@@ -360,20 +361,20 @@ function PreviewSection({preview,busy,expired,useDefaultModel=true,setUseDefault
   {expired&&<div className="cr-error" role="status">快照已过期，请重新采集并确认发送。<button disabled={!!compatibility} onClick={onCapture}>重新采集</button></div>}
   <ul className="cr-preview-repos">{preview.repositories.map((row,index)=><li key={index}><strong>{row.path}</strong> · {row.type} · {row.files.length} 个变更路径<br/><code>{sideLabel(row,'A')} → {sideLabel(row,'B')}</code>{row.type==='git'&&<p>{row.gitSource==='remote'?'远端实时读取 · '+(row.remote||'origin')+' · 观察时间 '+(row.observedAt||'未记录')+'（本次快照，之后不自动更新）':row.gitSource==='local'?'本地离线读取':'Git 来源未记录'}</p>}<br/>差异解码 {row.diffEncoding||'未记录'} · 原始字节 SHA-256 {row.rawDiffHash||'未记录'}</li>)}</ul>
   {preview.repositories.filter(row=>row.scopeExclusions?.length).map(row=><LazyDetails key={preview.previewId+':'+row.path} summary={row.path+' · 明确排除 '+row.scopeExclusions.length+' 条变更路径'}>{()=><ul>{row.scopeExclusions.map(entry=><li key={entry.path}>{entry.path} · {diffExclusionLabel(entry)}</li>)}</ul>}</LazyDetails>)}
-  <LazyDetails key={preview.previewId} summary="查看源码上下文及限制">{()=><><p className="cr-hint">以下为本次实际附带的文件清单（目录已展开）；请核对来源与排除限制后再授权模型。</p><ul aria-label="实际源码文件清单">{preview.context.map((item,index)=><li key={index}>{item.repository?item.repository+' / ':''}{item.path} · {item.provenance==='version-A'?'版本 A':item.provenance==='version-B'?'版本 B':'当前工作区'} {item.revision||''} · 编码 {item.encoding||'未记录'} · 原始字节 SHA-256 {item.rawHash||item.hash}</li>)}</ul><ul aria-label="源码及采集限制">{preview.limitations.map((text,index)=><li key={index}>{text}</li>)}</ul></>}</LazyDetails>
+  <LazyDetails key={preview.previewId} summary="查看源码上下文及限制">{()=><><p className="cr-tip">以下为本次实际附带的文件清单（目录已展开）；请核对来源与排除限制后再授权模型。</p><ul aria-label="实际源码文件清单">{preview.context.map((item,index)=><li key={index}>{item.repository?item.repository+' / ':''}{item.path} · {item.provenance==='version-A'?'版本 A':item.provenance==='version-B'?'版本 B':'当前工作区'} {item.revision||''} · 编码 {item.encoding||'未记录'} · 原始字节 SHA-256 {item.rawHash||item.hash}</li>)}</ul><ul aria-label="源码及采集限制">{preview.limitations.map((text,index)=><li key={index}>{text}</li>)}</ul></>}</LazyDetails>
   <div className="cr-plan-controls"><label>分析策略<select aria-label="分析策略" value={analysisStrategy|| (single?'single-request':'full')} onChange={event=>onStrategy(event.target.value)}><option value="full">全量差异分片（默认，可能多次计费）</option><option value="single-request">快速摘要（抽样，不完整）</option></select></label>
   <div className="cr-budget-row"><label>{single?'单次输入预算（保守字节估算，非 token）':'单片输入预算（保守字节估算，非 token）'}<input aria-label={single?'单次输入预算':'单片输入预算'} type="number" min={4000} max={plan?.capacity?.inputBudget} placeholder="留空：按所选模型容量自动规划" value={inputBudget} onChange={event=>onBudget(event.target.value)}/></label>
   <button disabled={expired||!budgetValid||!!compatibility} onClick={onReplan}>更新分析计划</button></div>
-  {plan?.capacity&&<p className="cr-hint" role="status">预算来源：{plan.capacity.source==='host-model'?'所选模型配置':'兼容回退'}；上下文 {plan.capacity.contextWindow??'未知'} token；本次输出预留 {plan.capacity.outputTokens} token；安全余量 {plan.capacity.safetyTokens??'未知'} token；自动输入预算 {plan.capacity.inputBudget} 字节；当前计划 {plan.inputBudget} 字节。{plan.capacity.warning}</p>}
-  {!single&&plan?.packing&&<p className="cr-hint" role="status">分片诊断：基础规划 {plan.packing.originalBatches} 片，最终 {plan.batches.length} 片；切批时输入限制 {plan.packing.input} 次、输出处置限制 {plan.packing.output} 次、两者同时 {plan.packing.both} 次。按当前证据划分，输入体量至少需要 {plan.packing.inputLowerBound} 片{plan.packing.outputLowerBound>0?'，输出处置额度至少需要 '+plan.packing.outputLowerBound+' 片':''}（规划估算，不是服务端 token 统计）。</p>}
+  {plan?.capacity&&<p className="cr-tip" role="status">预算来源：{plan.capacity.source==='host-model'?'所选模型配置':'兼容回退'}；上下文 {plan.capacity.contextWindow??'未知'} token；本次输出预留 {plan.capacity.outputTokens} token；安全余量 {plan.capacity.safetyTokens??'未知'} token；自动输入预算 {plan.capacity.inputBudget} 字节；当前计划 {plan.inputBudget} 字节。{plan.capacity.warning}</p>}
+  {!single&&plan?.packing&&<p className="cr-tip" role="status">分片诊断：基础规划 {plan.packing.originalBatches} 片，最终 {plan.batches.length} 片；切批时输入限制 {plan.packing.input} 次、输出处置限制 {plan.packing.output} 次、两者同时 {plan.packing.both} 次。按当前证据划分，输入体量至少需要 {plan.packing.inputLowerBound} 片{plan.packing.outputLowerBound>0?'，输出处置额度至少需要 '+plan.packing.outputLowerBound+' 片':''}（规划估算，不是服务端 token 统计）。</p>}
   {!budgetValid&&<p role="alert">预算留空按模型自动规划；手动值必须是至少 4000 的安全整数。</p>}{planDirty&&<p role="status">分析策略或预算已变更，请更新分析计划并重新确认。</p>}
   {preview.planError&&<p className="cr-error" role="alert">分析计划尚不可用：{preview.planError.message}。可调整预算重新规划；本地证据清单仍可下载。</p>}
   {single?<SingleRequestCoverage coverage={coverage}/>:<p className="cr-guide" role="status">全量差异分片：发送已采集的全部文本差异和所选上下文，不按头文件前缀抽样；不代表完整调用图或模型已正确理解。计划 {plan?.batches?.length??0} 次模型请求，每片可能计费；只有明确确认后执行，失败不自动重试。</p>}
   {!single&&analysisStrategy==='full'&&<label>模型并发路数<select aria-label="模型并发路数" value={concurrency} disabled={expired} onChange={event=>onConcurrency(Number(event.target.value))}><option value={1}>1 路</option><option value={2}>2 路（默认）</option><option value={4}>4 路</option></select></label>}
-  <p className="cr-hint">{single?'本计划仅一次模型请求，发送预算内本地摘要和明确选择的片段，不是全部正文；失败不会自动重试。更换模型路由、更新分析计划或再次明确确认后重试可能再次计费。':'本计划 '+(plan?.batches?.length??0)+' 片，最多同时调用 '+concurrency+' 路模型请求，可能产生多次费用；失败重试仅复用宿主保留的同计划、同路由已完成分片，每次仍须确认。更换模型路由或更新分析计划将重跑全部分片，可能再次计费。'}预算留空按所选模型上下文自动规划，扣除输出预留和安全余量；手动预算仅可降低。每片不再因达到 32 条证据而强制拆分。保守字节估算不是精确 token 数，也不保证服务端一定接受。</p>
+  <p className="cr-tip">{single?'本计划仅一次模型请求，发送预算内本地摘要和明确选择的片段，不是全部正文；失败不会自动重试。更换模型路由、更新分析计划或再次明确确认后重试可能再次计费。':'本计划 '+(plan?.batches?.length??0)+' 片，最多同时调用 '+concurrency+' 路模型请求，可能产生多次费用；失败重试仅复用宿主保留的同计划、同路由已完成分片，每次仍须确认。更换模型路由或更新分析计划将重跑全部分片，可能再次计费。'}预算留空按所选模型上下文自动规划，扣除输出预留和安全余量；手动预算仅可降低。每片不再因达到 32 条证据而强制拆分。保守字节估算不是精确 token 数，也不保证服务端一定接受。</p>
   <label className="cr-check"><input type="checkbox" checked={useDefaultModel} onChange={event=>{setUseDefaultModel(event.target.checked);setConsent(false);}}/>使用 DSH 默认模型</label>
-  {useDefaultModel?<p className="cr-hint" role="status">{preview.defaultRoute?<>本次模型：<strong>{preview.defaultRoute.provider} / {preview.defaultRoute.model}</strong>。来自 DSH 默认模型配置，已随本次采集固定；无需重复填写。修改宿主默认模型后请重新采集。</>:<>未能读取 DSH 默认模型；请在宿主配置默认模型后重新采集，或取消“使用 DSH 默认模型”手动指定。不会自动选择其他模型。</>}</p>:<div className="cr-route"><label>DSH 提供方 ID<input value={provider} placeholder="已在 DSH 配置的 provider ID" onChange={event=>{setProvider(event.target.value);setConsent(false);}}/></label><label>模型 ID<input value={model} placeholder="该提供方支持的 model ID" onChange={event=>{setModel(event.target.value);setConsent(false);}}/></label></div>}
-  <p className="cr-hint">默认使用宿主配置，不跟随会话临时切换的聊天模型；只有确认发送并点击生成才调用模型。取消默认选项可手动覆盖，不修改宿主配置。</p>
+  {useDefaultModel?<p className="cr-tip" role="status">{preview.defaultRoute?<>本次模型：<strong>{preview.defaultRoute.provider} / {preview.defaultRoute.model}</strong>。来自 DSH 默认模型配置，已随本次采集固定；无需重复填写。修改宿主默认模型后请重新采集。</>:<>未能读取 DSH 默认模型；请在宿主配置默认模型后重新采集，或取消“使用 DSH 默认模型”手动指定。不会自动选择其他模型。</>}</p>:<div className="cr-route"><label>DSH 提供方 ID<input value={provider} placeholder="已在 DSH 配置的 provider ID" onChange={event=>{setProvider(event.target.value);setConsent(false);}}/></label><label>模型 ID<input value={model} placeholder="该提供方支持的 model ID" onChange={event=>{setModel(event.target.value);setConsent(false);}}/></label></div>}
+  <p className="cr-tip">默认使用宿主配置，不跟随会话临时切换的聊天模型；只有确认发送并点击生成才调用模型。取消默认选项可手动覆盖，不修改宿主配置。</p>
   </div>
   <label className="cr-check cr-consent"><input type="checkbox" checked={consent} disabled={expired||planDirty||!preview.analysisPlan} onChange={event=>setConsent(event.target.checked)}/> {single?'我确认向上方指定模型发送本次预算内摘要与所选片段（含文件名、路径与内容），理解未发送正文不属于模型全文分析，并确认一次请求可能计费':'我确认向上方指定模型发送本次差异及所选源码（含文件名、路径与内容），并确认分批调用可能多次计费'}</label>
   <div className="cr-actions"><button className="cr-primary" disabled={!!generateReason} onClick={onGenerate}>开始执行 · 生成报告</button><span>{generateReason||'也可直接导出下方证据清单，不调用模型；这不是发布报告，对外接口尚未分析。'}</span></div>
@@ -404,19 +405,19 @@ function ProgressSection({progress}){
  if(Number.isFinite(progress.concurrency)&&progress.concurrency>0)metrics.push('并发 '+progress.concurrency+' 路');
  if(Number.isFinite(progress.etaMs)&&progress.etaMs>=0)metrics.push('预计剩余约 '+Math.ceil(progress.etaMs/1000)+' 秒');
  const counted=progress.total>0&&['collecting','analyzing','completed'].includes(progress.phase);
- return <section className="cr-progress" aria-label="执行进度"><div role="status" aria-live="polite">{progress.label}{counted?'（'+progress.completed+' / '+progress.total+'）':''}{metrics.length>0?' · '+metrics.join(' · '):''}</div><progress aria-label="执行进度" max={progress.total||1} value={counted?progress.completed:undefined}/><p className="cr-hint">按实际完成的项目、文件或分片计数，不代表耗时比例；单次模型内部进度不可量化。</p></section>;
+ return <section className="cr-progress" aria-label="执行进度"><div role="status" aria-live="polite">{progress.label}{counted?'（'+progress.completed+' / '+progress.total+'）':''}{metrics.length>0?' · '+metrics.join(' · '):''}</div><progress aria-label="执行进度" max={progress.total||1} value={counted?progress.completed:undefined}/><p className="cr-tip">按实际完成的项目、文件或分片计数，不代表耗时比例；单次模型内部进度不可量化。</p></section>;
 }
 const ReportSection=React.memo(function ReportSection({result,onClear}){
  const analysis=result.kind==='analysis',local=result.kind==='local';
  const displayMarkdown=useMemo(()=>reportDownloadText(result.markdown,result.kind),[result.markdown,result.kind]);
  return <section className="cr-result" data-kind={result.kind}><div className="cr-actions cr-result-toolbar"><h2>{analysis?'Markdown 报告':local?'采集证据（尚未生成发布报告）':'未分类结果（尚不能确认是发布报告）'}</h2><button onClick={()=>downloadMarkdown(result.markdown,result.kind)}>{analysis?'下载 .md 文件':local?'下载证据清单 .md':'下载未分类结果 .md'}</button><button onClick={()=>onClear(result.kind)}>{analysis?'清除报告':'清除证据结果'}</button></div>
-  {analysis&&result.savedReport?.status==='pending'&&<p className="cr-hint" role="status">正在保存报告到工作区；现在也可下载 .md 文件。</p>}
-  {analysis&&result.savedReport?.status==='saved'&&<p className="cr-hint" role="status">报告已保存到工作区：<code>{result.savedReport.path}</code>。清除面板报告不会删除磁盘文件。</p>}
+  {analysis&&result.savedReport?.status==='pending'&&<p className="cr-tip" role="status">正在保存报告到工作区；现在也可下载 .md 文件。</p>}
+  {analysis&&result.savedReport?.status==='saved'&&<p className="cr-tip" role="status">报告已保存到工作区：<code>{result.savedReport.path}</code>。清除面板报告不会删除磁盘文件。</p>}
   {analysis&&result.savedReport?.status==='failed'&&<p className="cr-error" role="alert">{result.savedReport.message}</p>}
-  {analysis&&result.savedReport?.status==='unknown'&&<p className="cr-hint" role="status">{result.savedReport.message}</p>}
+  {analysis&&result.savedReport?.status==='unknown'&&<p className="cr-tip" role="status">{result.savedReport.message}</p>}
   {!analysis&&<p className="cr-stale" role="status">{local?'仅采集完成，未调用模型；尚无改动解释、接口影响分析或测试建议。请核对上方默认模型和发送范围，明确确认后，点击“开始执行 · 生成报告”。':'结果类型未确认，不能据此认定已完成模型分析或发布报告。'}不会自动调用模型。</p>}
   {result.stale&&<p className="cr-stale" role="status">{analysis?'已有报告':'已有证据结果'}与当前草稿可能不同，旧结果已保留，可继续下载；重新采集后才用于当前范围分析。</p>}
-   {!analysis&&<p className="cr-hint">采集证据仅供核对，不是正式报告。</p>}
+   {!analysis&&<p className="cr-tip">采集证据仅供核对，不是正式报告。</p>}
 
    <ReportDocument markdown={displayMarkdown}/>{!analysis&&<LazyDetails className="cr-report-raw" summary="查看原始 Markdown">{()=><pre>{result.markdown}</pre>}</LazyDetails>}
  </section>;

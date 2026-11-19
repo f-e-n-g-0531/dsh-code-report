@@ -57,7 +57,12 @@ export function createAnalysisPlan(snapshot, {inputBudget = 24000, strategy = 'f
   // the original plan leaves room above the input-volume lower bound.
   const outputTokens = capacity?.outputTokens ?? 8192;
   const dispositionBudget = outputTokens - Math.min(8192, Math.floor(outputTokens / 2));
-  const maxItems = capacity ? Math.floor(dispositionBudget / 192) : Infinity;
+  // Keep a conservative guard for small output budgets, but avoid forcing the
+  // default 8K-output route into tiny 21-item batches when input space remains.
+  // The larger divisor still reserves half the output budget for conclusions and
+  // leaves the model room for per-evidence dispositions.
+  const dispositionBytesPerItem = strategy === 'single-request' ? 192 : outputTokens >= 8192 ? 96 : outputTokens >= 4096 ? 128 : 192;
+  const maxItems = capacity ? Math.floor(dispositionBudget / dispositionBytesPerItem) : Infinity;
   if (maxItems < 1) throw fail('analysis-plan', '输出预算不足以容纳证据处置与结论，请检查模型输出配置');
   const room = inputBudget - overhead;
   const pack = items => {
