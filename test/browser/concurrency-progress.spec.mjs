@@ -64,10 +64,10 @@ test('full concurrency is transient, clears consent, and leaves expensive region
  expect(beforeCountdown.panel).toBeGreaterThan(0);expect(beforeCountdown.table).toBeGreaterThan(0);expect(beforeCountdown.report).toBeGreaterThan(0);
  await expect(countdown).not.toHaveText(value);
  expect(await renderCounts(page)).toEqual(beforeCountdown);
- await expect(concurrency(page)).toHaveValue('4');
- await expect(concurrency(page).locator('option')).toHaveCount(3);
+ await expect(concurrency(page)).toHaveValue('2');
+ expect(await concurrency(page).locator('option').evaluateAll(options=>options.map(option=>option.value))).toEqual(['1','2','3','4']);
  await consent(page).check();await expect(generate(page)).toBeEnabled();
- await concurrency(page).selectOption('2');
+ await concurrency(page).selectOption('3');
  await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();
  await page.getByRole('button',{name:'保存配置',exact:true}).click();
  await expect(page.getByText(/已保存到当前工作目录/)).toBeVisible();
@@ -75,12 +75,12 @@ test('full concurrency is transient, clears consent, and leaves expensive region
  expect((await stats(page)).modelCalls).toBe(0);
  await consent(page).check();await generate(page).click();
  const progress=page.locator('.cr-progress [role=status]');
- await expect(progress).toContainText('排队 0 片 · 进行中 2 片 · 并发 2 路 · 预计剩余约 4 秒');
+ await expect(progress).toContainText('排队 0 片 · 进行中 2 片 · 并发 3 路 · 预计剩余约 4 秒');
  const first=await progress.textContent(),beforePolling=await renderCounts(page);
  await expect(progress).not.toHaveText(first);
  expect(await renderCounts(page)).toEqual(beforePolling);
  const generated=(await stats(page)).calls.filter(call=>call.endpoint==='generate');
- expect(generated).toHaveLength(1);expect(generated[0].payload).toMatchObject({concurrency:2,sendToModel:true});
+ expect(generated).toHaveLength(1);expect(generated[0].payload).toMatchObject({concurrency:3,sendToModel:true});
  await page.evaluate(()=>window.fixture.releaseGenerate());
  await expect(page.locator('article.cr-report')).toContainText('模型报告');
  expect(errors).toEqual([]);
@@ -108,7 +108,7 @@ test('hung progress observations time out, warn and recover without re-dispatch'
  await expect(page.getByText(/进度连接暂时失联/)).toHaveCount(0);
  await expect(page.locator('.cr-progress [role=status]')).toContainText('fixture 模型分析');
  const generated=(await stats(page)).calls.filter(call=>call.endpoint==='generate');
- expect(generated).toHaveLength(1);expect(generated[0].payload.concurrency).toBe(4);
+ expect(generated).toHaveLength(1);expect(generated[0].payload.concurrency).toBe(2);
  await page.evaluate(()=>window.fixture.releaseGenerate());
  await page.clock.runFor(100);
  await expect(page.locator('article.cr-report')).toContainText('模型报告');

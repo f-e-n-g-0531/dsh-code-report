@@ -40,10 +40,15 @@ test('real readable-analysis rendering preserves escaped endpoint contracts with
  const copy=reportDownloadText(rendered,'analysis');
  assert.ok(rendered.includes(markdownText(endpoint)));
  assert.ok(copy.includes(markdownText(endpoint)));assert.ok(copy.includes(markdownText(root)));
- assert.doesNotMatch(copy,/internal_api|internal[.]hpp|PRIVATE_SOURCE|SECRET_SOURCE|#evidence-|<details>|未知和待确认/);
+ assert.doesNotMatch(copy,/internal_api|internal[.]hpp|PRIVATE(?:&#95;|_)SOURCE|SECRET_SOURCE|#evidence-|<details>|未知和待确认/);
  assert.doesNotMatch(copy,/https:\/\/|`https|&next=/); // Keep original inert entities, do not decode output.
  assert.deepEqual([...copy.matchAll(/^## (.*)$/gm)].map(match=>match[1]),titles);
- assert.doesNotMatch(rendered,/SECRET_SOURCE|PRIVATE_SOURCE/);
+ const [body,appendix]=rendered.split('\n<details>');
+ assert.match(body,/\[1\]\(#evidence-1\)/);
+ assert.doesNotMatch(body,/SECRET_SOURCE|PRIVATE(?:&#95;|_)SOURCE/);
+ assert.match(appendix,/<a id="evidence-1"><\/a>/);
+ assert.match(appendix,/SECRET_SOURCE/);
+ assert.ok(appendix.includes(markdownText(evidence.file)));
 });
 test('reader export contains exactly five ordered sections and no preamble or internal appendices',()=>{
  const original='# 标题\n模型：private\n## 本次比较范围\n项目A：版本a → b\n## 改动内容\n改动\n## 对外接口变更\n接口待确认\n## 影响范围\n- 功能 [1](#evidence-1)\n## QA 测试范围\n测试显示\n## 未知和待确认\n- 测试入口尚待确认\n<details>\n<summary>技术附录：证据与覆盖记录</summary>\nSECRET_SOURCE\n</details>\n<details>\n<summary>采集附录：固定版本、完整文件清单与限制</summary>\nPRIVATE_PATH\n</details>';
@@ -82,13 +87,14 @@ for(const escaped of [false,true])test('removed filenames leave readable neutral
  assert.doesNotMatch(copy,/loader|SkinInterface|client|private|删除\s+与/);
  assert.equal(copy.match(/相关源码文件/g).length,4);
 });
-for(const strategy of ['full','single-request'])test('real report retains collection limitations in scope independently of model unknowns '+strategy,()=>{
+for(const strategy of ['full','single-request'])test('real report keeps collection limitations in the internal appendix, not formal scope '+strategy,()=>{
  const limitations=['大 diff 超过预算，src/private.cpp 未发送原文。','二进制文件未做语义分析。','上下文解码存在替换字符，需人工核对。','待核对 <script> & 中文😀；公开入口 https://example.com/client.js?file=src/public.cpp'];
  const snapshot={title:'发布比较',repositories:[{path:'project',type:'git',branchA:'old',branchB:'new',a:'aaa',b:'bbb',files:[],diffHash:'DIFF_HASH'}],context:[],limitations};
  const manifest={strategy,originalSourceBytes:100,fullManifestFiles:1,files:[{repository:'project',path:'src/APPENDIX_ONLY.cpp',status:'M',sentMetadata:true,sentText:true}]};
  const analysis={changes:[],interfaces:[],impacts:[],qa:[],unknowns:[]};
  const plan={strategy:'single-request',batches:[{id:'batch',evidenceIds:[],snapshot:{evidence:[]}}],coverage:{fullManifestFiles:1,sentFileCount:0,sentTextFileCount:0,omittedFileCount:1,total:0}};
- const body=strategy==='single-request'?renderReadableAnalysis(plan,new Map([['batch',{analysis}]])):titles.slice(1).map(title=>'## '+title+'\n\n未提供业务结论。').join('\n\n');
+ const body=strategy==='single-request'?renderReadableAnalysis(plan,new Map([['batch',{analysis}]])):
+  '本次比较范围：全量证据模式；发送已纳入的差异证据，不代表语义完整。\n\n'+titles.slice(1).map(title=>'## '+title+'\n\n未提供业务结论。').join('\n\n');
  const original=markdown(snapshot,body,{provider:'private',model:'private'},{structured:true,evidenceManifest:manifest});
  const copy=reportDownloadText(original,'analysis'),scope=copy.split('## 改动内容')[0];
  assert.doesNotMatch(scope,/采集覆盖说明/);
@@ -99,8 +105,21 @@ for(const strategy of ['full','single-request'])test('real report retains collec
  assert.doesNotMatch(copy,/private[.]cpp|APPENDIX_ONLY|DIFF_HASH|附录|<details>|<script>|^模型：/m);
  assert.deepEqual([...copy.matchAll(/^## (.*)$/gm)].map(match=>match[1]),titles);
  const appendix=original.slice(original.indexOf('<summary>采集附录'));
- assert.doesNotMatch(appendix,/- 大 diff|- 二进制|- 上下文解码/);
+ assert.doesNotMatch(original.split('<summary>采集附录')[0],/大 diff 超过预算|二进制文件未做语义分析|上下文解码存在替换字符/);
+ assert.match(appendix,/## 覆盖范围与限制/);
+ for(const limitation of limitations)assert.ok(appendix.includes(markdownText(limitation)));
+ assert.match(appendix,/模型输出为待人工复核/);
  if(strategy==='single-request')assert.match(scope,/单次摘要.*覆盖可能不完整/);
+ else assert.match(scope,/全量证据模式.*不代表语义完整.*人工复核/);
+ assert.equal(reportDownloadText(copy,'analysis'),copy);
+});
+test('legacy collection limitations under comparison scope are excluded without affecting real unknowns',()=>{
+ const original='## 本次比较范围\n- project old → new\n### 采集覆盖限制（非业务结论）\n- DO_NOT_EXPORT\n本次比较范围：全量证据模式；发送已纳入的差异证据，不代表语义完整。\n## 未知和待确认\n- 契约仍待确认';
+ const copy=reportDownloadText(original,'analysis');
+ assert.match(copy,/project old → new/);
+ assert.match(copy,/全量证据模式.*不代表语义完整/);
+ assert.match(copy,/契约仍待确认/);
+ assert.doesNotMatch(copy,/采集覆盖限制|DO_NOT_EXPORT/);
 });
 test('missing sections are marked unknown rather than fabricated and unrelated headings close a section',()=>{const copy=reportDownloadText('## 影响范围\n待确认\n## 内部记录\nHIDDEN','analysis');assert.doesNotMatch(copy,/HIDDEN/);assert.equal(copy.match(/^## /gm).length,5);assert.match(copy,/未提供可对外展示的内容，待确认/);});
 

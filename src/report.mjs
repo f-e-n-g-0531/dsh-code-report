@@ -17,7 +17,12 @@ const comparisonEndpoint=(r,side)=>{
  return (branch||'未指定分支')+' @ '+fixed;
 };
 const releaseScopeLines=repositories=>repositories.map(r=>'- **'+inline(r.path)+'** ('+inline(r.type)+')：'+inline(comparisonEndpoint(r,'A'))+' → '+inline(comparisonEndpoint(r,'B'))+'；固定端点 '+inline(r.a)+' → '+inline(r.b)+'；'+r.files.length+' 个变更路径'+(r.type==='git'?'；来源 '+(r.gitSource==='remote'?'远端 '+inline(r.remote)+'；观察于 '+inline(r.observedAt)+'（固定快照）':'本地离线引用（不代表远端最新）'):''));
-const limitationLines=limitations=>limitations.map(x=>'- '+inline(x));
+// Directory expansion warnings can contain examples from the attached source
+// inventory. Those examples belong in the collection preview, not in reports.
+const limitationLines=(limitations=[],analyzed=false)=>[
+ ...limitations.filter(text=>!(/^(?:源码目录展开中 |目录自动收集仅包含)/.test(text)&&text.includes('示例：'))).map(text=>'- '+inline(text)),
+ ...(analyzed?['- 模型输出为待人工复核的推断，不代表测试通过、缺陷证明或发布批准。']:[]),
+];
 const routeLine=route=>route?'模型：'+inline(route.provider)+' / '+inline(route.model):LOCAL_ROUTE;
 const excludedPathLines=r=>r.excludedPaths?.length?['','### 排除的内部路径 · '+inline(r.path),'','以下路径仅记录排除清单，正文未读取，不属于分析覆盖：',...r.excludedPaths.map(p=>'- '+inline(p))]:[];
 const evidenceLines=r=>['','### '+inline(r.path),'','差异文本 SHA-256（解码后 UTF-8）：'+inline(r.diffHash),'','差异解码：'+inline(r.diffEncoding??'未记录')+'；原始字节 SHA-256：'+inline(r.rawDiffHash??'未记录'),'',fence(r.summary,'text'),'',fence(r.diff,'diff')];
@@ -26,8 +31,8 @@ export function markdown(snapshot,analysis,route,{structured=false,evidenceManif
  const renderedAnalysis=analysis?(structured?analysis:fence(analysis,'text')):ANALYSIS_MISSING;
  const heading=analysis?'# '+inline(snapshot.title):'# 采集证据清单（未分析）';
  const out=evidenceManifest
-  ? [heading,'','## 本次比较范围','',...snapshot.repositories.map(r=>'- **'+inline(r.path)+'**：'+inline(comparisonEndpoint(r,'A'))+' → '+inline(comparisonEndpoint(r,'B'))+'（'+r.files.length+' 个变更路径）'),' ',renderedAnalysis,'',interfaceSection(analysis),'','<details>','<summary>采集附录：固定版本、完整文件清单与限制</summary>','','## 发布范围','',...releaseScopeLines(snapshot.repositories),'',routeLine(route),'','## 差异证据']
-  : [heading,'','生成时间：'+inline(snapshot.createdAt),'','## 发布范围','',...releaseScopeLines(snapshot.repositories),'','## 改动内容、对外接口、影响范围与 QA 测试建议','',renderedAnalysis,'',interfaceSection(analysis),'',routeLine(route),'','## 差异证据'];
+  ? [heading,'','## 本次比较范围','',...snapshot.repositories.map(r=>'- **'+inline(r.path)+'**：'+inline(comparisonEndpoint(r,'A'))+' → '+inline(comparisonEndpoint(r,'B'))+'（'+r.files.length+' 个变更路径）'),'',renderedAnalysis,'',interfaceSection(analysis),'','<details>','<summary>采集附录：固定版本、完整文件清单与限制</summary>','','## 发布范围','',...releaseScopeLines(snapshot.repositories),'',routeLine(route),'','## 覆盖范围与限制','',...limitationLines(snapshot.limitations,Boolean(analysis)),'','## 差异证据']
+  : [heading,'','生成时间：'+inline(snapshot.createdAt),'','## 发布范围','',...releaseScopeLines(snapshot.repositories),'','## 改动内容、对外接口、影响范围与 QA 测试建议','',renderedAnalysis,'',interfaceSection(analysis),'',routeLine(route),'','## 覆盖范围与限制','',...limitationLines(snapshot.limitations,Boolean(analysis)),'','## 差异证据'];
  for(const r of snapshot.repositories){
   for(const line of excludedPathLines(r))out.push(line);
   if(r.scopeExclusions?.length){

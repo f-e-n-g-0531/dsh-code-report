@@ -84,12 +84,20 @@ export async function sessionCwd(ctx,id,signal){
 function createPreviewStore(ctx,now){
   const items=new Map();
   const prune=()=>{for(const [id,p]of items)if(!p.used&&now()>=previewDeadline(p)){items.delete(id);if(p.snapshotFile)unlink(p.snapshotFile).catch(()=>{});}};
-  const claim=async(payload,cwd)=>{
+  const claim=(payload,cwd)=>{
     const p=items.get(payload.previewId);
     if(!p||p.cwd!==cwd||p.sessionId!==payload.sessionId)throw problem('preview-expired','预览已过期、已使用或会话变更，请重新采集');
     if(p.used)throw problem('busy','预览正在分析，请等待完成或取消');
     if(!p.used&&now()>=previewDeadline(p)){items.delete(payload.previewId);if(p.snapshotFile)unlink(p.snapshotFile).catch(()=>{});throw problem('preview-expired','预览已过期，请重新采集');}
-    if(!p.snapshot&&p.snapshotFile)p.snapshot=JSON.parse(await readFile(p.snapshotFile,'utf8'));
+    return p;
+  };
+  const load=async(payload,cwd)=>{
+    const p=claim(payload,cwd);
+    if(!p.snapshot&&p.snapshotFile){
+      const snapshot=JSON.parse(await readFile(p.snapshotFile,'utf8'));
+      claim(payload,cwd);
+      p.snapshot??=snapshot;
+    }
     return p;
   };
   const release=async(payload,signal)=>{
@@ -108,7 +116,7 @@ function createPreviewStore(ctx,now){
     }
     items.set(id,entry);
   };
-  return {prune,claim,release,add,discard:id=>{const p=items.get(id);items.delete(id);if(p?.snapshotFile)unlink(p.snapshotFile).catch(()=>{});}};
+  return {prune,claim,load,release,add,discard:id=>{const p=items.get(id);items.delete(id);if(p?.snapshotFile)unlink(p.snapshotFile).catch(()=>{});}};
 }
 function createProgressStore(ctx,now,backendInstanceId){
   // Process-local receipts and checkpoints only. A restart loses these records;
@@ -283,7 +291,7 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
       return {...defaults,previewId,expiresAt:time+PREVIEW_TTL,bytes,repositories:snapshot.repositories.map(({diff,...r})=>r),context:snapshot.context.map(({text,...c})=>c),limitations:snapshot.limitations,markdown:markdown(snapshot,null,null,{evidenceManifest:plan===defaultAnalysisPlan?(analysisPlan?.coverage??localManifest(snapshot)):analysisPlan?.strategy==='single-request'?analysisPlan.coverage:null}),analysisPlan:publicPlan(analysisPlan),planError};
     },
     'analysis-plan':async({payload,cwd,signal})=>{
-      const p=await previews.claim(payload,cwd);signal.throwIfAborted();
+      const p=await previews.load(payload,cwd);signal.throwIfAborted();
       if(payload.inputBudget!==undefined&&(!Number.isSafeInteger(payload.inputBudget)||payload.inputBudget<4000))throw problem('input','输入预算应为至少 4000 的安全整数（字节，非 token）');
       if(payload.strategy!==undefined&&!['full','single-request'].includes(payload.strategy))throw problem('input','未知分析策略');
       const selected=payload.route?generationRoute(payload.route,p):p.plan?.modelRoute??p.defaultRoute;
@@ -292,12 +300,12 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
       if(inputBudget>capacity.inputBudget)throw problem('model-capacity','输入预算超过当前模型容量估算，请使用自动预算或降低预算');
       const next=plan(p.snapshot,{inputBudget,strategy:payload.strategy??p.plan?.strategy??'full',capacity});
       next.capacity=capacity;next.modelRoute=selected?{provider:selected.provider,model:selected.model}:null;
-      await assertSession(payload,cwd,signal);signal.throwIfAborted();await previews.claim(payload,cwd);
+      await assertSession(payload,cwd,signal);signal.throwIfAborted();previews.claim(payload,cwd);
       p.plan=next;p.completed=new Map();p.routeKey=null;
       return {analysisPlan:publicPlan(next),expiresAt:previewDeadline(p),defaultRoute:p.defaultRoute?{...p.defaultRoute}:null,defaultRouteError:p.defaultRouteError?{...p.defaultRouteError}:null};
     },
     generate:async({payload,cwd,signal,update,operation,width,background=false})=>{
-      const p=await previews.claim(payload,cwd);
+      const p=await previews.load(payload,cwd);
       if(payload.sendToModel!==true)throw problem('consent-required','需要明确确认向所选模型发送源码');
       if(!p.plan||payload.planId!==p.plan.id)throw problem('plan-mismatch','分析计划已变化或不可用，请重新确认发送范围');
       const approvedPlan=p.plan;
@@ -307,7 +315,7 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
         const capacity=await waitForAdmission(AbortSignal.any([signal,AbortSignal.timeout(15000)]),()=>modelCapacity(ctx.llm,route));
         if(JSON.stringify(capacity)!==JSON.stringify(approvedPlan.capacity))throw problem('plan-mismatch','模型容量配置已变化，请更新分析计划并重新确认');
       }
-      await assertSession(payload,cwd,signal);signal.throwIfAborted();await previews.claim(payload,cwd);
+      await assertSession(payload,cwd,signal);signal.throwIfAborted();previews.claim(payload,cwd);
       if(p.plan!==approvedPlan)throw problem('plan-mismatch','分析计划已变化，请重新确认');
       if(p.routeKey!==key){p.completed=new Map();p.routeKey=key;}
       signal.throwIfAborted();progress.authorize(operation);p.used=true;

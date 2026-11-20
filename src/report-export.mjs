@@ -2,6 +2,7 @@
 const pendingTitle='待补充与待确认';
 const sections=['本次比较范围','对外接口变更','改动内容','QA 测试范围',pendingTitle];
 const singleSummaryNotice='本报告为单次摘要，仅基于预算内的摘要与选取原文片段，不是全文语义分析；覆盖可能不完整，结论与测试建议仍待人工复核。';
+const fullScopeNotice='全量证据模式：覆盖已纳入的差异，不代表语义完整，结论仍需人工复核。';
 const emptySection='未提供可对外展示的内容，待确认。';
 function readerLine(line){
  line=line.replace(/ ?\[\d+\]\(#evidence-\d+\)/g,'');
@@ -82,7 +83,7 @@ function polish(lines){
 }
 export function reportDownloadText(markdown,kind){
  if(kind!=='analysis')return markdown;
- const buckets=new Map(sections.map(title=>[title,[]]));let active=null,fence=null,details=0,singleSummary=false,qaPending=false;
+ const buckets=new Map(sections.map(title=>[title,[]]));let active=null,fence=null,details=0,scopeNotice=null,qaPending=false,technicalScope=false;
  for(const line of markdown.split(/\r?\n/)){
   const marker=line.match(/^ {0,3}(`{3,}|~{3,})/);
   if(marker){if(!fence)fence={char:marker[1][0],length:marker[1].length};else if(marker[1][0]===fence.char&&marker[1].length>=fence.length)fence=null;continue;}
@@ -92,12 +93,18 @@ export function reportDownloadText(markdown,kind){
   if(details)continue;
   const heading=line.match(/^ {0,3}(#{1,2}) +(.+?)\s*#*$/);
   if(heading){
-   const title=heading[2];qaPending=false;
+   const title=heading[2];qaPending=false;technicalScope=false;
    active=heading[1].length!==2?null:title==='未知和待确认'?pendingTitle:buckets.has(title)?title:null;
    continue;
   }
-  if(/^本报告为单次摘要：/.test(line)){singleSummary=true;continue;}
-  if(/^本次比较范围：全量证据模式；/.test(line)){buckets.get('本次比较范围').push('', '全量证据模式：覆盖已纳入的差异，保留已纳入差异范围。');continue;}
+  if(/^本报告为单次摘要：/.test(line)){scopeNotice=singleSummaryNotice;continue;}
+  if(/^本次比较范围：全量证据模式；/.test(line)){scopeNotice=fullScopeNotice;continue;}
+  // Older internal reports included collection limitations inside comparison scope.
+  if(active==='本次比较范围'&&/^### /.test(line)){
+   technicalScope=/^### 采集覆盖限制(?:（非业务结论）)?\s*$/.test(line);
+   if(technicalScope)continue;
+  }
+  if(technicalScope)continue;
   if(active==='QA 测试范围'&&/^### /.test(line)){
    qaPending=/^### (?:测试前待补充|待补充与待确认)\s*$/.test(line);
    if(qaPending)continue;
@@ -109,6 +116,6 @@ export function reportDownloadText(markdown,kind){
   if(line.trim()&&!cleaned.trim())continue;
   buckets.get(qaPending?pendingTitle:active).push(cleaned);
  }
- if(singleSummary){}
+ if(scopeNotice)buckets.get('本次比较范围').push('',scopeNotice);
  return sections.map(title=>'## '+title+'\n\n'+(polish(buckets.get(title))||emptySection)).join('\n\n')+'\n';
 }

@@ -50,11 +50,11 @@ test('workbench separates configuration, confirmation, and results',async({page}
 
 test('background analysis honors selected concurrency and recovers by task identity',async({page})=>{
  await open(page,{asyncGenerate:true,holdGenerate:true,analysisBatches:8});await selectGit(page);await collect(page);
- const width=page.getByRole('combobox',{name:'模型并发路数'});await expect(width).toHaveValue('4');
- await consent(page).check();await width.selectOption('2');await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();
+ const width=page.getByRole('combobox',{name:'模型并发路数'});await expect(width).toHaveValue('2');
+ await consent(page).check();await width.selectOption('3');await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();
  await consent(page).check();await generate(page).click();
  await expect.poll(async()=>(await stats(page)).calls.filter(x=>x.endpoint==='generate-start').length).toBe(1);
- const call=(await stats(page)).calls.find(x=>x.endpoint==='generate-start');expect(call.payload.concurrency).toBe(2);expect(call.payload.backendInstanceId).toBe('fixture-backend');
+ const call=(await stats(page)).calls.find(x=>x.endpoint==='generate-start');expect(call.payload.concurrency).toBe(3);expect(call.payload.backendInstanceId).toBe('fixture-backend');
  await page.evaluate(()=>window.fixture.releaseGenerate());await expect(report(page)).toContainText('模型报告 a');
  const snapshot=await stats(page);expect(snapshot.modelCalls).toBe(1);expect(snapshot.calls.filter(x=>x.endpoint==='generate')).toHaveLength(0);
  expect(snapshot.calls.some(x=>x.endpoint==='result'&&x.payload.operationId===call.payload.operationId)).toBe(true);
@@ -425,7 +425,7 @@ test('large context lists and over 32 batches remain bound to explicit preview a
  const previewCall=(await stats(page)).calls.find(call=>call.endpoint==='preview-start');expect(previewCall.payload.request.contextPaths).toEqual(contextPaths);expect(previewCall.payload.request.versionContexts).toEqual(versionContexts);expect(previewCall.payload.request.allowBatches).toBe(true);
  const files=page.getByRole('list',{name:'实际源码文件清单',exact:true});await expect(files).toHaveCount(0);await page.getByText('查看源码上下文及限制',{exact:true}).click();await expect(files.getByRole('listitem')).toHaveCount(50);await expect(files).toContainText('client/src/dir-24/file.ts');await expect(files).toContainText('src/old-24.ts');
  await expect(page.getByText('证据 9437184 字节（约 9216.0 KiB）；',{exact:false})).toBeVisible();
- await expect(page.getByText('本计划 40 片，最多同时调用 4 路模型请求，可能产生多次费用；',{exact:false})).toBeVisible();
+ await expect(page.getByText('本计划 40 片，最多同时调用 2 路模型请求，可能产生多次费用；',{exact:false})).toBeVisible();
  await page.getByText('预算与分片明细',{exact:true}).click();
  await expect(page.getByText('分片诊断：基础规划 88 片，最终 40 片；',{exact:false})).toContainText('输出处置限制 15 次');
  await route(page);await expect(generate(page)).toBeDisabled();expect((await stats(page)).modelCalls).toBe(0);

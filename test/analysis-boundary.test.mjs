@@ -109,6 +109,29 @@ test('analyzeReport explicitly restores normalized migrated checkpoints without 
   assert.deepEqual(resumed.completed, first.completed);
   assert.equal(resumed.markdown, first.markdown);
 });
+test('wire fallback preserves short references and cannot repair invalid checkpoints', () => {
+  const options = {allowIncompleteModel: true, modelReferences: new Map([['B1-E1', 'e1'], ['B1-E2', 'e2']])};
+  const raw = {...empty(), interfaces: [{text: 'x'.repeat(16384), evidenceIds: ['B1-E1', 'B1-E1']}], unknowns: [{text: '入口不明'}]};
+  const clean = validateAnalysis(raw, ['e1', 'e2'], options);
+  assert.deepEqual(clean.interfaces, []);
+  assert.deepEqual(clean.unknowns, [
+    {text: '对外性待确认：' + 'x'.repeat(16384), evidenceIds: ['e1']},
+    {text: '待确认：入口不明', evidenceIds: []},
+  ]);
+  assert.equal(clean.evidenceDispositions.length, 1);
+  assert.equal(clean.evidenceDispositions[0].evidenceId, 'e2');
+  assert.deepEqual(validateAnalysis(clean, ['e1', 'e2'], {normalized: true}), clean);
+  assert.throws(() => validateAnalysis({...clean, evidenceDispositions: []}, ['e1', 'e2'], {normalized: true}), /没有结论/);
+  for (const extra of [
+    {evidenceIds: ['B2-E1']},
+    {evidenceIds: 'B1-E1'},
+    {declarationEvidenceIds: ['B2-E1']},
+    {publicBasis: {evidenceIds: ['B2-E1']}},
+  ]) {
+    assert.throws(() => validateAnalysis({...empty(), interfaces: [{...raw.interfaces[0], ...extra}]}, ['e1', 'e2'], options), {code: 'code-report/analysis-reference'});
+  }
+  assert.throws(() => validateAnalysis({...empty(), changes: Array(201).fill({text: 'x', evidenceIds: ['B1-E1']})}, ['e1'], options), /200/);
+});
 test('candidate requires changed symbol evidence within the configured project and boundary',()=>{
  const diff={...source,provenance:'version-diff',text:'@@ -1 +1 @@\n-int query();\n+int query(int flags);'};
  const value={...empty(),interfaces:[item('sdk-candidate')]};

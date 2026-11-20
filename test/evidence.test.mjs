@@ -283,7 +283,7 @@ test('8193 scopes retain complete coverage without repeating global manifests in
   assert.equal(new Set(items.map(item => item.id)).size, items.length);
   assert.ok(plan.batches.length > 32);
   for (const batch of plan.batches) {
-    assert.deepEqual(Object.keys(batch.snapshot), ['schema', 'evidenceVersion', 'title', 'limitations', 'publicApiPaths', 'evidence']);
+    assert.deepEqual(Object.keys(batch.snapshot), ['schema', 'evidenceVersion', 'title', 'publicApiPaths', 'evidence']);
     assert.equal(batch.inputBytes, estimatedInputBytes(batch.snapshot));
     assert.ok(batch.inputBytes <= 16000);
   }
@@ -300,12 +300,16 @@ test('8193 header-only Git blocks use exact indexed attribution including quoted
   assert.ok(index.manifest.every(file => file.content === 'text-or-properties'));
 });
 
-test('estimated budget includes escaped JSON, system and limitations; no silent overflow', () => {
+test('estimated budget includes escaped JSON and system but not local limitations; no silent overflow', () => {
   const source = snapshot('@@ -1 +1 @@\n' + '\\\t\u0001😀'.repeat(300));
   const plan = createAnalysisPlan(source, {inputBudget: 16000});
   assert.ok(plan.batches.every(batch => batch.inputBytes <= plan.inputBudget));
   assert.throws(() => createAnalysisPlan(source, {inputBudget: 3999}), /4000/);
-  assert.throws(() => createAnalysisPlan({...source, limitations: ['x'.repeat(10000)]}, {inputBudget: 4000}), /元数据/);
+  assert.throws(() => createAnalysisPlan({...source, title: 'x'.repeat(16000)}, {inputBudget: 16000}), /元数据/);
+  const withLimitations = createAnalysisPlan({...source, limitations: ['x'.repeat(16000)]}, {inputBudget: 16000});
+  assert.notEqual(withLimitations.id, plan.id);
+  assert.deepEqual(withLimitations.batches.map(({inputBytes, payloadHash}) => ({inputBytes, payloadHash})),
+    plan.batches.map(({inputBytes, payloadHash}) => ({inputBytes, payloadHash})));
   assert.ok(createAnalysisPlan(source, {inputBudget: 64001}).batches.length>=1);
   assert.throws(() => createAnalysisPlan(source, {inputBudget: Number.MAX_SAFE_INTEGER+1}), /安全整数/);
 });

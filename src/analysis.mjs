@@ -161,7 +161,7 @@ function exactObject(value, keys) {
 }
 
 /** Validate disposition and attribution, never semantic completeness. */
-export function validateAnalysis(value, evidenceIds, {requireDispositions = true, evidence = [], publicApiPaths = [], normalized = false, modelReferences = null} = {}) {
+export function validateAnalysis(value, evidenceIds, {requireDispositions = true, evidence = [], publicApiPaths = [], normalized = false, allowIncompleteModel = false, modelReferences = null} = {}) {
   const hasLedger = value && Object.hasOwn(value, 'evidenceDispositions');
   if (!exactObject(value, hasLedger ? [...SECTIONS, 'evidenceDispositions'] : SECTIONS)) throw fail('analysis-schema', '模型分析必须为规定章节和证据处置数组');
   const allowed = new Set(evidenceIds), cited = new Set();
@@ -180,6 +180,7 @@ export function validateAnalysis(value, evidenceIds, {requireDispositions = true
     if (normalized && unique.length !== ids.length) referenceFailure(section, field, 'duplicate', '已校验结果含重复 ID');
     return unique;
   };
+  const unconfirmedInterfacePrefix = '对外性待确认：', unconfirmedPrefix = '待确认：';
   const internalPrefix = '内部接口：', unknownPrefix = '公共SDK身份待确认：';
   const unboundPrefix = unknownPrefix + '声明/发布契约无法绑定同一符号或声明证据不全在公共候选边界；';
   // Only host checkpoints use normalized mode. Migration can combine at most two
@@ -194,40 +195,33 @@ export function validateAnalysis(value, evidenceIds, {requireDispositions = true
   const entryTextValid = (text, section) => {
     if (textValid(text)) return true;
     if (!normalized || typeof text !== 'string') return false;
-    const prefixes = section === 'changes' ? [internalPrefix] : section === 'unknowns' ? [unboundPrefix, unknownPrefix] : [];
+    const prefixes = section === 'changes' ? [internalPrefix] : section === 'unknowns' ? [unboundPrefix, unknownPrefix, unconfirmedInterfacePrefix, unconfirmedPrefix] : [];
     return prefixes.some(prefix => text.startsWith(prefix) && textValid(text.slice(prefix.length)));
   };
   const clean = Object.fromEntries(SECTIONS.map(section => [section, []]));
   for (const section of SECTIONS) {
     for (const item of value[section]) {
       const keys = section === 'interfaces' ? ['text', 'evidenceIds', 'audience', 'publicBasis', 'symbol', 'declarationEvidenceIds'] : ['text', 'evidenceIds'];
-      // Models may combine interface, impact and test prose into one readable item. If
-      // the interface metadata contract is missing, preserve the evidence as an
-      // explicitly unconfirmed item instead of rejecting the whole paid batch.
-      if (normalized && (section === 'unknowns' || section === 'interfaces' || !exactObject(item, keys)) &&
-          (section === 'unknowns' || section === 'interfaces' || (item && typeof item === 'object' && textValid(item.text))) &&
-          (section !== 'interfaces' || !exactObject(item, keys) || !textValid(item?.symbol) || !['public-sdk', 'sdk-candidate'].includes(item?.audience) || !Array.isArray(item?.declarationEvidenceIds) || (item?.audience === 'public-sdk' && !item?.publicBasis) )) {
-        const rawIds = item && typeof item === 'object' && Array.isArray(item.evidenceIds) ? item.evidenceIds : [];
-        const fallbackIds = references(rawIds, section, 'evidenceIds');
-        if (!fallbackIds.length && !['unknowns', 'interfaces'].includes(section)) referenceFailure(section, 'evidenceIds', 'empty', '结论未引用本分片证据');
-        const rawText = item && typeof item === 'object' && textValid(item.text) ? item.text : '';
-        let text = rawText ? ((section === 'interfaces' ? '对外性待确认：' : '') + rawText) : '待确认：模型未提供可读的未知项说明。';
-        if (section === 'unknowns' && !/未知|待确认|未提供|无法确认/.test(text)) text = '待确认：' + text;
-        const target = section === 'interfaces' ? 'unknowns' : section;
-        clean[target].push({text, evidenceIds: fallbackIds});
-        for (const id of fallbackIds) cited.add(id);
-        continue;
+      // Wire replies can omit interface metadata. Keep the text explicitly
+      // unconfirmed without allowing malformed or out-of-batch references.
+      if (allowIncompleteModel && (section === 'interfaces' || section === 'unknowns') && item && typeof item === 'object' && !Array.isArray(item) && textValid(item.text)) {
+        const incompleteInterface = section === 'interfaces' && (!exactObject(item, keys) || !textValid(item.symbol) || item.symbol.length > 512 || /\s/.test(item.symbol) || !['public-sdk', 'sdk-candidate', 'internal', 'unknown'].includes(item.audience) || !Array.isArray(item.declarationEvidenceIds) || (item.audience === 'public-sdk' && item.publicBasis == null));
+        const incompleteUnknown = section === 'unknowns' && (!exactObject(item, keys) || !/未知|待确认|未提供|无法确认/.test(item.text));
+        if (incompleteInterface || incompleteUnknown) {
+          const ids = Object.hasOwn(item, 'evidenceIds') ? references(item.evidenceIds, section, 'evidenceIds') : [];
+          if (Object.hasOwn(item, 'declarationEvidenceIds')) references(item.declarationEvidenceIds, section, 'declarationEvidenceIds');
+          if (item.publicBasis && Object.hasOwn(item.publicBasis, 'evidenceIds')) references(item.publicBasis.evidenceIds, section, 'publicBasis.evidenceIds');
+          const prefix = section === 'interfaces' ? unconfirmedInterfacePrefix : unconfirmedPrefix;
+          clean.unknowns.push({text: prefix + item.text, evidenceIds: ids});
+          for (const id of ids) cited.add(id);
+          continue;
+        }
       }
       if (!exactObject(item, keys) || !entryTextValid(item.text, section)) throw fail('analysis-schema', '模型分析条目格式无效：' + section + '；接口条目必须包含 text、evidenceIds、audience、publicBasis、symbol、declarationEvidenceIds');
       const evidenceIds = references(item.evidenceIds, section, 'evidenceIds');
       if (section !== 'unknowns' && !item.evidenceIds.length) referenceFailure(section, 'evidenceIds', 'empty', '结论未引用本分片证据');
       if (section === 'unknowns' && !item.evidenceIds.length && !/未知|待确认|未提供|无法确认/.test(item.text)) throw fail('analysis-schema', '无证据的未知项必须明确说明限制或待确认');
       let target = section, entry = {text: item.text, evidenceIds};
-      if (section === 'interfaces' && normalized && !['public-sdk', 'sdk-candidate'].includes(item.audience)) {
-        clean.unknowns.push({text: '对外性待确认：' + item.text, evidenceIds});
-        for (const id of evidenceIds) cited.add(id);
-        continue;
-      }
       if (section === 'interfaces') {
         if (!textValid(item.symbol) || item.symbol.length > 512 || /\s/.test(item.symbol)) throw fail('analysis-schema', '接口必须指定单个 symbol');
         const declarationEvidenceIds = references(item.declarationEvidenceIds, section, 'declarationEvidenceIds');
@@ -287,7 +281,7 @@ export function validateAnalysis(value, evidenceIds, {requireDispositions = true
     disposed.add(evidenceId);
     return {...item, evidenceId};
   });
-  if (normalized) {
+  if (allowIncompleteModel && requireDispositions) {
     // A model may omit the ledger for evidence it did not discuss. Preserve the
     // evidence-accounting invariant by recording an explicit no-conclusion reason
     // rather than rejecting an already paid batch.
@@ -382,7 +376,7 @@ function coverageFor(plan, completed) {
 function renderAnalysis(plan, completed) {
   if (plan.strategy === 'single-request') return renderReadableAnalysis(plan, completed);
   const coverage = coverageFor(plan, completed);
-  const lines = [];
+  const lines = ['本次比较范围：全量证据模式；发送已纳入的差异证据，不代表语义完整。'];
   const numbers = new Map(plan.batches.flatMap(batch => batch.evidenceIds).map((id, index) => [id, index + 1]));
   const citations = ids => ids.map(id => '[' + numbers.get(id) + '](#evidence-' + numbers.get(id) + ')').join(' ');
   for (const section of SECTIONS) {
@@ -408,6 +402,21 @@ function renderAnalysis(plan, completed) {
     });
     if (!count) lines.push(section === 'interfaces' ? '当前提供证据中未列出对外接口变化，不保证完整覆盖；需人工核对。' : '模型未列出本节条目，不表示已证明不存在相关影响或未知项。');
   }
+  lines.push('', '<details>', '<summary>技术附录：分片覆盖与证据索引</summary>');
+  lines.push('', '## 分片覆盖与证据索引', '',
+    '计划 ' + coverage.totalBatches + ' 片；成功 ' + coverage.completedBatches + ' 片；失败 0 片；未处理 ' + coverage.pendingBatchIds.length + ' 片。',
+    '已处理证据 ' + coverage.processed + ' / ' + coverage.total + '；被结论引用 ' + coverage.cited + '；未引用 ' + coverage.unreferencedIds.length + '。',
+    '所有计划分片已返回通过结构与引用校验的结果；引用校验不证明结论正确。');
+  for (const file of plan.coverage.files) lines.push('- 文件：' + safe(file.repository) + ' / ' + safe(file.path ?? '(路径未解析)') + '；变更 ' + file.status + '；内容 ' + file.content + '；rename 策略 ' + file.renamePolicy);
+  if (coverage.unreferencedIds.length) lines.push('', '未被任何结论引用的证据（需人工核对）：' + coverage.unreferencedIds.map(safe).join('、'));
+  for (const batch of plan.batches) {
+    for (const disposition of completed.get(batch.id).analysis.evidenceDispositions ?? []) lines.push('- 未得出结论：' + safe(disposition.evidenceId) + '；' + safe(disposition.reasonCode) + '；' + safe(disposition.reason));
+    for (const item of batch.snapshot.evidence) {
+      lines.push('', '<a id="evidence-' + numbers.get(item.id) + '"></a>', '', '- ' + safe(item.id) + '：' + safe(item.repository ?? '(工作区)') + ' / ' + safe(item.file ?? '(范围说明)') + '；' + safe(item.provenance ?? item.kind) + (item.revision ? '；固定版本 ' + safe(item.revision) : item.a ? '；固定端点 ' + safe(item.a) + ' → ' + safe(item.b) : '') + (item.identity ? '；仓库身份 ' + safe(JSON.stringify(item.identity)) : '') + '；' + (item.provenance === 'version-diff' ? '原始 diff' : item.provenance === 'version-summary' ? '合成范围摘要（独立 source）' : '原始上下文') + ' UTF-16 字符偏移（非源码行号/字节） ' + item.start + '–' + item.end + (item.hunk ? '；' + safe(item.hunk) : ''));
+    }
+  }
+  for (const item of plan.coverage.excluded) lines.push('- 未分析：' + safe(item.repository) + ' / ' + safe(item.path) + '；' + safe(item.reason));
+  lines.push('', '</details>');
   return lines.join('\n') + '\n';
 }
 
@@ -415,6 +424,8 @@ export async function analyzeReport(llm, route, snapshot, {signal, plan, complet
   const accepted = new Map();
   let currentPlan;
   try {
+    signal?.throwIfAborted();
+    validateRoute(route);
     currentPlan = createAnalysisPlan(snapshot, {inputBudget: plan?.inputBudget ?? 24000, strategy: plan?.strategy ?? 'full', capacity: plan?.capacity??null});
     if (plan && (plan.id !== currentPlan.id || (plan.snapshotHash && plan.snapshotHash !== currentPlan.snapshotHash))) {
       throw fail('analysis-plan', '分析计划与当前证据不一致，请重新规划并确认');
@@ -461,7 +472,7 @@ export async function analyzeReport(llm, route, snapshot, {signal, plan, complet
           const response = await consumeStructuredAnalysis(stream, signal);
           let analysis;
           try {
-            analysis = validateAnalysis(response, batch.evidenceIds, {modelReferences, normalized: true, requireDispositions: currentPlan.strategy !== 'single-request', evidence: batch.snapshot.evidence, publicApiPaths: snapshot.publicApiPaths ?? []});
+            analysis = validateAnalysis(response, batch.evidenceIds, {modelReferences, allowIncompleteModel: true, requireDispositions: currentPlan.strategy !== 'single-request', evidence: batch.snapshot.evidence, publicApiPaths: snapshot.publicApiPaths ?? []});
           } catch (error) {
             if (error.code === 'code-report/analysis-reference' && error.details?.referenceFailure) {
               error.details.referenceFailure.batchNumber = batchNumber;

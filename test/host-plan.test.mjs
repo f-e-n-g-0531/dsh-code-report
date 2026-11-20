@@ -55,6 +55,18 @@ test('busy preview cannot be released, replanned or consumed concurrently',async
   assert.equal((await f.handler('analysis-plan',{sessionId:'s',previewId:p.previewId,inputBudget:8000})).error.code,'code-report/busy');
   assert.equal((await f.handler('generate',send(p))).error.code,'code-report/busy');resume();assert.equal((await pending).ok,true);
 });
+test('simultaneous authorizations cannot both dispatch from the same preview',async()=>{
+  let attempts=0;
+  const f=fixture({analyze:async(llm)=>{
+    attempts++;
+    for await(const chunk of llm.stream({})){}
+    return {markdown:'## 对外接口变更\n待确认',completed:new Map([['one',{}],['two',{}]]),coverage:{}};
+  }}),p=await preview(f);
+  const results=await Promise.all([f.handler('generate',send(p)),f.handler('generate',send(p))]);
+  assert.equal(results.filter(result=>result.ok).length,1);
+  assert.equal(results.find(result=>!result.ok).error.code,'code-report/busy');
+  assert.equal(attempts,1);assert.equal(f.calls(),1);
+});
 test('every dispatch rechecks authoritative cwd; no next batch after session changes',async()=>{
   const f=fixture({analyze:async(llm)=>{for await(const chunk of llm.stream({})){}f.sessions.set('s',{header:{cwd:'/changed'}});for await(const chunk of llm.stream({})){}throw new Error('unreachable');}});
   const p=await preview(f),result=await f.handler('generate',send(p));assert.equal(result.error.code,'code-report/session-changed');assert.equal(f.calls(),1);

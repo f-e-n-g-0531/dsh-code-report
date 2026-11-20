@@ -29,16 +29,19 @@ async function renderFixture(strategy) {
   assert.equal(calls,1);
   const report=reportDownloadText(markdown(snapshot,result.markdown,route,{structured:true,evidenceManifest:plan.coverage}),'analysis');
   assert.deepEqual([...report.matchAll(/^## (.*)$/gm)].map(match=>match[1]),['本次比较范围','对外接口变更','改动内容','QA 测试范围','待补充与待确认']);
+  assert.match(report,strategy==='full'?/全量证据模式.*不代表语义完整/:/单次摘要.*不是全文语义分析/);
+  assert.doesNotMatch(report,/固定端点，未执行测试|<details>|#evidence-|snapshotHash|payloadHash|SHA-256/);
+  assert.match(result.markdown,/<a id="evidence-\d+"><\/a>/);
   assert.match(report,/SDK 候选接口（发布身份待确认）：query/);
   assert.match(report,/返回.*结果。/);
   assert.match(report,/提示错误。/);
   assert.match(report.split('## 待补充与待确认')[1],/测试账号/);
   return {internal:digest(result.markdown),formal:digest(report)};
 }
-// Formal baselines are unchanged; schema 4 updates single-request internal plan metadata.
+// Internal Markdown includes evidence navigation; formal Markdown only retains reader scope notices.
 const baseline = {
-  full: {internal:'29a2d2028b78c903d3fbcaa9d8426dfc33c3c3a38133d2c0e30af835ff4dffe4',formal:'18f2ed6462d76bc27079f27fe51f4d7003f89fd8000b4f0e93fe89a2e29b79ec'},
-  'single-request': {internal:'0a1f080d1b6ee0147cb5c5e5341ec3643bb07a551e52bc6a5b1a5c7806567771',formal:'5b26a544e08f6c6ca5037e41a6526104271b41d953ef41b5bdeb7f349671bb6e'},
+  full: {internal:'b8263cdd39bfd6e11fffc0788c901c5eb8e8863593eb841554a8d367b7efa91b',formal:'63b715efaded16da83c0c153ed0c3bf050ce8282f14d3df32c69ab8d51f86a78'},
+  'single-request': {internal:'fadb5f67a0689eb955edd9fd4893359b1c59fababde27fd61a231f14e58914da',formal:'5b26a544e08f6c6ca5037e41a6526104271b41d953ef41b5bdeb7f349671bb6e'},
 };
 for (const [strategy, expected] of Object.entries(baseline)) {
   test(strategy+' report matches the expected internal and formal Markdown bytes', async () => {

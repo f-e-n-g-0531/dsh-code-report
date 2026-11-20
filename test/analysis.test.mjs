@@ -16,7 +16,7 @@ test('linear packing matches reference JSON packing and preserves payload and pl
   const source = snapshot(('@@ -1 +1 @@\n-\\\t\u0001😀\n+新\n').repeat(120));
   source.title = '"quoted"\t😀'; source.limitations = ['slashes \\ and controls \t \u0001 \ud800'];
   for (const inputBudget of [14000, 24000, 64000]) {
-    const payloadFor = evidence => ({schema: ANALYSIS_PLAN_VERSION, evidenceVersion: 2, title: source.title, limitations: source.limitations, publicApiPaths: source.publicApiPaths ?? [], evidence});
+    const payloadFor = evidence => ({schema: ANALYSIS_PLAN_VERSION, evidenceVersion: 2, title: source.title, publicApiPaths: source.publicApiPaths ?? [], evidence});
     const overhead = estimatedInputBytes(payloadFor([]));
     const index = createEvidenceIndex(source, {groupAdjacentDiff: true, maxTextBytes: Math.max(64, Math.floor((inputBudget - overhead - 512) / 8))});
     const groups = []; let group = [];
@@ -155,10 +155,19 @@ test('structured report produces deterministic escaped Markdown and evidence ind
   assert.ok(result.markdown.includes(plan.batches[0].evidenceIds[0]));
 });
 
-test('all-empty full output without evidence dispositions is rejected, never silently complete', async () => {
+test('all-empty full model output records gaps without claiming semantic completeness', async () => {
   const source = snapshot();
-  const llm = {stream() { return stream({changes: [], interfaces: [], impacts: [], qa: [], unknowns: []}); }};
-  await assert.rejects(analyzeReport(llm, route, source), error => error.code === 'code-report/analysis-disposition' && error.completed.size === 0 && error.coverage.processed === 0);
+  let calls = 0;
+  const llm = {stream() { calls++; return stream({changes: [], interfaces: [], impacts: [], qa: [], unknowns: []}); }};
+  const result = await analyzeReport(llm, route, source);
+  assert.equal(calls, 1);
+  assert.equal(result.coverage.cited, 0);
+  assert.equal(result.coverage.noConclusion, result.coverage.total);
+  assert.equal(result.coverage.semanticCompleteness, 'not-verified');
+  assert.match(result.markdown, /模型未对该证据给出可核对的结论/);
+  const restored = await analyzeReport(llm, route, source, {completed: result.completed});
+  assert.equal(calls, 1);
+  assert.deepEqual(restored, result);
 });
 
 test('explicit no-conclusion disposition covers every full-mode evidence without semantic claims', async () => {
@@ -168,9 +177,9 @@ test('explicit no-conclusion disposition covers every full-mode evidence without
   assert.equal(result.coverage.noConclusion, result.coverage.total);
   assert.equal(result.coverage.semanticCompleteness, 'not-verified');
   assert.match(result.markdown, /未得出结论/);
-  assert.doesNotMatch(result.markdown, /不证明语义完整/);
-  const body = result.markdown.split('## 分片覆盖与证据索引')[0];
-  assert.match(body, /已记录处置/);
+  assert.match(result.markdown, /不代表语义完整/);
+  const body = result.markdown.split('<details>')[0];
+  assert.doesNotMatch(body, /已处理证据|分片覆盖与证据索引/);
   assert.match(body.split('## 未知和待确认')[1], /未得出结论（待确认）/);
 });
 
@@ -200,9 +209,11 @@ test('format versions and payload hashes bind plans and reject legacy checkpoint
   const source = snapshot(), plan = createAnalysisPlan(source);
   assert.equal(plan.formatVersion, ANALYSIS_PLAN_VERSION);
   assert.equal(plan.evidenceVersion, 2);
-  const {evidenceHash} = await import('../src/evidence.mjs');
-  assert.equal(plan.batches[0].payloadHash, evidenceHash(JSON.stringify(modelEvidencePayload(plan.batches[0].snapshot, 1))));
-  const result = await analyzeReport(model(payload => stream(document(payload.evidence[0].id))), route, source, {plan});
+  const result = await analyzeReport(model(payload => {
+    assert.equal(Object.hasOwn(payload, 'limitations'), false);
+    assert.equal(plan.batches[0].payloadHash, evidenceHash(JSON.stringify(payload)));
+    return stream(document(payload.evidence[0].id));
+  }), route, source, {plan});
   const [id, checkpoint] = [...result.completed][0];
   assert.equal(checkpoint.formatVersion, ANALYSIS_PLAN_VERSION);
   assert.equal(checkpoint.payloadHash, plan.batches[0].payloadHash);
@@ -210,8 +221,16 @@ test('format versions and payload hashes bind plans and reject legacy checkpoint
     await assert.rejects(analyzeReport({}, route, source, {plan, completed: new Map([[id, invalid]])}), /不可复用/);
   }
   const altered = {...source, limitations: ['new scope limitation']};
-  assert.notEqual(createAnalysisPlan(altered).id, plan.id);
-  assert.notEqual(createAnalysisPlan(altered).batches[0].payloadHash, plan.batches[0].payloadHash);
+  const alteredPlan = createAnalysisPlan(altered);
+  assert.notEqual(alteredPlan.snapshotHash, plan.snapshotHash);
+  assert.notEqual(alteredPlan.id, plan.id);
+  assert.notDeepEqual(alteredPlan.batches[0].evidenceIds, plan.batches[0].evidenceIds);
+  assert.equal(alteredPlan.batches[0].payloadHash, plan.batches[0].payloadHash);
+  await assert.rejects(analyzeReport({}, route, altered, {plan}), /当前证据不一致/);
+  const alteredBatchId = alteredPlan.batches[0].id;
+  await assert.rejects(analyzeReport({}, route, altered, {
+    plan: alteredPlan, completed: new Map([[alteredBatchId, {...checkpoint, batchId: alteredBatchId}]])
+  }), /不可复用/);
 });
 
 test('plan mismatch and already aborted calls never dispatch model', async () => {

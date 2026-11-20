@@ -22,8 +22,10 @@ test('reader-first sections hide technical metadata until the final appendix', (
   const headings = ['改动内容', '对外接口变更', '影响范围', 'QA 测试范围', '未知和待确认'];
   let previous = -1;
   for (const heading of headings) { const current = body.indexOf('## ' + heading); assert.ok(current > previous); previous = current; }
-  assert.match(body, /本地清单含 9 个变更文件/);
-  assert.match(body, /文件专用证据 3 个，其中含原文片段 2 个；6 个未收到文件专用证据/);
+  assert.match(body, /本报告为单次摘要：.*预算内.*不是全文语义分析/);
+  assert.doesNotMatch(body, /本地清单含|文件专用证据|已处理证据/);
+  assert.match(appendix, /"fullManifestFiles": 9/);
+  assert.match(appendix, /"sentTextFileCount": 2/);
   assert.equal(markdown.match(/不是全文语义分析/g).length, 1);
   assert.doesNotMatch(body, /e-[a-f0-9]{32}|[a-f0-9]{64}|UTF-?16|分片/);
   assert.match(appendix, /^<details>\n<summary>技术附录：证据与覆盖记录<\/summary>/);
@@ -44,8 +46,9 @@ test('citations map first use to stable sequential numeric targets, including un
     const block = appendix.slice(appendix.indexOf(anchor)).split(/\n<a id=/)[0];
     assert.ok(block.includes(markdownText(id)));
   }
-  assert.doesNotMatch(markdown,/被结论引用|未引用/);
-  assert.doesNotMatch(markdown,/引用状态/);
+  assert.doesNotMatch(body, /被结论引用|未引用|引用状态/);
+  assert.match(appendix, /被结论引用 2；未引用 1/);
+  assert.match(appendix, /引用状态：未被结论引用/);
   assert.equal(renderReadableAnalysis(plan, completed), markdown);
 });
 
@@ -73,7 +76,8 @@ test('QA label splitting is lossless including whitespace, punctuation and multi
 test('selected evidence text appears exactly once, with raw and synthetic provenance kept distinct', () => {
   const {plan, completed} = fixture();
   const markdown = renderReadableAnalysis(plan, completed), appendix = appendixOf(markdown);
-  assert.doesNotMatch(markdown,/合成范围摘要/);
+  assert.doesNotMatch(bodyOf(markdown), /合成范围摘要|原始差异片段/);
+  assert.match(appendix, /合成范围摘要/);
   assert.match(appendix, /原始差异片段/);
   for (const item of plan.batches[0].snapshot.evidence) {
     assert.equal(markdown.split(markdownFence(item.text, 'text')).length, 2);
@@ -118,9 +122,11 @@ test('empty sections and context coverage remain cautious instead of asserting n
   completed.get('batch-fixture').analysis = emptyAnalysis();
   Object.assign(plan.coverage, {contextFiles: 4, sentContextTextFileCount: 1, omittedContextFileCount: 2});
   const markdown = renderReadableAnalysis(plan, completed);
-  assert.match(bodyOf(markdown), /另有上下文文件 4 个，原文片段覆盖 1 个，未发送文件专用证据 2 个/);
+  assert.doesNotMatch(bodyOf(markdown), /上下文文件|contextFiles/);
+  assert.match(appendixOf(markdown), /"contextFiles": 4/);
+  assert.match(appendixOf(markdown), /"sentContextTextFileCount": 1/);
   assert.match(bodyOf(markdown), /未列出对外接口变化，不保证完整覆盖/);
-  assert.doesNotMatch(markdown, /被结论引用|未引用/);
+  assert.match(appendixOf(markdown), /被结论引用 0；未引用 3/);
 });
 
 test('rejects full-mode, incomplete and unmappable result input', () => {
@@ -140,11 +146,13 @@ test('renders the actual single-request plan shape without changing it', () => {
   const before = JSON.stringify(plan);
   const markdown = renderReadableAnalysis(plan, new Map([[plan.batches[0].id, {analysis}]]));
   assert.equal(JSON.stringify(plan), before);
-  assert.doesNotMatch(markdown, /原始上下文片段/);
-  assert.doesNotMatch(markdown, /合成范围摘要/);
-  assert.match(markdown, /已处理仅指结果返回/);
-  assert.doesNotMatch(markdown,/payloadHash|snapshotHash|技术附录/);
-  assert.doesNotMatch(markdown,/snapshotHash/);
+  assert.doesNotMatch(bodyOf(markdown), /原始上下文片段|合成范围摘要|payloadHash|snapshotHash|技术附录/);
+  assert.match(appendixOf(markdown), /已处理仅指结果返回/);
+  assert.match(appendixOf(markdown), /原始上下文片段/);
+  assert.match(appendixOf(markdown), /合成范围摘要/);
+  assert.match(appendixOf(markdown), /snapshotHash/);
+  assert.match(appendixOf(markdown), /payloadHash/);
+  assert.doesNotMatch(markdown, /contextManifest/);
 });
 
 const qaBody = markdown => bodyOf(markdown).split('## QA 测试范围\n\n')[1].split('\n\n## 未知和待确认')[0];
