@@ -19,8 +19,11 @@ const comparisonEndpoint=(r,side)=>{
 const releaseScopeLines=repositories=>repositories.map(r=>'- **'+inline(r.path)+'** ('+inline(r.type)+')：'+inline(comparisonEndpoint(r,'A'))+' → '+inline(comparisonEndpoint(r,'B'))+'；固定端点 '+inline(r.a)+' → '+inline(r.b)+'；'+r.files.length+' 个变更路径'+(r.type==='git'?'；来源 '+(r.gitSource==='remote'?'远端 '+inline(r.remote)+'；观察于 '+inline(r.observedAt)+'（固定快照）':'本地离线引用（不代表远端最新）'):''));
 // Directory expansion warnings can contain examples from the attached source
 // inventory. Those examples belong in the collection preview, not in reports.
+// Encoding contract text (BOM/GB18030/ambiguity) is internal codec metadata and
+// stays in preview metadata; a shareable report must not expose it.
+const internalCodecLimitation=text=>/^源码按 BOM 严格识别|自动识别有歧义/.test(text);
 const limitationLines=(limitations=[],analyzed=false)=>[
- ...limitations.filter(text=>!(/^(?:源码目录展开中 |目录自动收集仅包含)/.test(text)&&text.includes('示例：'))).map(text=>'- '+inline(text)),
+ ...limitations.filter(text=>!internalCodecLimitation(text)&&!(/^(?:源码目录展开中 |目录自动收集仅包含)/.test(text)&&text.includes('示例：'))).map(text=>'- '+inline(text)),
  ...(analyzed?['- 模型输出为待人工复核的推断，不代表测试通过、缺陷证明或发布批准。']:[]),
 ];
 const routeLine=route=>route?'模型：'+inline(route.provider)+' / '+inline(route.model):LOCAL_ROUTE;
