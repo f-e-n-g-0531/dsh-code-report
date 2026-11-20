@@ -16,5 +16,5 @@ test('compatible source encoding retains raw hashes BOM text and explicit ambigu
  const a=s.context.find(c=>c.path==='source.rc'),b=s.context.find(c=>c.path==='sdk.h');
  assert.equal(a.encoding,'utf-16le-bom');assert.equal(a.text,'\ufeff// 源码\r\nint value;\r\n');assert.equal(a.rawHash,createHash('sha256').update(utf16).digest('hex'));
  assert.equal(b.encoding,'windows-1252-copyright');assert.equal(b.text,'// © Valve\n');assert.match(b.encodingWarning,/歧义/);assert.equal(b.rawHash,createHash('sha256').update(western).digest('hex'));
- const report=markdown(s);assert.doesNotMatch(report,/附带源码|utf-16le-bom|windows-1252-copyright|解码提示/);assert.match(report,/歧义/);assert.ok(!report.includes(b.rawHash));
+ const report=markdown(s);assert.doesNotMatch(report,/附带源码|utf-16le-bom|windows-1252-copyright|解码提示/);assert.doesNotMatch(report,/歧义/);assert.ok(!report.includes(b.rawHash));
 });

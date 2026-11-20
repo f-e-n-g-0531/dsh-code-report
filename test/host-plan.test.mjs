@@ -19,7 +19,7 @@ async function preview(f){const result=await f.handler('preview',{sessionId:'s',
 const send=(p,extra={})=>({sessionId:'s',operationId:randomUUID(),previewId:p.previewId,planId:p.analysisPlan.id,route,sendToModel:true,...extra});
 
 test('preview is local, expires explicitly and public plan contains no raw batch payload',async()=>{
-  const f=fixture(),p=await preview(f);assert.equal(f.calls(),0);assert.equal(p.expiresAt,601000);assert.equal(p.analysisPlan.batches.length,2);assert.equal(JSON.stringify(p.analysisPlan).includes('not-public'),false);assert.match(p.markdown,/未调用模型/);
+  const f=fixture(),p=await preview(f);assert.equal(f.calls(),0);assert.equal(p.expiresAt,2701000);assert.equal(p.analysisPlan.batches.length,2);assert.equal(JSON.stringify(p.analysisPlan).includes('not-public'),false);assert.match(p.markdown,/未调用模型/);
   assert.equal((await f.handler('generate',send(p,{sendToModel:false}))).error.code,'code-report/consent-required');
   assert.equal((await f.handler('generate',send(p,{planId:'old'}))).error.code,'code-report/plan-mismatch');assert.equal(f.calls(),0);
   assert.equal((await f.handler('generate',send(p,{sessionId:'other'}))).ok,false);
@@ -59,9 +59,9 @@ test('every dispatch rechecks authoritative cwd; no next batch after session cha
   const f=fixture({analyze:async(llm)=>{for await(const chunk of llm.stream({})){}f.sessions.set('s',{header:{cwd:'/changed'}});for await(const chunk of llm.stream({})){}throw new Error('unreachable');}});
   const p=await preview(f),result=await f.handler('generate',send(p));assert.equal(result.error.code,'code-report/session-changed');assert.equal(f.calls(),1);
 });
-test('expiry is checked at the first actual model dispatch, not just task claim',async()=>{
-  const f=fixture({analyze:async(llm)=>{f.setClock(601000);for await(const chunk of llm.stream({})){}throw new Error('unreachable');}});
-  const p=await preview(f),result=await f.handler('generate',send(p));assert.equal(result.error.code,'code-report/preview-expired');assert.equal(f.calls(),0);
+test('confirmed generation continues after ordinary preview TTL',async()=>{
+  const testFixture=fixture({analyze:async(llm)=>{testFixture.setClock(2701000);for await(const chunk of llm.stream({})){}return {markdown:'done',completed:new Map([['one',{}],['two',{}]]),coverage:{}};}});
+  const p=await preview(testFixture),result=await testFixture.handler('generate',send(p));assert.equal(result.ok,true);assert.equal(testFixture.calls(),1);
 });
 test('validated complete report commits before cancelled response delivery and remains recoverable',async()=>{
   const ac=new AbortController(),finished=new Map([['one',{}],['two',{}]]);

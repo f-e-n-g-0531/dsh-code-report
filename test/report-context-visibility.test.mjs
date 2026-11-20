@@ -14,8 +14,8 @@ test('attached source inventories stay out of rendered and exported reports in a
   for(const text of [output,reportDownloadText(output,analysis?'analysis':'evidence')]){
    assert.doesNotMatch(text,/附带源码|未添加补充源码|private-helper|SOURCE_INPUT_ONLY|CONTEXT_HASH_ONLY/);
   }
-  assert.match(output,/不能证明历史版本/);
-  if(options.evidenceManifest)assert.match(reportDownloadText(output,analysis?'analysis':'evidence'),/不能证明历史版本/);
+  assert.doesNotMatch(output,/不能证明历史版本/);
+  if(options.evidenceManifest)assert.doesNotMatch(reportDownloadText(output,analysis?'analysis':'evidence'),/不能证明历史版本/);
  }
  assert.equal(JSON.stringify(snapshot),before);
 });

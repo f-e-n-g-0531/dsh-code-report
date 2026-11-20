@@ -72,10 +72,7 @@ export function renderReadableAnalysis(plan, completed) {
     return '[' + number + '](#evidence-' + number + ')';
   }).join(' ');
   const coverage = plan.coverage;
-  let scope = '本报告为单次摘要：模型仅收到预算内的合成摘要与选取原文片段，不是全文语义分析。本地清单含 ' + value(coverage.fullManifestFiles) + ' 个变更文件；模型收到文件专用证据 ' + value(coverage.sentFileCount) + ' 个，其中含原文片段 ' + value(coverage.sentTextFileCount) + ' 个；' + value(coverage.omittedFileCount) + ' 个未收到文件专用证据。';
-  if (coverage.contextFiles) scope += ' 另有上下文文件 ' + value(coverage.contextFiles) + ' 个，原文片段覆盖 ' + value(coverage.sentContextTextFileCount) + ' 个，未发送文件专用证据 ' + value(coverage.omittedContextFileCount) + ' 个。';
-  scope += ' 引用只对应已提供证据，不证明结论正确；结论与测试建议仍待人工复核。';
-  const lines = [scope];
+  const lines = [];
   for (const [section, title] of sections) {
     lines.push('', '## ' + title, '');
     for (const [heading, items] of reportItemGroups(section, analysis[section])) {
@@ -100,33 +97,5 @@ export function renderReadableAnalysis(plan, completed) {
     }
   }
 
-  // Assign uncited evidence after first-use citations, so every sent item has one
-  // stable numeric target, while no source-derived value becomes an HTML attribute.
-  for (const id of evidence.keys()) numberFor(id);
-  const unreferencedIds = [...evidence.keys()].filter(id => !cited.has(id));
-  lines.push('', '<details>', '<summary>技术附录：证据与覆盖记录</summary>', '',
-    '### 覆盖记录', '',
-    '已处理证据 ' + value(batch.evidenceIds.length) + ' / ' + value(coverage.total) + '；被结论引用 ' + value(cited.size) + '；未引用 ' + value(unreferencedIds.length) + '。',
-    '已处理仅指结果返回并通过结构与引用校验，不代表每条证据有结论或已被正确理解。', '');
-  for (const [key, field] of Object.entries({planId: plan.id, snapshotHash: plan.snapshotHash, batchId: batch.id, payloadHash: batch.payloadHash, inputBudget: plan.inputBudget, estimatedInputBytes: batch.inputBytes})) {
-    if (field !== undefined) lines.push('- ' + markdownText(key) + '：' + value(field));
-  }
-  const {files, contextManifest, ...coverageRecord} = coverage;
-  lines.push('', markdownFence(JSON.stringify({...coverageRecord, processed: batch.evidenceIds.length, analyzed: batch.evidenceIds.length, remaining: coverage.total - batch.evidenceIds.length, cited: cited.size, unreferencedIds, completedBatches: 1, totalBatches: 1, failedBatches: 0, pendingBatchIds: []}, null, 2), 'json'));
-  lines.push('', '### 实际发送的证据', '', '每条证据的定位、哈希及发送文本在此保留一次；合成摘要与原文片段分别标注。');
-  for (const [id, number] of numbers) {
-    const item = evidence.get(id);
-    lines.push('', '<a id="evidence-' + number + '"></a>', '',
-      '#### [' + number + '] ' + evidenceKind(item), '',
-      'UTF-16 字符偏移（非源码行号/字节）：' + value(item.start) + '–' + value(item.end) + '。',
-      cited.has(id) ? '引用状态：已引用。' : '引用状态：未被结论引用，需人工核对。', '');
-    // Preserve every locator/hash field, including future source metadata, without
-    // exposing the full local manifest or repeating the selected text.
-    for (const [key, field] of Object.entries(item)) {
-      if (key !== 'text') lines.push('- ' + markdownText(key) + '：' + value(typeof field === 'object' && field !== null ? JSON.stringify(field) : field));
-    }
-    lines.push('', markdownFence(item.text, 'text'));
-  }
-  lines.push('', '</details>');
   return lines.join('\n') + '\n';
 }

@@ -168,7 +168,7 @@ test('explicit no-conclusion disposition covers every full-mode evidence without
   assert.equal(result.coverage.noConclusion, result.coverage.total);
   assert.equal(result.coverage.semanticCompleteness, 'not-verified');
   assert.match(result.markdown, /未得出结论/);
-  assert.match(result.markdown, /不证明语义完整/);
+  assert.doesNotMatch(result.markdown, /不证明语义完整/);
   const body = result.markdown.split('## 分片覆盖与证据索引')[0];
   assert.match(body, /已记录处置/);
   assert.match(body.split('## 未知和待确认')[1], /未得出结论（待确认）/);

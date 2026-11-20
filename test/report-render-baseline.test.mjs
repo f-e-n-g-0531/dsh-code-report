@@ -37,8 +37,8 @@ async function renderFixture(strategy) {
 }
 // Formal baselines are unchanged; schema 4 updates single-request internal plan metadata.
 const baseline = {
-  full: {internal:'25a797907d33abe4c81642aaabaa4a97f332deea7cef6c9609f1bb8a677b51d5',formal:'41c4ba21e6e838e27c40fb0a7a70637d6f1695893f4d590a12ef6de9dff5db89'},
-  'single-request': {internal:'f55e9587568c0fa8efbc92402f983ad32981ea694298db056c4b208e7e2453f6',formal:'6b955ebd917fc88729c190a1cd82d242284d512c800967738f47bb7b7556d022'},
+  full: {internal:'29a2d2028b78c903d3fbcaa9d8426dfc33c3c3a38133d2c0e30af835ff4dffe4',formal:'18f2ed6462d76bc27079f27fe51f4d7003f89fd8000b4f0e93fe89a2e29b79ec'},
+  'single-request': {internal:'0a1f080d1b6ee0147cb5c5e5341ec3643bb07a551e52bc6a5b1a5c7806567771',formal:'5b26a544e08f6c6ca5037e41a6526104271b41d953ef41b5bdeb7f349671bb6e'},
 };
 for (const [strategy, expected] of Object.entries(baseline)) {
   test(strategy+' report matches the expected internal and formal Markdown bytes', async () => {

@@ -44,8 +44,8 @@ test('citations map first use to stable sequential numeric targets, including un
     const block = appendix.slice(appendix.indexOf(anchor)).split(/\n<a id=/)[0];
     assert.ok(block.includes(markdownText(id)));
   }
-  assert.match(appendix, /被结论引用 2；未引用 1/);
-  assert.match(appendix, /引用状态：未被结论引用，需人工核对/);
+  assert.doesNotMatch(markdown,/被结论引用|未引用/);
+  assert.doesNotMatch(markdown,/引用状态/);
   assert.equal(renderReadableAnalysis(plan, completed), markdown);
 });
 
@@ -73,7 +73,7 @@ test('QA label splitting is lossless including whitespace, punctuation and multi
 test('selected evidence text appears exactly once, with raw and synthetic provenance kept distinct', () => {
   const {plan, completed} = fixture();
   const markdown = renderReadableAnalysis(plan, completed), appendix = appendixOf(markdown);
-  assert.match(appendix, /合成范围摘要（独立来源，不是原始差异或上下文）/);
+  assert.doesNotMatch(markdown,/合成范围摘要/);
   assert.match(appendix, /原始差异片段/);
   for (const item of plan.batches[0].snapshot.evidence) {
     assert.equal(markdown.split(markdownFence(item.text, 'text')).length, 2);
@@ -120,7 +120,7 @@ test('empty sections and context coverage remain cautious instead of asserting n
   const markdown = renderReadableAnalysis(plan, completed);
   assert.match(bodyOf(markdown), /另有上下文文件 4 个，原文片段覆盖 1 个，未发送文件专用证据 2 个/);
   assert.match(bodyOf(markdown), /未列出对外接口变化，不保证完整覆盖/);
-  assert.match(appendixOf(markdown), /被结论引用 0；未引用 3/);
+  assert.doesNotMatch(markdown, /被结论引用|未引用/);
 });
 
 test('rejects full-mode, incomplete and unmappable result input', () => {
@@ -140,11 +140,11 @@ test('renders the actual single-request plan shape without changing it', () => {
   const before = JSON.stringify(plan);
   const markdown = renderReadableAnalysis(plan, new Map([[plan.batches[0].id, {analysis}]]));
   assert.equal(JSON.stringify(plan), before);
-  assert.match(markdown, /原始上下文片段/);
-  assert.match(markdown, /合成范围摘要/);
+  assert.doesNotMatch(markdown, /原始上下文片段/);
+  assert.doesNotMatch(markdown, /合成范围摘要/);
   assert.match(markdown, /已处理仅指结果返回/);
-  assert.ok(appendixOf(markdown).includes('- payloadHash：' + markdownText(plan.batches[0].payloadHash)));
-  assert.ok(appendixOf(markdown).includes('- snapshotHash：' + markdownText(plan.snapshotHash)));
+  assert.doesNotMatch(markdown,/payloadHash|snapshotHash|技术附录/);
+  assert.doesNotMatch(markdown,/snapshotHash/);
 });
 
 const qaBody = markdown => bodyOf(markdown).split('## QA 测试范围\n\n')[1].split('\n\n## 未知和待确认')[0];

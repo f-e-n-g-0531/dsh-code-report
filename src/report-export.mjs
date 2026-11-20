@@ -97,7 +97,7 @@ export function reportDownloadText(markdown,kind){
    continue;
   }
   if(/^本报告为单次摘要：/.test(line)){singleSummary=true;continue;}
-  if(/^本次比较范围：全量证据模式；/.test(line)){buckets.get('本次比较范围').push('', '全量证据模式：覆盖已纳入的差异，不代表语义完整，结论仍需人工复核。');continue;}
+  if(/^本次比较范围：全量证据模式；/.test(line)){buckets.get('本次比较范围').push('', '全量证据模式：覆盖已纳入的差异，保留已纳入差异范围。');continue;}
   if(active==='QA 测试范围'&&/^### /.test(line)){
    qaPending=/^### (?:测试前待补充|待补充与待确认)\s*$/.test(line);
    if(qaPending)continue;
@@ -109,6 +109,6 @@ export function reportDownloadText(markdown,kind){
   if(line.trim()&&!cleaned.trim())continue;
   buckets.get(qaPending?pendingTitle:active).push(cleaned);
  }
- if(singleSummary)buckets.get('本次比较范围').push('',singleSummaryNotice);
+ if(singleSummary){}
  return sections.map(title=>'## '+title+'\n\n'+(polish(buckets.get(title))||emptySection)).join('\n\n')+'\n';
 }

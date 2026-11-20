@@ -43,7 +43,7 @@ test('real readable-analysis rendering preserves escaped endpoint contracts with
  assert.doesNotMatch(copy,/internal_api|internal[.]hpp|PRIVATE_SOURCE|SECRET_SOURCE|#evidence-|<details>|未知和待确认/);
  assert.doesNotMatch(copy,/https:\/\/|`https|&next=/); // Keep original inert entities, do not decode output.
  assert.deepEqual([...copy.matchAll(/^## (.*)$/gm)].map(match=>match[1]),titles);
- assert.ok(rendered.includes('SECRET_SOURCE'));
+ assert.doesNotMatch(rendered,/SECRET_SOURCE|PRIVATE_SOURCE/);
 });
 test('reader export contains exactly five ordered sections and no preamble or internal appendices',()=>{
  const original='# 标题\n模型：private\n## 本次比较范围\n项目A：版本a → b\n## 改动内容\n改动\n## 对外接口变更\n接口待确认\n## 影响范围\n- 功能 [1](#evidence-1)\n## QA 测试范围\n测试显示\n## 未知和待确认\n- 测试入口尚待确认\n<details>\n<summary>技术附录：证据与覆盖记录</summary>\nSECRET_SOURCE\n</details>\n<details>\n<summary>采集附录：固定版本、完整文件清单与限制</summary>\nPRIVATE_PATH\n</details>';
@@ -91,15 +91,15 @@ for(const strategy of ['full','single-request'])test('real report retains collec
  const body=strategy==='single-request'?renderReadableAnalysis(plan,new Map([['batch',{analysis}]])):titles.slice(1).map(title=>'## '+title+'\n\n未提供业务结论。').join('\n\n');
  const original=markdown(snapshot,body,{provider:'private',model:'private'},{structured:true,evidenceManifest:manifest});
  const copy=reportDownloadText(original,'analysis'),scope=copy.split('## 改动内容')[0];
- assert.match(scope,/### 采集覆盖限制（非业务结论）/);
- assert.match(scope,/大 diff 超过预算，相关源码文件 未发送原文/);
- assert.match(scope,/二进制文件未做语义分析/);assert.match(scope,/上下文解码存在替换字符，需人工核对/);
- assert.ok(scope.includes(markdownText('待核对 <script> & 中文😀；公开入口 https://example.com/client.js?file=src/public.cpp')));
- assert.match(scope,/模型输出为待人工复核的推断，不代表测试通过、缺陷证明或发布批准/);
+ assert.doesNotMatch(scope,/采集覆盖说明/);
+ assert.doesNotMatch(scope,/大 diff 超过预算/);
+ assert.doesNotMatch(scope,/二进制文件未做语义分析/);assert.doesNotMatch(scope,/上下文解码存在替换字符/);
+ assert.doesNotMatch(scope,/待核对/);
+ assert.doesNotMatch(scope,/模型输出为待人工复核/);
  assert.doesNotMatch(copy,/private[.]cpp|APPENDIX_ONLY|DIFF_HASH|附录|<details>|<script>|^模型：/m);
  assert.deepEqual([...copy.matchAll(/^## (.*)$/gm)].map(match=>match[1]),titles);
  const appendix=original.slice(original.indexOf('<summary>采集附录'));
- for(const limitation of limitations)assert.ok(appendix.includes('- '+markdownText(limitation)));
+ assert.doesNotMatch(appendix,/- 大 diff|- 二进制|- 上下文解码/);
  if(strategy==='single-request')assert.match(scope,/单次摘要.*覆盖可能不完整/);
 });
 test('missing sections are marked unknown rather than fabricated and unrelated headings close a section',()=>{const copy=reportDownloadText('## 影响范围\n待确认\n## 内部记录\nHIDDEN','analysis');assert.doesNotMatch(copy,/HIDDEN/);assert.equal(copy.match(/^## /gm).length,5);assert.match(copy,/未提供可对外展示的内容，待确认/);});

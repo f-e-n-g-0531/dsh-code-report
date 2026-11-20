@@ -17,7 +17,7 @@ test('async capture acknowledges before even synchronous startup and recovers on
  assert.equal((await f.handler('preview-start',input)).value.status,'pending');assert.equal(f.calls(),1);
  assert.equal((await f.handler('preview-start',payload('another'))).error.code,'code-report/busy');
  gate.resolve();const ready=await terminal(f);assert.equal(ready.value.status,'completed');const preview=ready.value.result;
- assert.ok(preview.previewId);assert.equal(preview.expiresAt,601000);assert.ok(preview.analysisPlan);assert.match(preview.markdown,/未调用模型/);
+ assert.ok(preview.previewId);assert.equal(preview.expiresAt,2701000);assert.ok(preview.analysisPlan);assert.match(preview.markdown,/未调用模型/);
  assert.equal('diff' in preview.repositories[0],false);assert.ok(!JSON.stringify(ready).includes('new-private-body'));
  assert.equal((await f.handler('preview-start',input)).value.status,'completed');assert.deepEqual((await poll(f)).value.result,preview);assert.equal(f.calls(),1);assert.equal(f.models(),0);
 });

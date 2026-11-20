@@ -79,7 +79,7 @@ export function apply(ctx){
   const [context,setContext]=useState(''),[versionContext,setVersionContext]=useState('');
   const [network,setNetwork]=useState(false);
   const [provider,setProvider]=useState(''),[model,setModel]=useState(''),[consent,setConsent]=useState(false);
-  const [useDefaultModel,setUseDefaultModel]=useState(true),[concurrency,setConcurrency]=useState(4);
+  const [useDefaultModel,setUseDefaultModel]=useState(true),[concurrency,setConcurrency]=useState(2);
   const [preview,setPreview]=useState(null),[result,setResult]=useState(()=>results.get(session));
   const [latestAnalysis,setLatestAnalysis]=useState(()=>results.getAnalysis(session));
   const [lifecycleState,setLifecycleState]=useState(()=>lifecycle.getSnapshot());
@@ -387,7 +387,7 @@ function PreviewSection({preview,busy,expired,useDefaultModel=true,setUseDefault
   {!budgetValid&&<p role="alert">预算留空按模型自动规划；手动值必须是至少 4000 的安全整数。</p>}{planDirty&&<p role="status">分析策略或预算已变更，请更新分析计划并重新确认。</p>}
   {preview.planError&&<p className="cr-error" role="alert">分析计划尚不可用：{preview.planError.message}。可调整预算重新规划；本地证据清单仍可下载。</p>}
   {single?<SingleRequestCoverage coverage={coverage}/>:<p className="cr-guide" role="status">全量差异分片：发送已采集的全部文本差异和所选上下文，不按头文件前缀抽样；不代表完整调用图或模型已正确理解。计划 {plan?.batches?.length??0} 次模型请求，每片可能计费；只有明确确认后执行，失败不自动重试。</p>}
-  {!single&&analysisStrategy==='full'&&<label>模型并发路数<select aria-label="模型并发路数" value={concurrency} disabled={expired} onChange={event=>onConcurrency(Number(event.target.value))}><option value={1}>1 路</option><option value={2}>2 路</option><option value={4}>4 路（默认）</option></select></label>}
+  {!single&&analysisStrategy==='full'&&<label>模型并发路数<select aria-label="模型并发路数" value={concurrency} disabled={expired} onChange={event=>onConcurrency(Number(event.target.value))}><option value={1}>1 路</option><option value={2}>2 路（默认）</option><option value={3}>3 路</option><option value={4}>4 路</option></select></label>}
   <p className="cr-tip">{single?'本计划仅一次模型请求，发送预算内本地摘要和明确选择的片段，不是全部正文；失败不会自动重试。更换模型路由、更新分析计划或再次明确确认后重试可能再次计费。':'本计划 '+(plan?.batches?.length??0)+' 片，最多同时调用 '+concurrency+' 路模型请求，可能产生多次费用；失败重试仅复用宿主保留的同计划、同路由已完成分片，每次仍须确认。更换模型路由或更新分析计划将重跑全部分片，可能再次计费。'}预算留空按所选模型上下文自动规划，扣除输出预留和安全余量；手动预算仅可降低。每片不再因达到 32 条证据而强制拆分。保守字节估算不是精确 token 数，也不保证服务端一定接受。</p>
   </section>
   <section className="cr-plan-group" aria-label="模型设置"><h3>发送目标</h3>

@@ -2,6 +2,9 @@ import {randomUUID,createHash} from 'node:crypto';
 import {snapshotJsonBytes} from './snapshot-json.mjs';
 import {modelCapacity} from './model-capacity.mjs';
 import {readFileSync} from 'node:fs';
+import {readFile,writeFile,unlink} from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {PACKAGE_NAME,PROTOCOL_VERSION} from './protocol.mjs';
 import {loadWorkspaceConfiguration,saveWorkspaceConfiguration} from './workspace-configuration.mjs';
 import {collect,discover,listRefs} from './collect.mjs';
@@ -10,7 +13,8 @@ import {saveWorkspaceReport} from './workspace-report.mjs';
 
 // Capture at module load so replacing files does not relabel the running host.
 const RUNNING_VERSION=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8')).version;
-const PREVIEW_TTL=10*60*1000,RESUME_TTL=30*60*1000,PROGRESS_TTL=10*60*1000;
+const PREVIEW_TTL=45*60*1000,RESUME_TTL=30*60*1000,PROGRESS_TTL=10*60*1000;
+const LARGE_SNAPSHOT_BYTES=8*1024*1024;
 const MODEL_SLOT_LIMIT=4,PROVIDER_SLOT_LIMIT=4,SAVE_SLOT_LIMIT=2;
 let activeSaves=0;
 const failedSave=()=>({status:'failed',message:'报告已生成，但保存到工作区失败；请检查目录权限或磁盘空间并下载报告，不要重新生成。'});
@@ -19,7 +23,7 @@ const previewDeadline=p=>p.resumeUntil??(p.time+PREVIEW_TTL);
 const operationFingerprint=(endpoint,payload,concurrency)=>createHash('sha256').update(JSON.stringify([endpoint,payload.previewId,payload.planId,payload.route?.mode??'explicit',payload.route?.provider,payload.route?.model,payload.sendToModel,concurrency])).digest('hex');
 function requestedConcurrency(payload,endpoint){
   const width=payload.concurrency===undefined?(endpoint==='generate-start'?2:1):payload.concurrency;
-  if(![1,2,4].includes(width))throw problem('input','模型并发数必须为 1、2 或 4');
+  if(![1,2,3,4].includes(width))throw problem('input','模型并发数必须为 1、2、3 或 4');
   return width;
 }
 
@@ -79,18 +83,19 @@ export async function sessionCwd(ctx,id,signal){
 }
 function createPreviewStore(ctx,now){
   const items=new Map();
-  const prune=()=>{for(const [id,p]of items)if(!p.used&&now()>=previewDeadline(p))items.delete(id);};
-  const claim=(payload,cwd)=>{
+  const prune=()=>{for(const [id,p]of items)if(!p.used&&now()>=previewDeadline(p)){items.delete(id);if(p.snapshotFile)unlink(p.snapshotFile).catch(()=>{});}};
+  const claim=async(payload,cwd)=>{
     const p=items.get(payload.previewId);
     if(!p||p.cwd!==cwd||p.sessionId!==payload.sessionId)throw problem('preview-expired','预览已过期、已使用或会话变更，请重新采集');
     if(p.used)throw problem('busy','预览正在分析，请等待完成或取消');
-    if(now()>=previewDeadline(p)){items.delete(payload.previewId);throw problem('preview-expired','预览已过期，请重新采集');}
+    if(!p.used&&now()>=previewDeadline(p)){items.delete(payload.previewId);if(p.snapshotFile)unlink(p.snapshotFile).catch(()=>{});throw problem('preview-expired','预览已过期，请重新采集');}
+    if(!p.snapshot&&p.snapshotFile)p.snapshot=JSON.parse(await readFile(p.snapshotFile,'utf8'));
     return p;
   };
   const release=async(payload,signal)=>{
     const cwd=await sessionCwd(ctx,payload?.sessionId,signal),p=items.get(payload?.previewId);
     if(p&&(p.sessionId!==payload.sessionId||p.cwd!==cwd||p.used))throw problem('busy','预览不属于当前会话或正在分析');
-    if(p)items.delete(payload.previewId);
+    if(p){items.delete(payload.previewId);if(p.snapshotFile)await unlink(p.snapshotFile).catch(()=>{});}
     return {released:!!p};
   };
   const add=(id,entry)=>{
@@ -103,7 +108,7 @@ function createPreviewStore(ctx,now){
     }
     items.set(id,entry);
   };
-  return {prune,claim,release,add,discard:id=>items.delete(id)};
+  return {prune,claim,release,add,discard:id=>{const p=items.get(id);items.delete(id);if(p?.snapshotFile)unlink(p.snapshotFile).catch(()=>{});}};
 }
 function createProgressStore(ctx,now,backendInstanceId){
   // Process-local receipts and checkpoints only. A restart loses these records;
@@ -272,11 +277,13 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
         analysisPlan.capacity=capacity;analysisPlan.modelRoute=selected?{provider:selected.provider,model:selected.model}:null;
       }catch(error){planError={code:'code-report/plan-invalid',message:error.message};}
       await assertSession(payload,cwd,signal);signal.throwIfAborted();
-      previews.add(previewId,{snapshot,cwd,sessionId:payload.sessionId,time,bytes,used:false,plan:analysisPlan,completed:new Map(),routeKey:null,...structuredClone(defaults)});
+      const snapshotFile=bytes>=LARGE_SNAPSHOT_BYTES?path.join(os.tmpdir(),'dsh-code-report-snapshot-'+randomUUID()+'.json'):null;
+      if(snapshotFile)await writeFile(snapshotFile,JSON.stringify(snapshot),{encoding:'utf8'});
+      previews.add(previewId,{snapshot:snapshotFile?null:snapshot,snapshotFile,cwd,sessionId:payload.sessionId,time,bytes,used:false,plan:analysisPlan,completed:new Map(),routeKey:null,...structuredClone(defaults)});
       return {...defaults,previewId,expiresAt:time+PREVIEW_TTL,bytes,repositories:snapshot.repositories.map(({diff,...r})=>r),context:snapshot.context.map(({text,...c})=>c),limitations:snapshot.limitations,markdown:markdown(snapshot,null,null,{evidenceManifest:plan===defaultAnalysisPlan?(analysisPlan?.coverage??localManifest(snapshot)):analysisPlan?.strategy==='single-request'?analysisPlan.coverage:null}),analysisPlan:publicPlan(analysisPlan),planError};
     },
     'analysis-plan':async({payload,cwd,signal})=>{
-      const p=previews.claim(payload,cwd);signal.throwIfAborted();
+      const p=await previews.claim(payload,cwd);signal.throwIfAborted();
       if(payload.inputBudget!==undefined&&(!Number.isSafeInteger(payload.inputBudget)||payload.inputBudget<4000))throw problem('input','输入预算应为至少 4000 的安全整数（字节，非 token）');
       if(payload.strategy!==undefined&&!['full','single-request'].includes(payload.strategy))throw problem('input','未知分析策略');
       const selected=payload.route?generationRoute(payload.route,p):p.plan?.modelRoute??p.defaultRoute;
@@ -285,12 +292,12 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
       if(inputBudget>capacity.inputBudget)throw problem('model-capacity','输入预算超过当前模型容量估算，请使用自动预算或降低预算');
       const next=plan(p.snapshot,{inputBudget,strategy:payload.strategy??p.plan?.strategy??'full',capacity});
       next.capacity=capacity;next.modelRoute=selected?{provider:selected.provider,model:selected.model}:null;
-      await assertSession(payload,cwd,signal);signal.throwIfAborted();previews.claim(payload,cwd);
+      await assertSession(payload,cwd,signal);signal.throwIfAborted();await previews.claim(payload,cwd);
       p.plan=next;p.completed=new Map();p.routeKey=null;
       return {analysisPlan:publicPlan(next),expiresAt:previewDeadline(p),defaultRoute:p.defaultRoute?{...p.defaultRoute}:null,defaultRouteError:p.defaultRouteError?{...p.defaultRouteError}:null};
     },
     generate:async({payload,cwd,signal,update,operation,width,background=false})=>{
-      const p=previews.claim(payload,cwd);
+      const p=await previews.claim(payload,cwd);
       if(payload.sendToModel!==true)throw problem('consent-required','需要明确确认向所选模型发送源码');
       if(!p.plan||payload.planId!==p.plan.id)throw problem('plan-mismatch','分析计划已变化或不可用，请重新确认发送范围');
       const approvedPlan=p.plan;
@@ -300,7 +307,7 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
         const capacity=await waitForAdmission(AbortSignal.any([signal,AbortSignal.timeout(15000)]),()=>modelCapacity(ctx.llm,route));
         if(JSON.stringify(capacity)!==JSON.stringify(approvedPlan.capacity))throw problem('plan-mismatch','模型容量配置已变化，请更新分析计划并重新确认');
       }
-      await assertSession(payload,cwd,signal);signal.throwIfAborted();previews.claim(payload,cwd);
+      await assertSession(payload,cwd,signal);signal.throwIfAborted();await previews.claim(payload,cwd);
       if(p.plan!==approvedPlan)throw problem('plan-mismatch','分析计划已变化，请重新确认');
       if(p.routeKey!==key){p.completed=new Map();p.routeKey=key;}
       signal.throwIfAborted();progress.authorize(operation);p.used=true;
@@ -326,7 +333,7 @@ export function createHandler(ctx,{capture=collect,scan=discover,refs=listRefs,p
             if(JSON.stringify(current)!==JSON.stringify(approvedPlan.capacity))throw problem('plan-mismatch','模型容量配置已变化，请更新分析计划并重新确认');
           }
           await waitForAdmission(validate,()=>assertSession(payload,cwd,validate));validate.throwIfAborted();
-          if(!dispatched&&now()>=previewDeadline(p))throw problem('preview-expired','预览已过期，请重新采集');
+          // Confirmed generation owns the frozen snapshot; ordinary preview TTL no longer applies.
           if(approvedPlan.strategy==='single-request'&&dispatched)throw problem('analysis-plan','单次摘要禁止隐式第二次模型请求；失败后须重新明确确认');
           dispatched=true;operation.dispatchCount++;
           admitting--;publish();
