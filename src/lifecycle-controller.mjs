@@ -61,7 +61,7 @@ export function createLifecycleController({rpc,results,randomId=()=>crypto.rando
   // Unknown disk status does not imply failure or make model retransmission safe.
   savedReport??={status:'unknown',message:'报告已生成，暂无法确认工作区保存状态；可下载报告，不要重新生成。'};
   if(results.updateSavedReport(operation.session,operation.operationId,savedReport)){
-   lastSavedReport={sessionKey:operation.sessionKey,operationId:operation.operationId,savedReport};publish();
+   lastSavedReport={sessionKey:operation.sessionKey,session:operation.session,operationId:operation.operationId,savedReport};publish();
   }
  }
  function finishCompleted(operation,value){
@@ -69,7 +69,7 @@ export function createLifecycleController({rpc,results,randomId=()=>crypto.rando
   results.set(operation.session,{markdown:value.markdown,coverage:value.coverage,...(value.savedReport?{savedReport:value.savedReport}:{}),stale:false,kind:'analysis',operationId:operation.operationId});
   results.setRecovery(operation.session,null);
   paid=null;lease=null;lastFailure=null;
-  lastCompleted={sessionKey:operation.sessionKey,operationId:operation.operationId};publish();
+  lastCompleted={sessionKey:operation.sessionKey,session:operation.session,operationId:operation.operationId};publish();
   if(operation.asyncGenerate&&value.savedReport?.status==='pending')void watchSave(operation);
  }
  function markUnknown(operation,message){
@@ -80,7 +80,7 @@ export function createLifecycleController({rpc,results,randomId=()=>crypto.rando
  function finishFailed(operation,response){
   if(paid!==operation)return;
   results.setRecovery(operation.session,null);paid=null;lease=null;
-  lastFailure={sessionKey:operation.sessionKey,operationId:operation.operationId,message:(response.error?.message||'已核对任务在本地终止。')+' '+(response.execution?.dispatchCount>0?'已有 '+response.execution.dispatchCount+' 次模型派发，可能已计费；':'尚无模型派发记录；')+'重新确认后可重试未完成分片，费用仍需核对。',details:response};publish();
+  lastFailure={sessionKey:operation.sessionKey,session:operation.session,operationId:operation.operationId,message:(response.error?.message||'已核对任务在本地终止。')+' '+(response.execution?.dispatchCount>0?'已有 '+response.execution.dispatchCount+' 次模型派发，可能已计费；':'尚无模型派发记录；')+'重新确认后可重试未完成分片，费用仍需核对。',details:response};publish();
  }
  async function reconcile(operation){
   // This request is intentionally independent of the cancelled model-request signal.

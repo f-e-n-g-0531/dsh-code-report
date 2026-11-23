@@ -17,6 +17,7 @@ function harness(saved,{rpc=async()=>({ok:true,value:{packageName:PACKAGE_NAME,r
   useState(initial){const index=cursor++;if(!(index in states))states[index]=typeof initial==='function'?initial():initial;return [states[index],value=>{states[index]=typeof value==='function'?value(states[index]):value;}];},
   useRef(value){const index=refCursor++;if(!refs[index])refs[index]={current:value};return refs[index];},
   useEffect(fn,deps){effects[effectCursor++]={fn,deps};},
+  useSyncExternalStore(_subscribe,getSnapshot){return getSnapshot();},
   useMemo(compute){return compute();},
   useCallback(callback){return callback;}
  };

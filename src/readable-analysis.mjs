@@ -18,7 +18,7 @@ export const qaGroups = [
 ];
 
 export function qaGroup(text) {
-  return /^(QA|研发专项|待补充)｜/.exec(text)?.[1] ?? null;
+  return /^(?:【事项：[^】\r\n]{2,60}】[ \t]*)?(QA|研发专项|待补充)｜/.exec(text)?.[1] ?? null;
 }
 
 // Only split at explicit labels, retaining every character (including punctuation
@@ -42,6 +42,99 @@ export function reportItemParts(section, item) {
     return ['SDK 候选接口（发布身份待确认）：' + item.symbol + ' — ' + item.text];
   }
   return [item.text];
+}
+
+// A render-only projection of validated results. The checkpoint, evidence
+// ledger and original attribution are not rewritten.
+export function projectReportItems(batches) {
+  const sectionsByKey = Object.fromEntries(sections.map(([key]) => [key, []]));
+  const topics = new Map();
+  const exactItems = new Map();
+  const add = (section, item, repo) => {
+    // Interface metadata (including the declaring type) is not represented by
+    // the short symbol alone. Untied or cross-project prose is not a match.
+    if (!repo || section !== 'changes') { sectionsByKey[section].push(item);return; }
+    const key = JSON.stringify([section, repo, item.text]);
+    const previous = exactItems.get(key);
+    if (previous) { for (const id of item.evidenceIds) previous.ids.add(id);return; }
+    const copy = {...item};
+    exactItems.set(key, {copy, ids: new Set(item.evidenceIds)});
+    sectionsByKey[section].push(copy);
+  };
+  for (const {analysis, evidence} of batches) {
+    const repositories = new Map(evidence.map(item => [item.id, item.repository]));
+    for (const [section] of sections) for (const item of analysis[section]) {
+      // Explicit, specific topic names only; a file, evidence ID or symbol
+      // alone cannot identify a shared business change.
+      const reminder = section === 'impacts' && item.text.startsWith('【更新提醒】');
+      const tagText = reminder ? item.text.slice('【更新提醒】'.length).trimStart() : item.text;
+      const match = (section === 'changes' || reminder) && /^【事项：([^】\r\n]{2,60})】[ \t]*(\S[\s\S]*)$/u.exec(tagText);
+      const repo = repositories.get(item.evidenceIds[0]);
+      const topic = match?.[1]?.trim();
+      const scoped = repo && item.evidenceIds.every(id => repositories.get(id) === repo);
+      if (!topic || topic.length < 2 || !scoped) {
+        add(section, item, scoped ? repo : null);continue;
+      }
+      const key = JSON.stringify([repo, topic]);
+      if (!topics.has(key)) topics.set(key, {repo, topic, entries: []});
+      topics.get(key).entries.push({section, reminder, item: {...item, text: match[2]}});
+    }
+  }
+  const movedSections = new Set();
+  for (const {repo, topic, entries} of topics.values()) {
+    // Keep test prerequisites and general unknowns in their own sections.
+    // Client checks and interface candidates must remain easy to find in
+    // their own sections. Only implementation records share a detail topic.
+    const reminders = entries.filter(({reminder}) => reminder);
+    const reminderRows = new Map();
+    for (const {item} of reminders) {
+      const ids = reminderRows.get(item.text) ?? new Set();
+      for (const id of item.evidenceIds) ids.add(id);
+      reminderRows.set(item.text, ids);
+    }
+    if (reminderRows.size) {
+      sectionsByKey.impacts.push({text: topic + '｜' + repo, reminder: true, evidenceIds: [],
+        details: [...reminderRows].map(([text,evidenceIds]) => ({section:'impacts',text,evidenceIds}))});
+    }
+    const duplicateChange = ({section,item}) => {
+      const ids = reminderRows.get(item.text);
+      return section === 'changes' && ids && item.evidenceIds.every(id => ids.has(id));
+    };
+    const duplicates = entries.filter(duplicateChange);
+    if (duplicates.length) movedSections.add('duplicateChanges');
+    const adjacent = entries.filter(entry => entry.section === 'changes' && !duplicateChange(entry));
+    const canGroup = adjacent.some(({section}) => section === 'changes') && adjacent.length > 1;
+    const moved = new Set([...reminders,...duplicates]);
+    if (canGroup) {
+      const seen = new Map(), details = [];
+      for (const entry of adjacent) {
+        moved.add(entry);
+        const {section, item} = entry;
+        movedSections.add(section);
+        const key = JSON.stringify([section, item.text]);
+        const duplicate = seen.get(key);
+        if (duplicate) { for (const id of item.evidenceIds) duplicate.evidenceIds.add(id);continue; }
+        const text = '改动：' + item.text.replace(/^改动[：:] */u, '');
+        const detail = {section, text, evidenceIds: new Set(item.evidenceIds)};
+        details.push(detail);seen.set(key, detail);
+      }
+      sectionsByKey.changes.push({text: topic + '｜' + repo, evidenceIds: [], details});
+    }
+    for (const entry of entries) if (!moved.has(entry)) sectionsByKey[entry.section].push(entry.item);
+  }
+  for (const {copy, ids} of exactItems.values()) copy.evidenceIds = [...ids];
+  return {items: sectionsByKey, movedSections};
+}
+
+export function renderTopic(item, citations) {
+  const lines = ['- ' + (item.reminder ? '【更新提醒】' : '') + '**' + markdownText(item.text) + '**'];
+  for (const detail of item.details) {
+    const parts = detail.section === 'qa' ? qaParts(detail.text) : [detail.text];
+    const links = citations([...detail.evidenceIds]);
+    lines.push('  - ' + markdownText(parts[0]) + (links ? ' ' + links : ''));
+    for (const part of parts.slice(1)) lines.push('    - ' + markdownText(part));
+  }
+  return lines;
 }
 
 function evidenceKind(item) {
@@ -71,14 +164,16 @@ export function renderReadableAnalysis(plan, completed) {
     const number = numberFor(id);
     return '[' + number + '](#evidence-' + number + ')';
   }).join(' ');
+  const {items: projected, movedSections} = projectReportItems([{analysis, evidence: batch.snapshot.evidence}]);
   const coverage = plan.coverage;
   const lines = ['本报告为单次摘要：仅基于预算内的合成摘要与选取原文片段，不是全文语义分析；结论与测试建议仍待人工复核。'];
   for (const [section, title] of sections) {
     lines.push('', '## ' + title, '');
-    for (const [heading, items] of reportItemGroups(section, analysis[section])) {
+    for (const [heading, items] of reportItemGroups(section, projected[section])) {
       if (!items.length) continue;
       if (heading) lines.push('### ' + heading, '');
       for (const item of items) {
+        if (item.details) {lines.push(...renderTopic(item, citations));continue;}
         const links = citations(item.evidenceIds);
         const suffix = links ? ' ' + links : '';
         const parts = reportItemParts(section, item);
@@ -90,8 +185,13 @@ export function renderReadableAnalysis(plan, completed) {
       }
       if (heading) lines.push('');
     }
-    if (!analysis[section].length) {
-      lines.push(section === 'interfaces'
+    if (!projected[section].length) {
+      lines.push(section === 'changes' && movedSections.has('duplicateChanges') ? '与更新提醒相同的改动已在开头说明，不再重复。'
+        : section === 'qa' && movedSections.has('qa')
+        ? '相关验证建议已随“改动内容”逐项列出，尚未执行。'
+        : section === 'interfaces' && movedSections.has('interfaces')
+        ? '相关接口与迁移说明已随“改动内容”逐项列出；候选接口不代表已确认对外发布。'
+        : section === 'interfaces'
         ? '当前提供证据中未列出对外接口变化，不保证完整覆盖；需人工核对。'
         : '模型未列出本节条目，不表示已证明不存在相关影响或未知项。');
     }

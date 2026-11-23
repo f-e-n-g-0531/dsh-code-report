@@ -28,9 +28,9 @@ async function renderFixture(strategy) {
   const result=await analyzeReport(llm,route,snapshot,{plan});
   assert.equal(calls,1);
   const report=reportDownloadText(markdown(snapshot,result.markdown,route,{structured:true,evidenceManifest:plan.coverage}),'analysis');
-  assert.deepEqual([...report.matchAll(/^## (.*)$/gm)].map(match=>match[1]),['本次比较范围','对外接口变更','改动内容','QA 测试范围','待补充与待确认']);
+  assert.deepEqual([...report.matchAll(/^## (.*)$/gm)].map(match=>match[1]),['本次比较范围','对外接口变更','QA 测试范围','待补充与待确认','改动内容']);
   assert.match(report,strategy==='full'?/全量证据模式.*不代表语义完整/:/单次摘要.*不是全文语义分析/);
-  assert.doesNotMatch(report,/固定端点，未执行测试|<details>|#evidence-|snapshotHash|payloadHash|SHA-256/);
+  assert.doesNotMatch(report,/固定端点，未执行测试|技术附录|采集附录|#evidence-|snapshotHash|payloadHash|SHA-256/);
   assert.match(result.markdown,/<a id="evidence-\d+"><\/a>/);
   assert.match(report,/SDK 候选接口（发布身份待确认）：query/);
   assert.match(report,/返回.*结果。/);
@@ -40,8 +40,9 @@ async function renderFixture(strategy) {
 }
 // Internal Markdown includes evidence navigation; formal Markdown only retains reader scope notices.
 const baseline = {
-  full: {internal:'b8263cdd39bfd6e11fffc0788c901c5eb8e8863593eb841554a8d367b7efa91b',formal:'63b715efaded16da83c0c153ed0c3bf050ce8282f14d3df32c69ab8d51f86a78'},
-  'single-request': {internal:'fadb5f67a0689eb955edd9fd4893359b1c59fababde27fd61a231f14e58914da',formal:'5b26a544e08f6c6ca5037e41a6526104271b41d953ef41b5bdeb7f349671bb6e'},
+  full: {internal:'b8263cdd39bfd6e11fffc0788c901c5eb8e8863593eb841554a8d367b7efa91b',formal:'58e7b3143deadee1c14ad7bd8053d799280b86b5905e99f5ddec210a83682f0a'},
+  // The internal appendix includes the plan ID and estimated bytes, both tied to the model prompt.
+  'single-request': {internal:'3966489618ebdbece3eaf450018bc1be53bf5f8a6b112c8c29de277359ce23c3',formal:'38546975200424fc00312f62d5afe6fda915055b787015f36a57d8a3cb86d6be'},
 };
 for (const [strategy, expected] of Object.entries(baseline)) {
   test(strategy+' report matches the expected internal and formal Markdown bytes', async () => {

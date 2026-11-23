@@ -44,7 +44,7 @@ export async function saveWorkspaceReport(cwd,markdown,{assertCurrent=async()=>{
     const target=path.join(folder,filename),candidate=path.join(folder,'.'+filename+'.'+randomUUID()+'.tmp');
     handle=await open(candidate,'wx',0o600);temp=candidate;owned=await handle.stat();
     if(!owned.isFile()||owned.nlink!==1)throw failure();
-    await handle.writeFile(reportDownloadText(markdown,'analysis'),'utf8');
+    await handle.writeFile(reportDownloadText(markdown,'analysis',{source:'internal'}),'utf8');
     await handle.sync();await handle.close();handle=null;
     await assertCurrent();await checkDirectories();
     const staged=await lstat(temp);

@@ -1,4 +1,4 @@
-import React,{useState,useRef,useEffect,useMemo,useCallback,useSyncExternalStore} from 'react';
+import React,{useState,useEffect,useMemo,useCallback,useSyncExternalStore} from 'react';
 import css from './style.css';
 import RepositoryCards from './RepositoryCards.jsx';
 import ReportDocument from './ReportDocument.jsx';
@@ -14,7 +14,7 @@ import {parsePublicApiPaths} from './public-api.mjs';
 import {reportDownloadText} from './report-export.mjs';
 import {fresh,mergeRepositories,repositoryIssues} from './repositories.mjs';
 import {DEFAULT_SCAN,cleanConfiguration} from './configuration.mjs';
-import {createResultStore,staleResult,previewExpired,generationBlocker,parseVersionContexts,captureBlocker,completedViewResult,terminalAnalysisProgress} from './result-state.mjs';
+import {resultKey,workspaceKey,createResultStore,staleResult,previewExpired,generationBlocker,parseVersionContexts,captureBlocker,completedViewResult,terminalAnalysisProgress} from './result-state.mjs';
 export const inject=['slots','connection'];
 
 const progressFields=['phase','label','completed','total','queued','inFlight','etaMs','concurrency'];
@@ -54,15 +54,81 @@ function pollProgress(rpc,identity,signal,{onProgress,onWarning,warning}){
  if(!signal.aborted){timer=setTimeout(poll,250);signal.addEventListener('abort',()=>clearTimeout(timer),{once:true});}
 }
 
+// Drafts and business operations belong to the plugin instance, not the slot view.
+function createWorkspace(rpc,lifecycle){
+ let state={configReady:false,configBusy:false,configNotice:'',rows:[],title:'版本发布报告',
+  context:'',versionContext:'',network:false,provider:'',model:'',useDefaultModel:true,concurrency:2,
+  preview:null,result:null,latestAnalysis:null,busy:'',error:'',recovering:false,
+  scanState:'idle',scanError:'',scanWarnings:[],visited:null,analysisStrategy:'full',publicApiPaths:'',diffExclusions:'',
+  autoExcludeNonCode:true,diffExcludeSuffixes:DEFAULT_DIFF_SUFFIX_TEXT,diffExcludeFolderNames:DEFAULT_DIFF_FOLDER_TEXT,
+  onlySelected:false,inputBudget:'',planDirty:false};
+ const listeners=new Set(),setters=new Map();
+ const workspace={
+  getSnapshot:()=>state,subscribe(listener){listeners.add(listener);return()=>listeners.delete(listener);},
+  field(snapshot,key){
+   if(!setters.has(key))setters.set(key,update=>{
+    const previous=state[key],next=typeof update==='function'?update(previous):update;
+    if(Object.is(previous,next))return;
+    state={...state,[key]:next};
+    if(key==='preview'&&previous?.previewId&&previous.previewId!==next?.previewId&&!lifecycle.hasPaid(previous.owner))
+     void rpc('release-preview',{sessionId:previous.owner.id,previewId:previous.previewId}).catch(()=>{});
+    for(const listener of listeners)listener();
+   });
+   return [snapshot[key],setters.get(key)];
+  },
+  progressView:createProgressView(),draftRevision:{current:0},submittedOperation:{current:null},
+  initialScanStarted:{current:false},controller:{current:null},configRequest:{current:false},configLoadStarted:false
+ };
+ return workspace;
+}
+
 export function apply(ctx){
  const rpc=createClientRpc(ctx.connection);
- const results=createResultStore();
+ const results=createResultStore({keyOf:workspaceKey});
  const lifecycle=createLifecycleController({rpc,results});
+ const workspaces=new Map();
+ let previous=lifecycle.getSnapshot();
+ lifecycle.subscribe(next=>{
+  const prior=previous;previous=next;
+  const completion=next.lastCompleted!==prior.lastCompleted?next.lastCompleted:null;
+  const failure=next.lastFailure!==prior.lastFailure?next.lastFailure:null;
+  const save=next.lastSavedReport!==prior.lastSavedReport?next.lastSavedReport:null;
+  const task=next.paid;
+  const taskWorkspace=task?.asyncGenerate&&workspaces.get(workspaceKey(task.session));
+  if(taskWorkspace){
+   if(task.forceRequested)taskWorkspace.progressView.setProgress(cancellationProgress);
+   else if(task.progress)taskWorkspace.progressView.setProgress(task.progress);
+   taskWorkspace.progressView.setWarning(task.progressWarning||'');
+  }
+  for(const event of [completion,failure,save]){
+   const workspace=event&&workspaces.get(workspaceKey(event.session));if(!workspace)continue;
+   const {draftRevision,submittedOperation,progressView}=workspace;
+   const {session}=event;
+   const set=key=>workspace.field(workspace.getSnapshot(),key)[1];
+   if(event===save){
+    const patch=result=>result?.operationId===save.operationId?{...result,savedReport:save.savedReport}:result;
+    set('latestAnalysis')(patch);set('result')(patch);continue;
+   }
+   if(event===completion){
+    set('result')(completedViewResult(results.get(session),completion,submittedOperation.current,draftRevision.current));
+    set('latestAnalysis')(results.getAnalysis(session));set('preview')(null);
+   }else{
+    set('error')('');
+    const retry=failure.details?.error?.details;
+    if(Number.isFinite(retry?.previewExpiresAt))set('preview')(preview=>preview?.previewId===retry.previewId?{...preview,expiresAt:retry.previewExpiresAt}:preview);
+   }
+   progressView.setProgress(terminalAnalysisProgress(completion,failure));progressView.setWarning('');
+  }
+ });
  function Page(props){
   const session=props.useSessions(s=>Object.values(s.byId).find(row=>(row.retainedBy.mainView??0)>0));
-  return <Panel key={JSON.stringify([session?.id,session?.cwd])} session={session}/>;
+  const key=resultKey(session);
+  const scope=workspaceKey(session);
+  let workspace=workspaces.get(scope);
+  if(!workspace){workspace=createWorkspace(rpc,lifecycle);workspaces.set(scope,workspace);}
+  return <Panel key={key} session={session} workspace={workspace}/>;
  }
- function Panel({session}){
+ function Panel({session,workspace}){
   const [runtime,setRuntime]=useState(null),[runtimeError,setRuntimeError]=useState(''),[runtimeAttempt,setRuntimeAttempt]=useState(0);
   const compatibility=runtimeError||runtimeGate(runtime,version);
   useEffect(()=>{
@@ -72,69 +138,35 @@ export function apply(ctx){
    return()=>ac.abort();
   },[runtimeAttempt]);
   const scanSettings=DEFAULT_SCAN;
-  const [configReady,setConfigReady]=useState(false),[configBusy,setConfigBusy]=useState(false);
-  const configRequest=useRef(false);
-  const [configNotice,setConfigNotice]=useState('');
-  const [rows,setRows]=useState([]),[title,setTitle]=useState('版本发布报告');
-  const [context,setContext]=useState(''),[versionContext,setVersionContext]=useState('');
-  const [network,setNetwork]=useState(false);
-  const [provider,setProvider]=useState(''),[model,setModel]=useState(''),[consent,setConsent]=useState(false);
-  const [useDefaultModel,setUseDefaultModel]=useState(true),[concurrency,setConcurrency]=useState(2);
-  const [preview,setPreview]=useState(null),[result,setResult]=useState(()=>results.get(session));
-  const [latestAnalysis,setLatestAnalysis]=useState(()=>results.getAnalysis(session));
-  const [lifecycleState,setLifecycleState]=useState(()=>lifecycle.getSnapshot());
-  const sessionKey=JSON.stringify([session?.id,session?.cwd]);
-  const ownTask=lifecycleState.paid?.sessionKey===sessionKey?lifecycleState.paid:null;
-  const pendingRecovery=ownTask;
-  const [abandonConfirmed,setAbandonConfirmed]=useState(false),[recovering,setRecovering]=useState(false);
-  const globalBusy=!!lifecycleState.lease;
-  const draftRevision=useRef(0),submittedOperation=useRef(null);
-  useEffect(()=>{
-   if(lifecycleState.lastCompleted?.sessionKey===sessionKey){
-    setResult(completedViewResult(results.get(session),lifecycleState.lastCompleted,submittedOperation.current,draftRevision.current));
-    setLatestAnalysis(results.getAnalysis(session));setPreview(null);setConsent(false);
-    setProgress(terminalAnalysisProgress(lifecycleState.lastCompleted));setProgressWarning('');
-   }
-   if(lifecycleState.lastFailure?.sessionKey===sessionKey){
-    setError('');setConsent(false);
-    const retry=lifecycleState.lastFailure.details?.error?.details;
-    if(Number.isFinite(retry?.previewExpiresAt))setPreview(previous=>previous?.previewId===retry.previewId?{...previous,expiresAt:retry.previewExpiresAt}:previous);
-    setProgress(terminalAnalysisProgress(null,lifecycleState.lastFailure));setProgressWarning('');
-   }
-  },[lifecycleState.lastCompleted,lifecycleState.lastFailure]);
-  useEffect(()=>{
-   const save=lifecycleState.lastSavedReport;
-   if(save?.sessionKey!==sessionKey)return;
-   const patch=previous=>previous?.operationId===save.operationId?{...previous,savedReport:save.savedReport}:previous;
-   setLatestAnalysis(patch);setResult(patch);
-  },[lifecycleState.lastSavedReport]);
-  const [busy,setBusy]=useState(''),[error,setError]=useState(''),[progressView]=useState(createProgressView);
+  const snapshot=useSyncExternalStore(workspace.subscribe,workspace.getSnapshot);
+  const field=key=>workspace.field(snapshot,key);
+  const [configReady,setConfigReady]=field('configReady'),[configBusy,setConfigBusy]=field('configBusy'),[configNotice,setConfigNotice]=field('configNotice');
+  const [rows,setRows]=field('rows'),[title,setTitle]=field('title'),[context,setContext]=field('context'),[versionContext,setVersionContext]=field('versionContext');
+  const [network,setNetwork]=field('network'),[provider,setProvider]=field('provider'),[model,setModel]=field('model'),[useDefaultModel,setUseDefaultModel]=field('useDefaultModel'),[concurrency,setConcurrency]=field('concurrency');
+  const [preview,setPreview]=field('preview'),[result,setResult]=field('result'),[latestAnalysis,setLatestAnalysis]=field('latestAnalysis'),[recovering,setRecovering]=field('recovering');
+  const [busy,setBusy]=field('busy'),[error,setError]=field('error'),[scanState,setScanState]=field('scanState'),[scanError,setScanError]=field('scanError'),[scanWarnings,setScanWarnings]=field('scanWarnings'),[visited,setVisited]=field('visited');
+  const [analysisStrategy,setAnalysisStrategy]=field('analysisStrategy'),[publicApiPaths,setPublicApiPaths]=field('publicApiPaths'),[diffExclusions,setDiffExclusions]=field('diffExclusions'),[autoExcludeNonCode,setAutoExcludeNonCode]=field('autoExcludeNonCode');
+  const [diffExcludeSuffixes,setDiffExcludeSuffixes]=field('diffExcludeSuffixes'),[diffExcludeFolderNames,setDiffExcludeFolderNames]=field('diffExcludeFolderNames'),[onlySelected,setOnlySelected]=field('onlySelected'),[inputBudget,setInputBudget]=field('inputBudget'),[planDirty,setPlanDirty]=field('planDirty');
+  const {configRequest,initialScanStarted,controller,draftRevision,submittedOperation,progressView}=workspace;
   const {setProgress,setWarning:setProgressWarning}=progressView;
+  const [consent,setConsent]=useState(false),[abandonConfirmed,setAbandonConfirmed]=useState(false),[,refreshExpiry]=useState(0);
+  const [lifecycleState,setLifecycleState]=useState(()=>lifecycle.getSnapshot());
+  const sessionKey=resultKey(session);
+  const paid=lifecycleState.paid;
+  const ownTask=paid&&session?.cwd===paid.session.cwd?paid:null;
+  const pendingRecovery=ownTask;
+  const globalBusy=!!lifecycleState.lease;
   useEffect(()=>{
    let previous=lifecycle.getSnapshot();
    return lifecycle.subscribe(next=>{
     const task=next.paid,old=previous.paid;
-    if(task?.asyncGenerate&&task.sessionKey===sessionKey){
-     if(task.forceRequested)setProgress(cancellationProgress);
-     else if(task.progress)setProgress(task.progress);
-     setProgressWarning(task.progressWarning||'');
-    }
     // Progress-only publications must not rerender the scope, preview or report.
-    if(previous===next||previous.lease?.kind!==next.lease?.kind||previous.lastCompleted!==next.lastCompleted||previous.lastFailure!==next.lastFailure||previous.lastSavedReport!==next.lastSavedReport||
+    if(previous===next||previous.lease?.kind!==next.lease?.kind||previous.lease?.sessionKey!==next.lease?.sessionKey||previous.lastFailure!==next.lastFailure||
      ['operationId','status','message','forceRequested','forceCancelling','asyncGenerate'].some(key=>old?.[key]!==task?.[key]))setLifecycleState(next);
     previous=next;
    });
-  },[sessionKey]);
-  const [scanState,setScanState]=useState('idle'),[scanError,setScanError]=useState(''),[scanWarnings,setScanWarnings]=useState([]),[visited,setVisited]=useState(null);
-  const [analysisStrategy,setAnalysisStrategy]=useState('full'),[publicApiPaths,setPublicApiPaths]=useState('');
-  const [diffExclusions,setDiffExclusions]=useState('');
-  const [autoExcludeNonCode,setAutoExcludeNonCode]=useState(true);
-  const [diffExcludeSuffixes,setDiffExcludeSuffixes]=useState(DEFAULT_DIFF_SUFFIX_TEXT);
-  const [diffExcludeFolderNames,setDiffExcludeFolderNames]=useState(DEFAULT_DIFF_FOLDER_TEXT);
-  const [onlySelected,setOnlySelected]=useState(false);
-  const [inputBudget,setInputBudget]=useState(''),[planDirty,setPlanDirty]=useState(false),[,refreshExpiry]=useState(0);
-  const initialScanStarted=useRef(false),controller=useRef(null),mounted=useRef(true);
-  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;controller.current?.abort();};},[]);
+  },[workspace]);
+  useEffect(()=>{if(lifecycleState.lastFailure&&workspaceKey(lifecycleState.lastFailure.session)===workspaceKey(session))setConsent(false);},[lifecycleState.lastFailure,sessionKey]);
   const deadline=previewDeadline(preview?.expiresAt);
   useEffect(()=>{
    if(!Number.isFinite(deadline))return;
@@ -146,10 +178,6 @@ export function apply(ctx){
    };
    expire();return()=>clearTimeout(timer);
   },[deadline]);
-  useEffect(()=>{
-   const id=preview?.previewId;
-   return()=>{if(id&&session?.id&&!lifecycle.hasPaid(session))void rpc('release-preview',{sessionId:session.id,previewId:id}).catch(()=>{});};
-  },[preview?.previewId,session?.id]);
   const expired=!!preview&&previewExpired(preview);
   const hasCurrentReport=result?.kind==='analysis'&&!result.stale;
   const workflow=ownTask?['complete','complete','active']:preview&&!expired?['complete','active','pending']:hasCurrentReport?['complete','complete','complete']:['active','pending','pending'];
@@ -157,7 +185,7 @@ export function apply(ctx){
   useEffect(()=>{
    if(!ownTask||ownTask.asyncGenerate)return;
    const ac=new AbortController();
-   pollProgress(rpc,{sessionId:session.id,operationId:ownTask.operationId},ac.signal,{onProgress:value=>setProgress(ownTask.forceRequested?cancellationProgress:value),onWarning:setProgressWarning,warning:'进度连接暂时失联；任务身份仍保留，请只读恢复。'});
+   pollProgress(rpc,{sessionId:ownTask.session.id,operationId:ownTask.operationId},ac.signal,{onProgress:value=>setProgress(ownTask.forceRequested?cancellationProgress:value),onWarning:setProgressWarning,warning:'进度连接暂时失联；任务身份仍保留，请只读恢复。'});
    return()=>ac.abort();
   },[ownTask?.operationId,ownTask?.forceRequested,ownTask?.asyncGenerate]);
   const keepResult=value=>{results.set(session,value);setResult(value);setLatestAnalysis(results.getAnalysis(session));};
@@ -175,35 +203,33 @@ export function apply(ctx){
   const removeRow=useCallback(index=>{invalidate();setRows(previous=>previous.filter((_,i)=>i!==index));},[invalidate]);
   const store=async()=>{
    if(configRequest.current||!configReady)return;configRequest.current=true;setConfigBusy(true);
-   try{await rpc('configuration-save',{sessionId:session.id,configuration:cleanConfiguration({schema:1,rows,title,context,versionContext,publicApiPaths,diffExclusions,autoExcludeNonCode,diffExcludeSuffixes,diffExcludeFolderNames,onlySelected,analysisStrategy,allowBatches:true,provider,model,useDefaultModel,scan:scanSettings,allowSvnNetwork:network})});if(mounted.current)setConfigNotice('已保存到当前工作目录 .dsh-code-report.json；不保存密码、报告、源码内容或模型发送确认。');}
-   catch(error){if(mounted.current)setConfigNotice('保存失败：'+error.message);}
-   finally{configRequest.current=false;if(mounted.current)setConfigBusy(false);}
+   try{await rpc('configuration-save',{sessionId:session.id,configuration:cleanConfiguration({schema:1,rows,title,context,versionContext,publicApiPaths,diffExclusions,autoExcludeNonCode,diffExcludeSuffixes,diffExcludeFolderNames,onlySelected,analysisStrategy,allowBatches:true,provider,model,useDefaultModel,scan:scanSettings,allowSvnNetwork:network})});setConfigNotice('已保存到当前工作目录 .dsh-code-report.json；不保存密码、报告、源码内容或模型发送确认。');}
+   catch(error){setConfigNotice('保存失败：'+error.message);}
+   finally{configRequest.current=false;setConfigBusy(false);}
   };
   const restore=async()=>{
    if(configRequest.current||!configReady)return;configRequest.current=true;setConfigBusy(true);
    try{
     const loaded=await rpc('configuration-load',{sessionId:session.id});
     const value=loaded?cleanConfiguration(loaded):null;
-    if(!mounted.current)return;
     if(!value){setConfigNotice('此工作区尚无已保存配置。');return;}
     invalidate();setRows(value.rows);setTitle(value.title);setContext(value.context);setVersionContext(value.versionContext||'');setPublicApiPaths(value.publicApiPaths||'');setDiffExclusions(value.diffExclusions||'');setAutoExcludeNonCode(value.autoExcludeNonCode!==false);setDiffExcludeSuffixes(value.diffExcludeSuffixes??DEFAULT_DIFF_SUFFIX_TEXT);setDiffExcludeFolderNames(value.diffExcludeFolderNames??DEFAULT_DIFF_FOLDER_TEXT);setAnalysisStrategy(value.analysisStrategy||'full');
     setProvider(value.provider);setModel(value.model);setUseDefaultModel(value.useDefaultModel!==false);setOnlySelected(value.onlySelected===true);setNetwork(value.allowSvnNetwork===true);
     setScanState('idle');setScanWarnings([]);setScanError('');setConfigNotice(restoredNotice(value.allowSvnNetwork));
-   }catch(error){if(mounted.current)setConfigNotice('恢复失败：'+error.message);}
-   finally{configRequest.current=false;if(mounted.current)setConfigBusy(false);}
+   }catch(error){setConfigNotice('恢复失败：'+error.message);}
+   finally{configRequest.current=false;setConfigBusy(false);}
   };
   useEffect(()=>{
+   if(workspace.configLoadStarted)return;workspace.configLoadStarted=true;
    if(!session?.id){setConfigReady(true);return;}
-   const ac=new AbortController();
-   rpc('configuration-load',{sessionId:session.id},ac.signal).then(value=>{
-    if(ac.signal.aborted||!value)return;
+   rpc('configuration-load',{sessionId:session.id},AbortSignal.timeout(15000)).then(value=>{
+    if(!value)return;
     const config=cleanConfiguration(value);
     setRows(config.rows);setTitle(config.title);setContext(config.context);setVersionContext(config.versionContext||'');setPublicApiPaths(config.publicApiPaths||'');setDiffExclusions(config.diffExclusions||'');setAutoExcludeNonCode(config.autoExcludeNonCode!==false);setDiffExcludeSuffixes(config.diffExcludeSuffixes??DEFAULT_DIFF_SUFFIX_TEXT);setDiffExcludeFolderNames(config.diffExcludeFolderNames??DEFAULT_DIFF_FOLDER_TEXT);setAnalysisStrategy(config.analysisStrategy||'full');
-    setProvider(config.provider);setModel(config.model);setUseDefaultModel(config.useDefaultModel!==false);setOnlySelected(config.onlySelected===true);setNetwork(config.allowSvnNetwork===true);setConsent(false);
+    setProvider(config.provider);setModel(config.model);setUseDefaultModel(config.useDefaultModel!==false);setOnlySelected(config.onlySelected===true);setNetwork(config.allowSvnNetwork===true);
     setConfigNotice(restoredNotice(config.allowSvnNetwork));
-   }).catch(error=>{if(!ac.signal.aborted)setConfigNotice('工作目录配置未恢复：'+error.message);})
-    .finally(()=>{if(!ac.signal.aborted)setConfigReady(true);});
-   return()=>ac.abort();
+   }).catch(error=>setConfigNotice('工作目录配置未恢复：'+error.message))
+    .finally(()=>setConfigReady(true));
   },[session?.id]);
   const perform=async(label,fn)=>{
    if(controller.current)return;
@@ -213,9 +239,9 @@ export function apply(ctx){
    const ac=new AbortController();controller.current=ac;setBusy(label);setError('');setProgressWarning('');setProgress({phase:'starting',label});
    try{
     await fn(ac.signal);
-    if(mounted.current&&!ac.signal.aborted)setProgress({phase:'completed',completed:1,total:1,label:label+'完成'});
+    if(!ac.signal.aborted)setProgress({phase:'completed',completed:1,total:1,label:label+'完成'});
    }catch(error){
-    if(mounted.current&&!ac.signal.aborted){
+    if(!ac.signal.aborted){
      const details=error.details;
      const recovery=Number.isInteger(details?.completedBatches)&&Number.isInteger(details?.remainingBatches)?' 已完成 '+details.completedBatches+' 片，剩余 '+details.remainingBatches+' 片；请重新确认后重试剩余片。更换模型路由或更新分析计划会重跑全部分片，可能再次计费。':'';
      setError(error.message+recovery);setProgress(null);
@@ -223,12 +249,12 @@ export function apply(ctx){
     }
    }finally{
     lease.release();
-    if(controller.current===ac){controller.current=null;if(mounted.current){if(ac.signal.aborted)setProgress({phase:'cancelled',label:'执行已取消；已有报告已保留'});setBusy('');setProgressWarning('');}}
+    if(controller.current===ac){controller.current=null;if(ac.signal.aborted)setProgress({phase:'cancelled',label:'执行已取消；已有报告已保留'});setBusy('');setProgressWarning('');}
    }
   };
   const tracked=async(endpoint,payload,signal)=>{
    const operationId=crypto.randomUUID(),polling=new AbortController(),pollSignal=AbortSignal.any([signal,polling.signal]);
-   pollProgress(rpc,{sessionId:session.id,operationId},pollSignal,{onProgress:setProgress,onWarning:setProgressWarning,warning:'进度连接暂时失联，任务结果尚未知；请勿重复提交。'});
+   pollProgress(rpc,{sessionId:payload.sessionId,operationId},pollSignal,{onProgress:setProgress,onWarning:setProgressWarning,warning:'进度连接暂时失联，任务结果尚未知；请勿重复提交。'});
    try{return await rpc(endpoint,{...payload,operationId},signal);}
    finally{polling.abort();}
   };
@@ -238,10 +264,9 @@ export function apply(ctx){
     setScanState('scanning');setScanError('');setScanWarnings([]);
     try{
      const value=await tracked('discover',{sessionId:session.id,scan:scanSettings},signal);signal.throwIfAborted();
-     if(!mounted.current)return;
      setRows(previous=>mergeRepositories(previous,value.repositories));setVisited(value.visited);setScanState('completed');
      setScanWarnings([...value.warnings,...(rows.length+value.repositories.filter(found=>!rows.some(row=>row.path===found.path&&row.type===found.type)).length>500?['项目列表最多保留 500 项，请移除不需要的项目后重扫。']:[])]);
-    }catch(error){if(mounted.current){setScanState(signal.aborted?'cancelled':'failed');if(!signal.aborted)setScanError(error.message);}throw error;}
+    }catch(error){setScanState(signal.aborted?'cancelled':'failed');if(!signal.aborted)setScanError(error.message);throw error;}
    });
   };
   useEffect(()=>{if(session?.id&&configReady&&!configBusy&&!compatibility&&!lifecycle.getSnapshot().lease&&!initialScanStarted.current){initialScanStarted.current=true;void scan();}},[session?.id,configReady,configBusy,compatibility,lifecycleState.revision]);
@@ -254,34 +279,36 @@ export function apply(ctx){
    if(captureReason)return;
    return perform('采集版本差异',async signal=>{
     setPreview(null);setConsent(false);setPlanDirty(false);
-    const value=await capturePreview({rpc,signal,onProgress:value=>{if(mounted.current&&!signal.aborted)setProgress(value);},onWarning:value=>{if(mounted.current&&!signal.aborted)setProgressWarning(value);},payload:{sessionId:session.id,...(!useDefaultModel?{route:{provider:provider.trim(),model:model.trim()}}:{}),request:{title,analysisStrategy,repositories:rows.filter(row=>row.enabled).map(({enabled,...row})=>row),contextPaths:context.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),versionContexts,publicApiPaths:parsedPublicApiPaths,diffExclusions:parsedDiffExclusions,autoExcludeNonCode,diffExcludeSuffixes,diffExcludeFolderNames,allowSvnNetwork:network,allowBatches:true}}});
-    if(!signal.aborted&&mounted.current){setPreview(value);setAnalysisStrategy(value.analysisPlan?.strategy||'full');setInputBudget('');keepResult({markdown:value.markdown,stale:false,kind:'local'});}
+    const value=await capturePreview({rpc,signal,onProgress:setProgress,onWarning:setProgressWarning,payload:{sessionId:session.id,...(!useDefaultModel?{route:{provider:provider.trim(),model:model.trim()}}:{}),request:{title,analysisStrategy,repositories:rows.filter(row=>row.enabled).map(({enabled,...row})=>row),contextPaths:context.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),versionContexts,publicApiPaths:parsedPublicApiPaths,diffExclusions:parsedDiffExclusions,autoExcludeNonCode,diffExcludeSuffixes,diffExcludeFolderNames,allowSvnNetwork:network,allowBatches:true}}});
+    if(!signal.aborted){setPreview({...value,owner:{id:session.id,cwd:session.cwd}});setAnalysisStrategy(value.analysisPlan?.strategy||'full');setInputBudget('');keepResult({markdown:value.markdown,stale:false,kind:'local'});}
    });
   };
+  // The workspace view can move to another chat. Host receipts still belong to
+  // the exact session that captured the snapshot or dispatched the task.
   const generateReason=!configReady||configBusy?'正在读写工作目录配置。':generationBlocker({preview,compatibility,busy:busy||(globalBusy?'其他任务执行中':''),consent,provider,model,useDefaultModel,pendingRecovery})||(planDirty?'分析策略或输入预算已变化，请先更新分析计划。':'');
   const generate=()=>{
    const approved=consent;setConsent(false);
    if(generateReason||previewExpired(preview)||lifecycle.getSnapshot().lease)return;
    try{
     setError('');setProgress({phase:'starting',label:'正在启动模型分析'});setProgressWarning('');
-    const operation=lifecycle.startGenerate(session,{previewId:preview.previewId,planId:preview.analysisPlan.id,sendToModel:approved,concurrency:singleRequest(preview.analysisPlan)?1:concurrency,route:useDefaultModel?{mode:'default',provider:preview.defaultRoute.provider,model:preview.defaultRoute.model}:{provider:provider.trim(),model:model.trim()}},{asyncGenerate:runtime?.capabilities?.asyncGenerate===true,backendInstanceId:runtime?.backendInstanceId});
+    const operation=lifecycle.startGenerate(preview.owner,{previewId:preview.previewId,planId:preview.analysisPlan.id,sendToModel:approved,concurrency:singleRequest(preview.analysisPlan)?1:concurrency,route:useDefaultModel?{mode:'default',provider:preview.defaultRoute.provider,model:preview.defaultRoute.model}:{provider:provider.trim(),model:model.trim()}},{asyncGenerate:runtime?.capabilities?.asyncGenerate===true,backendInstanceId:runtime?.backendInstanceId});
     submittedOperation.current={operationId:operation.operationId,draftRevision:draftRevision.current};
    }catch(error){setError(error.message);}
   };
   const recover=async()=>{
-   if(recovering||!lifecycle.hasPaid(session))return;
+   if(recovering||!ownTask||!lifecycle.hasPaid(ownTask.session))return;
    setRecovering(true);setConsent(false);setError('');
-   try{await lifecycle.recover(session);}catch(error){if(mounted.current)setError(error.message);}
-   finally{if(mounted.current)setRecovering(false);}
+   try{await lifecycle.recover(ownTask.session);}catch(error){setError(error.message);}
+   finally{setRecovering(false);}
   };
   const forceCancel=()=>{
    setConsent(false);
-   if(ownTask){void lifecycle.forceCancel(session);setProgress({phase:'cancel-requested',label:'已请求强制取消；后台停止与计费仍需核对'});}
+   if(ownTask){void lifecycle.forceCancel(ownTask.session);setProgress({phase:'cancel-requested',label:'已请求强制取消；后台停止与计费仍需核对'});}
    else if(controller.current){controller.current.abort();setProgress({phase:'cancel-requested',label:'已请求强制取消；等待后台确认停止，不代表已撤回远端请求'});}
   };
   const abandonRecovery=()=>{
-   if(!abandonConfirmed||busy)return;
-   try{lifecycle.abandon(session);setAbandonConfirmed(false);setConsent(false);setError('已标记放弃恢复，但未知任务的安全屏障继续保留；请核对到宿主明确停止或完成，不能据此重新派发。');}
+   if(!abandonConfirmed||busy||!ownTask)return;
+   try{lifecycle.abandon(ownTask.session);setAbandonConfirmed(false);setConsent(false);setError('已标记放弃恢复，但未知任务的安全屏障继续保留；请核对到宿主明确停止或完成，不能据此重新派发。');}
    catch(error){setError(error.message);}
   };
   const budgetValid=inputBudget===''||(/^\d+$/.test(inputBudget)&&Number.isSafeInteger(Number(inputBudget))&&Number(inputBudget)>=4000);
@@ -289,8 +316,8 @@ export function apply(ctx){
    setConsent(false);
    if(!preview||previewExpired(preview)||!budgetValid||globalBusy)return;
    return perform('更新分析计划',async signal=>{
-    const value=await tracked('analysis-plan',{sessionId:session.id,previewId:preview.previewId,...(inputBudget===''?{}:{inputBudget:Number(inputBudget)}),route:useDefaultModel?{mode:'default',...preview.defaultRoute}:{provider:provider.trim(),model:model.trim()},strategy:analysisStrategy},signal);
-    if(!signal.aborted&&mounted.current){setPreview(previous=>({...previous,analysisPlan:value.analysisPlan,planError:null}));setPlanDirty(false);}
+    const value=await tracked('analysis-plan',{sessionId:preview.owner.id,previewId:preview.previewId,...(inputBudget===''?{}:{inputBudget:Number(inputBudget)}),route:useDefaultModel?{mode:'default',...preview.defaultRoute}:{provider:provider.trim(),model:model.trim()},strategy:analysisStrategy},signal);
+    if(!signal.aborted){setPreview(previous=>({...previous,analysisPlan:value.analysisPlan,planError:null}));setPlanDirty(false);}
    });
   };
   const loadRefs=useCallback(async(repositoryPath,signal,{gitMode='remote',gitRemote='origin',sshDirectory}={})=>{
@@ -299,7 +326,7 @@ export function apply(ctx){
    try{return (await rpc('refs',{sessionId:session.id,repositoryPath,gitMode,gitRemote,sshDirectory},signal)).refs;}finally{lease.release();}
   },[compatibility,sessionKey]);
   return <section className="cr-root"><style>{css}</style>
-   <header className="cr-hero"><div className="cr-hero-title"><div><small>Git / SVN · v{version}</small><h1>发布报告配置</h1><p>配置比较范围，采集差异，再生成报告。</p></div></div><div className="cr-actions cr-header-actions"><button type="button" className="cr-danger-ghost" disabled={!ownTask&&!busy||!!ownTask?.forceCancelling} onClick={forceCancel} title="立即中断前端等待并请求后台取消；不保证撤回远端请求或免计费，未知状态仍须核对">{ownTask?.forceCancelling?'强制取消中…':ownTask?.forceRequested?'重试强制取消':'强制取消'}</button><button disabled={!session||!configReady||configBusy||!!busy} onClick={store}>保存配置</button><button disabled={!session||!configReady||configBusy||!!busy||!!pendingRecovery} onClick={restore}>恢复已保存</button></div></header>
+   <header className="cr-hero"><div className="cr-hero-title"><div><small>Git / SVN · v{version}</small><h1>发布报告配置</h1><p>配置比较范围，采集差异，再生成报告。切离页面不会取消任务，返回后可继续。</p></div></div><div className="cr-actions cr-header-actions"><button type="button" className="cr-danger-ghost" disabled={!ownTask&&!busy||!!ownTask?.forceCancelling} onClick={forceCancel} title="立即中断前端等待并请求后台取消；不保证撤回远端请求或免计费，未知状态仍须核对">{ownTask?.forceCancelling?'强制取消中…':ownTask?.forceRequested?'重试强制取消':'强制取消'}</button><button disabled={!session||!configReady||configBusy||!!busy} onClick={store}>保存配置</button><button disabled={!session||!configReady||configBusy||!!busy||!!pendingRecovery} onClick={restore}>恢复已保存</button></div></header>
    <nav className="cr-stage-nav" aria-label="报告工作流程"><div className="cr-stage" data-state={workflow[0]} aria-current={workflow[0]==='active'?'step':undefined}><span className="cr-stage-number">01</span><div><strong>配置发布范围</strong><span>项目与版本端点</span></div></div><div className="cr-stage" data-state={workflow[1]} aria-current={workflow[1]==='active'?'step':undefined}><span className="cr-stage-number">02</span><div><strong>核对差异证据</strong><span>固定快照 · 确认发送</span></div></div><div className="cr-stage" data-state={workflow[2]} aria-current={workflow[2]==='active'?'step':undefined}><span className="cr-stage-number">03</span><div><strong>生成与导出</strong><span>{ownTask?(ownTask.status==='running'?'模型分析进行中':'任务状态待核对'):hasCurrentReport&&!preview?'报告已生成，可下载':'影响分析与 QA 建议'}</span></div></div></nav>
    {configNotice&&<p className="cr-tip" role="status">{configNotice}</p>}
    {compatibility&&<div className="cr-error" role="alert">{compatibility}<button disabled={!!busy} onClick={()=>setRuntimeAttempt(value=>value+1)}>重新验证后台</button></div>}
@@ -326,7 +353,7 @@ export function apply(ctx){
       <div className="cr-help-field"><label htmlFor="cr-diff-folder">差异排除文件夹名</label><HelpTip label="差异排除文件夹名">默认排除任意层级的 Test 文件夹，名称区分大小写。多个名称用逗号分隔；清空则不按文件夹名排除。</HelpTip></div>
       <input id="cr-diff-folder" aria-label="差异排除文件夹名" maxLength={MAX_DIFF_FOLDER_TEXT} value={diffExcludeFolderNames} onChange={event=>{invalidate();setDiffExcludeFolderNames(event.target.value);}}/>
       <div className="cr-help-field"><label htmlFor="cr-diff-directory">差异排除目录（每行：仓库路径|目录/）</label><HelpTip label="差异排除目录">仅排除明确不审查的目录，留空表示不追加目录规则。按大小写精确匹配，不按后缀猜测；排除项仅列入清单，不采集差异正文、不发送模型。</HelpTip></div>
-      <textarea id="cr-diff-directory" aria-label="差异排除目录" rows={3} maxLength={MAX_DIFF_EXCLUSIONS_TEXT} placeholder="c3engineplus|Test/Env/" value={diffExclusions} onChange={event=>{invalidate();setDiffExclusions(event.target.value);}}/>
+      <textarea id="cr-diff-directory" aria-label="差异排除目录" rows={3} maxLength={MAX_DIFF_EXCLUSIONS_TEXT} placeholder="示例：project-a|path/to/exclude/" value={diffExclusions} onChange={event=>{invalidate();setDiffExclusions(event.target.value);}}/>
      </fieldset></details>
      <details className="cr-optional"><summary>3. 附带项目源码（可选）{context.trim()||versionContext.trim()?' · 已填写':''}</summary><fieldset disabled={!configReady||configBusy||!!busy||globalBusy}><legend>源码路径</legend>
       <div className="cr-help-field"><label htmlFor="cr-context-paths">工作区源码</label><HelpTip label="工作区源码">每行填写一个工作区内的文件或文件夹路径，根目录可填「.」。文件夹递归展开；不会自动附带未填写的目录或扫描调用链。</HelpTip></div>
@@ -347,8 +374,8 @@ export function apply(ctx){
      </section>
      <section className="cr-workflow-region cr-output-region" aria-labelledby="cr-output-heading">
       <div className="cr-region-heading"><h2 id="cr-output-heading">执行与结果</h2>{!result&&!ownTask&&!busy&&<p>采集后的证据清单和生成后的报告会显示在这里。</p>}</div>
-     {lifecycleState.paid&&!ownTask&&<p className="cr-stale" role="status">其他会话有模型任务执行中或结果未知；本插件实例暂停新业务。请回原会话恢复。此互斥不覆盖其他标签页或客户端。</p>}
-     {pendingRecovery&&<section className="cr-stale" aria-label="报告恢复"><h3>报告任务</h3><p role="status">{pendingRecovery.message} 恢复只读取已有报告，不调用模型、不再次计费。任务归属保留在当前插件实例，切换会话仅分离视图，不取消模型。恢复标识按会话及工作区暂存；刷新、重载或更换客户端不保证恢复，请先下载。</p><div className="cr-actions"><button disabled={recovering} onClick={recover}>恢复已完成报告</button><button onClick={()=>lifecycle.cancel(session)}>取消模型任务</button></div><details className="cr-recovery-options"><summary>放弃恢复选项</summary><label className="cr-check"><input type="checkbox" checked={abandonConfirmed} disabled={!!busy} onChange={event=>setAbandonConfirmed(event.target.checked)}/>我确认标记放弃恢复；未知任务屏障仍保留，不解锁新业务</label><button disabled={!!busy||!abandonConfirmed||pendingRecovery.status==='running'} onClick={abandonRecovery}>放弃恢复</button></details></section>}
+     {lifecycleState.paid&&!ownTask&&<p className="cr-stale" role="status">其他工作区有模型任务执行中或结果未知；本插件实例暂停新业务。请回原工作区核对。此互斥不覆盖其他标签页或客户端。</p>}
+     {pendingRecovery&&<section className="cr-stale" aria-label="报告恢复"><h3>报告任务</h3><p role="status">{pendingRecovery.message} 恢复只读取已有报告，不调用模型、不再次计费。切离页面或切换会话不会取消任务。进度按工作区保留；刷新、重载或更换客户端不保证恢复。</p><div className="cr-actions"><button disabled={recovering} onClick={recover}>恢复已完成报告</button><button onClick={()=>lifecycle.cancel(ownTask.session)}>取消模型任务</button></div><details className="cr-recovery-options"><summary>放弃恢复选项</summary><label className="cr-check"><input type="checkbox" checked={abandonConfirmed} disabled={!!busy} onChange={event=>setAbandonConfirmed(event.target.checked)}/>我确认标记放弃恢复；未知任务屏障仍保留，不解锁新业务</label><button disabled={!!busy||!abandonConfirmed||pendingRecovery.status==='running'} onClick={abandonRecovery}>放弃恢复</button></details></section>}
      <OperationProgress view={progressView}/>
      {error&&error!==scanError&&<p className="cr-error" role="alert">{error}</p>}
      {latestAnalysis&&result?.kind!=='analysis'&&<p className="cr-stale">上一份成功模型报告仍保留，与当前草稿可能不同。<button onClick={()=>keepResult({...latestAnalysis,stale:true})}>查看上一份模型报告</button><button onClick={()=>downloadMarkdown(latestAnalysis.markdown,latestAnalysis.kind)}>下载上一份模型报告</button></p>}
@@ -365,7 +392,7 @@ export function apply(ctx){
 function restoredNotice(allowSvnNetwork){return allowSvnNetwork?'已从工作目录 .dsh-code-report.json 恢复配置及 SVN 历史访问许可；模型发送仍需确认。':'已从工作目录 .dsh-code-report.json 恢复配置；SVN 访问未授权，模型发送仍需确认。';}
 function scanStateLabel(state){return state==='completed'?'扫描完成 · ':state==='scanning'?'扫描中 · ':state==='failed'?'扫描失败 · ':state==='cancelled'?'扫描已取消 · ':'尚未扫描 · ';}
 function sideLabel(row,side){return row.type==='svn'?row['branch'+side]+' @ r'+row[side.toLowerCase()]:row[side.toLowerCase()];}
-function downloadMarkdown(markdown,kind){const url=URL.createObjectURL(new Blob([reportDownloadText(markdown,kind)],{type:'text/markdown;charset=utf-8'}));const anchor=document.createElement('a');anchor.href=url;anchor.download=(kind==='analysis'?'release-report-':kind==='local'?'captured-evidence-':'unclassified-result-')+new Date().toISOString().slice(0,10)+'.md';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+function downloadMarkdown(markdown,kind){const url=URL.createObjectURL(new Blob([reportDownloadText(markdown,kind,{source:"internal"})],{type:'text/markdown;charset=utf-8'}));const anchor=document.createElement('a');anchor.href=url;anchor.download=(kind==='analysis'?'release-report-':kind==='local'?'captured-evidence-':'unclassified-result-')+new Date().toISOString().slice(0,10)+'.md';anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function PreviewSection({preview,busy,expired,useDefaultModel=true,setUseDefaultModel,provider,model,consent,setProvider,setModel,setConsent,generateReason,onGenerate,onCapture,analysisStrategy,onStrategy,inputBudget,budgetValid,planDirty,onBudget,onReplan,compatibility,concurrency,onConcurrency}){
  const plan=preview.analysisPlan,coverage=plan?.coverage||{},single=singleRequest(plan);
  return <fieldset className="cr-panel cr-preview" disabled={!!busy}><legend>4. 确认分析范围</legend>
@@ -433,7 +460,7 @@ function ProgressSection({progress}){
 }
 const ReportSection=React.memo(function ReportSection({result,onClear}){
  const analysis=result.kind==='analysis',local=result.kind==='local';
- const displayMarkdown=useMemo(()=>reportDownloadText(result.markdown,result.kind),[result.markdown,result.kind]);
+ const displayMarkdown=useMemo(()=>reportDownloadText(result.markdown,result.kind,{source:"internal"}),[result.markdown,result.kind]);
  return <section className="cr-result" data-kind={result.kind}><div className="cr-actions cr-result-toolbar"><h2>{analysis?'Markdown 报告':local?'采集证据（尚未生成发布报告）':'未分类结果（尚不能确认是发布报告）'}</h2><button onClick={()=>downloadMarkdown(result.markdown,result.kind)}>{analysis?'下载 .md 文件':local?'下载证据清单 .md':'下载未分类结果 .md'}</button><button onClick={()=>onClear(result.kind)}>{analysis?'清除报告':'清除证据结果'}</button></div>
   {analysis&&result.savedReport?.status==='pending'&&<p className="cr-tip" role="status">正在保存报告到工作区；现在也可下载 .md 文件。</p>}
   {analysis&&result.savedReport?.status==='saved'&&<p className="cr-tip" role="status">报告已保存到工作区：<code>{result.savedReport.path}</code>。清除面板报告不会删除磁盘文件。</p>}

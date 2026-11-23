@@ -36,6 +36,11 @@ export function markdown(snapshot,analysis,route,{structured=false,evidenceManif
  const out=evidenceManifest
   ? [heading,'','## 本次比较范围','',...snapshot.repositories.map(r=>'- **'+inline(r.path)+'**：'+inline(comparisonEndpoint(r,'A'))+' → '+inline(comparisonEndpoint(r,'B'))+'（'+r.files.length+' 个变更路径）'),'',renderedAnalysis,'',interfaceSection(analysis),'','<details>','<summary>采集附录：固定版本、完整文件清单与限制</summary>','','## 发布范围','',...releaseScopeLines(snapshot.repositories),'',routeLine(route),'','## 覆盖范围与限制','',...limitationLines(snapshot.limitations,Boolean(analysis)),'','## 差异证据']
   : [heading,'','生成时间：'+inline(snapshot.createdAt),'','## 发布范围','',...releaseScopeLines(snapshot.repositories),'','## 改动内容、对外接口、影响范围与 QA 测试建议','',renderedAnalysis,'',interfaceSection(analysis),'',routeLine(route),'','## 覆盖范围与限制','',...limitationLines(snapshot.limitations,Boolean(analysis)),'','## 差异证据'];
+ // Explicit exclusions stay private, but the reader must know the comparison is partial.
+ if(evidenceManifest&&analysis&&snapshot.repositories.some(r=>r.scopeExclusions?.length)){
+  const scope=out.indexOf('## 本次比较范围');
+  out.splice(scope+2+snapshot.repositories.length,0,'','部分变更已按本次范围设置排除，不属于本报告分析范围。');
+ }
  for(const r of snapshot.repositories){
   for(const line of excludedPathLines(r))out.push(line);
   if(r.scopeExclusions?.length){

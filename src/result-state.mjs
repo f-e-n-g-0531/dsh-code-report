@@ -1,50 +1,51 @@
 // This view cache is private to one plugin instance. Workspace report files are
 // written by the backend; source snapshots, previews and consent are not persisted here.
 export function resultKey(session){return JSON.stringify([session?.id,session?.cwd]);}
-export function createResultStore({limit=16,maxBytes=Infinity}={}){
+export const workspaceKey=session=>session?.cwd||'';
+export function createResultStore({limit=16,maxBytes=Infinity,keyOf=resultKey}={}){
  const entries=new Map(),recoveries=new Map();
  const size=value=>value?new TextEncoder().encode(value.markdown).length:0;
  const entrySize=entry=>size(entry.current)+(entry.analysis&&entry.analysis.markdown!==entry.current?.markdown?size(entry.analysis):0);
  const restore=value=>value?{...value,stale:true}:null;
  return {
-  get(session){return restore(entries.get(resultKey(session))?.current);},
-  getAnalysis(session){return restore(entries.get(resultKey(session))?.analysis);},
-  getRecovery(session){const value=recoveries.get(resultKey(session));return value?{...value}:null;},
+  get(session){return restore(entries.get(keyOf(session))?.current);},
+  getAnalysis(session){return restore(entries.get(keyOf(session))?.analysis);},
+  getRecovery(session){const value=recoveries.get(keyOf(session));return value?{...value}:null;},
   setRecovery(session,value){
-   const key=resultKey(session);recoveries.delete(key);
+   const key=keyOf(session);recoveries.delete(key);
    if(value?.operationId&&session?.id&&session?.cwd)recoveries.set(key,{operationId:value.operationId});
    // Unresolved paid identities are safety barriers: never silently evict them.
   },
   set(session,value){
    if(!session?.id||!session?.cwd||!value?.markdown)return;
    const current={markdown:value.markdown,stale:value.stale===true,coverage:value.coverage,...(value.savedReport?{savedReport:{...value.savedReport}}:{}),...(value.kind?{kind:value.kind}:{}),...(value.operationId?{operationId:value.operationId}:{})};
-   const previous=entries.get(resultKey(session));
+   const key=keyOf(session),previous=entries.get(key);
    // Keep only current output and latest successful AI output, not an unbounded history.
    const entry={current,analysis:value.kind==='analysis'?current:previous?.analysis};
-   entries.delete(resultKey(session));entries.set(resultKey(session),entry);
+   entries.delete(key);entries.set(key,entry);
    // Default retention is count-based; do not repeatedly encode every large report.
    let bytes=Number.isFinite(maxBytes)?[...entries.values()].reduce((sum,item)=>sum+entrySize(item),0):0;
    while(entries.size>limit||bytes>maxBytes){const key=entries.keys().next().value;if(Number.isFinite(maxBytes))bytes-=entrySize(entries.get(key));entries.delete(key);}
   },
   updateSavedReport(session,operationId,savedReport){
-   const key=resultKey(session),entry=entries.get(key);
+   const key=keyOf(session),entry=entries.get(key);
    if(entry?.analysis?.operationId!==operationId)return false;
    const analysis={...entry.analysis,savedReport:{...savedReport}};
    entries.set(key,{analysis,current:entry.current?.operationId===operationId?{...entry.current,savedReport:{...savedReport}}:entry.current});
    return true;
   },
   clearCurrent(session){
-   const key=resultKey(session),entry=entries.get(key);
+   const key=keyOf(session),entry=entries.get(key);
    // Clearing evidence must not discard the separately retained successful model report.
    if(!entry||entry.current?.kind==='analysis')return;
    if(entry.analysis)entries.set(key,{current:null,analysis:entry.analysis});else entries.delete(key);
   },
   clearAnalysis(session){
-   const key=resultKey(session),entry=entries.get(key);
+   const key=keyOf(session),entry=entries.get(key);
    if(!entry)return;
    if(entry.current&&entry.current.kind!=='analysis')entries.set(key,{current:entry.current});else entries.delete(key);
   },
-  delete(session){entries.delete(resultKey(session));}
+  delete(session){entries.delete(keyOf(session));}
  };
 }
 export function completedViewResult(result,completion,submission,draftRevision){

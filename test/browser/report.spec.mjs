@@ -75,7 +75,7 @@ test('configuration load and save use current workspace RPC, not browser storage
  await title.fill('未保存');await page.getByRole('button',{name:'恢复已保存',exact:true}).click();await expect(title).toHaveValue('工作目录 A');
  await page.evaluate(()=>window.fixture.switchSession('b'));await expect(title).toHaveValue('版本发布报告');
  await page.evaluate(()=>window.fixture.switchSession('a'));await expect(title).toHaveValue('工作目录 A');
- const snapshot=await stats(page);expect(snapshot.calls.filter(c=>c.endpoint==='configuration-save')).toHaveLength(1);expect(snapshot.calls.filter(c=>c.endpoint==='configuration-load').length).toBeGreaterThanOrEqual(4);expect(snapshot.modelCalls).toBe(0);
+ const snapshot=await stats(page);expect(snapshot.calls.filter(c=>c.endpoint==='configuration-save')).toHaveLength(1);expect(snapshot.calls.filter(c=>c.endpoint==='configuration-load')).toHaveLength(3);expect(snapshot.modelCalls).toBe(0);
 });
 
 test('restoring workspace configuration blocks preview edits and paid generation until settled',async({page})=>{
@@ -195,13 +195,38 @@ for(const width of [380,1280])test('projects default collapsed, toggle independe
 test('reader report shows only five sections and leaves untrusted markup inert',async({page},info)=>{
  const markdown=['# 内部标题','## 改动内容','模型报告 · 可读发布摘要','## 对外接口变更','','- 标识符 auth&#95;token 与 hex&#x5f;id','- 结论仍需人工复核','','| 接口 | 影响 |','| --- | --- |','| GET /api&#95;user | 待确认 |','','<details>','<summary>技术附录 · 证据索引</summary>','INTERNAL_TEXT','</details>','','源文本：<script>window.fixtureInjected=true</script>','<img src="https://attacker.invalid/beacon" onerror="window.fixtureInjected=true">','[危险跳转](javascript:window.fixtureInjected=true)','![外部图片](https://attacker.invalid/image.png)'].join('\n');
  await open(page,{richReport:markdown});await selectGit(page);await collect(page);await analyze(page);const document=report(page);
- await expect(document.getByRole('heading',{level:2})).toHaveText(['本次比较范围','对外接口变更','改动内容','QA 测试范围','待补充与待确认']);
- await expect(document.getByRole('listitem').first()).toHaveText('标识符 auth_token 与 hex_id');
+ await expect(document.getByRole('heading',{level:2})).toHaveText(['本次比较范围','对外接口变更','QA 测试范围','待补充与待确认','改动内容']);
+ await expect(document.getByText('标识符 auth_token 与 hex_id',{exact:true})).toBeVisible();
  await expect(document.getByRole('cell',{name:'GET /api_user',exact:true})).toBeVisible();
  await expect(document.locator('details,script,img,iframe,object,embed,svg,[onerror],[onclick],a[href^="javascript:"],a[href^="http"]')).toHaveCount(0);
  await expect(document).not.toContainText('INTERNAL_TEXT');await expect(page.locator('.cr-report-raw')).toHaveCount(0);expect(await page.evaluate(()=>window.fixtureInjected)).toBeUndefined();
  expect((await stats(page)).modelCalls).toBe(1);
  const image=info.outputPath('readable-report.png');await page.locator('.cr-result').screenshot({path:image});await info.attach('safe-readable-report',{path:image,contentType:'image/png'});
+});
+
+test('client report puts change details last and opens only reader-safe details',async({page})=>{
+ const rich=['## 本次比较范围','- 版本 A → B','## 对外接口变更','- SDK 候选接口：Load 需核对旧调用','## 影响范围','- 【更新提醒】切场景时留意旧资源残留。','- 【换包后回归】检查场景残留','- 【换包前核对】【成套重编】使用旧调用的项目需核对回调','- 【换包前核对】【成套重编】插件需验证链接','## QA 测试范围','### QA 可执行测试','- 正常场景回归','### 研发专项验证','- 研发专项｜P1｜核对引擎内部编译','- 研发专项｜P0｜目标包使用时先确认可启动','## 未知和待确认','- 旧二进制兼容待确认','- 【交付风险】只有目标包使用该模板时，需引擎确认能否编译。','## 改动内容','- 保留内部行为说明','<details>','<summary>技术附录</summary>','PRIVATE_APPENDIX','</details>'].join('\n');
+ await open(page,{richReport:rich});await selectGit(page);await collect(page);await route(page);await consent(page).check();await generate(page).click();
+ const doc=report(page);await expect(doc.getByRole('heading',{level:2}).last()).toHaveText('改动内容');
+ await expect(doc.getByRole('heading',{name:'更新后要注意什么'})).toBeVisible();
+ await expect(doc.getByText('切场景时留意旧资源残留。')).toBeVisible();
+ await expect(doc.getByRole('heading',{name:'这些情况需要确认'})).toBeVisible();
+ await expect(doc.getByText(/只有目标包使用该模板时/)).toHaveCount(1);
+ await expect(doc.getByRole('heading',{level:4})).toHaveCount(0);
+ await doc.getByText('查看其他接入与回归说明',{exact:true}).click();
+ await expect(doc.getByRole('heading',{level:4})).toHaveCount(0);
+ await expect(doc.getByText(/成套重编与链接/)).toHaveCount(1);
+ await expect(doc.getByText('使用旧调用的项目需核对回调')).toBeVisible();
+ await expect(doc.getByText('插件需验证链接')).toBeVisible();
+ await expect(doc.getByText(/目标包使用时先确认可启动/)).toBeVisible();
+ await expect(doc.getByText('旧二进制兼容待确认')).toBeVisible();
+ await expect(doc.getByText('核对引擎内部编译')).toHaveCount(0);
+ await doc.getByText('研发专项验证（由引擎执行）',{exact:true}).click();
+ await expect(doc.getByText('核对引擎内部编译')).toBeVisible();
+ const change=doc.getByText('逐项改动明细',{exact:true});await expect(change).toBeVisible();
+ await expect(doc.getByText('保留内部行为说明')).toHaveCount(0);await change.click();
+ await expect(doc.getByText('保留内部行为说明')).toBeVisible();await expect(doc).not.toContainText('PRIVATE_APPENDIX');
+ await expect(doc.getByText(/Load 需核对旧调用/)).toBeVisible();
 });
 
 test('single request preview distinguishes local coverage and budgeted excerpts, replan resets consent and recovery never redispatches (contract mock)',async({page})=>{
@@ -274,6 +299,7 @@ test('automatic non-code exclusion is default-on, persisted and invalidates prev
 test('directory exclusion persists, discloses scope and invalidates approval',async({page})=>{
  await open(page);await selectGit(page);await page.locator('summary').filter({hasText:/^2[.] 差异过滤/}).click();
  const field=page.getByRole('textbox',{name:'差异排除目录',exact:true});
+ await expect(field).toHaveValue('');await expect(field).toHaveAttribute('placeholder','示例：project-a|path/to/exclude/');
  const folder=page.getByRole('textbox',{name:'差异排除文件夹名',exact:true});
  await expect(folder).toHaveValue('Test');await folder.fill('../Test');await expect(capture(page)).toBeDisabled();await folder.fill('');
  await field.fill('client|../');await expect(capture(page)).toBeDisabled();
@@ -302,7 +328,7 @@ for(const declaration of ['client|../private.h','missing|sdk/','client|sdk/*.h',
 test('reader downloads omit appendices for current and retained reports without changing internal evidence',async({page})=>{
  const rich='# 模型报告 a\n\n## 本次比较范围\n项目 A：a → b\n## 改动内容\n模型报告 a\n## QA 测试范围\n- 测试显示 [1](#evidence-1)\n\n<details>\n<summary>技术附录：证据与覆盖记录</summary>\n\nINTERNAL_TEXT hash-value\n</details>\n\n<details>\n<summary>采集附录：固定版本、完整文件清单与限制</summary>\n\nINTERNAL_PATH\n</details>';
  await open(page,{richReport:rich});await selectGit(page);await collect(page);await consent(page).check();await generate(page).click();await expect(report(page)).toContainText('模型报告 a');await expect(page.locator('.cr-report-raw')).toHaveCount(0);await expect(report(page)).not.toContainText('INTERNAL_TEXT');
- async function downloadClean(name){const pending=page.waitForEvent('download');await page.getByRole('button',{name,exact:true}).click();const file=await pending;const text=await readFile(await file.path(),'utf8');expect(text).toContain('测试显示');expect(text).toContain('项目 A');expect([...text.matchAll(/^## (.*)$/gm)].map(x=>x[1])).toEqual(['本次比较范围','对外接口变更','改动内容','QA 测试范围','待补充与待确认']);expect(text).not.toMatch(/附录|INTERNAL_|hash-value|#evidence-/);}
+ async function downloadClean(name){const pending=page.waitForEvent('download');await page.getByRole('button',{name,exact:true}).click();const file=await pending;const text=await readFile(await file.path(),'utf8');expect(text).toContain('测试显示');expect(text).toContain('项目 A');expect([...text.matchAll(/^## (.*)$/gm)].map(x=>x[1])).toEqual(['本次比较范围','对外接口变更','QA 测试范围','待补充与待确认','改动内容']);expect(text).not.toMatch(/附录|INTERNAL_|hash-value|#evidence-/);}
  await downloadClean('下载 .md 文件');await page.getByRole('textbox',{name:'报告标题',exact:true}).fill('新范围');await collect(page);await downloadClean('下载上一份模型报告');expect((await stats(page)).modelCalls).toBe(1);
 });
 
@@ -503,7 +529,7 @@ test('clearing local evidence preserves previous model download and session rest
  const pending=page.waitForEvent('download');await download.click();const saved=await pending;
  expect(saved.suggestedFilename()).toMatch(/^release-report-/);expect(await readFile(await saved.path(),'utf8')).toContain('模型报告 a');
  await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await expect(view).toHaveCount(0);await expect(report(page)).toHaveCount(0);
- await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await expect(report(page)).toHaveCount(0);await expect(view).toBeVisible();await expect(download).toBeEnabled();await expect(consent(page)).toHaveCount(0);
+ await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await expect(report(page)).toHaveCount(0);await expect(view).toBeVisible();await expect(download).toBeEnabled();await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();
  await view.click();await expect(report(page)).toContainText('模型报告 a');
  await page.getByRole('button',{name:'清除报告',exact:true}).click();await expect(report(page)).toHaveCount(0);await expect(view).toHaveCount(0);await expect(download).toHaveCount(0);
  await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await page.getByRole('button',{name:'测试会话 A',exact:true}).click();
@@ -534,11 +560,53 @@ test('cancelled delayed capture cannot overwrite a retained report',async({page}
  await expect(report(page)).toContainText('模型报告 a');expect((await stats(page)).modelCalls).toBe(1);expect((await stats(page)).calls.filter(call=>call.endpoint==='preview-cancel')).toHaveLength(1);expect((await stats(page)).captureTasks.at(-1).status).toBe('stopped');
 });
 
-test('late response after session unmount does not leak a report into another session',async({page})=>{
- await open(page,{delayPreview:500,ignoreAbort:true});await selectGit(page);await capture(page).click();
- await page.getByRole('button',{name:'测试会话 B',exact:true}).click();
- await expect.poll(async()=>await page.evaluate(()=>window.fixture.getStats().settledPreviews)).toBe(1);
- await expect(report(page)).toHaveCount(0);await expect(page.locator('.cr-workspace')).toContainText('G:/fixture/b');expect((await stats(page)).calls.filter(call=>call.endpoint==='preview-cancel')).toHaveLength(1);expect((await stats(page)).captureTasks[0].status).toBe('stopped');
+test('detached capture completes only in its owning workspace without restarting',async({page})=>{
+ await open(page,{holdPreview:true});await selectGit(page);
+ const title=page.getByRole('textbox',{name:'报告标题',exact:true});await title.fill('仅 A 的草稿');await capture(page).click();
+ await expect.poll(async()=>(await stats(page)).captureTasks[0]?.status).toBe('pending');
+ await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await expect(title).toHaveValue('版本发布报告');
+ await page.getByRole('button',{name:'切离发布报告',exact:true}).click();await expect(title).toHaveCount(0);
+ await page.evaluate(()=>window.fixture.releasePreview());
+ await expect.poll(async()=>(await stats(page)).captureTasks[0]?.status).toBe('completed');
+ await page.getByRole('button',{name:'返回发布报告',exact:true}).click();await expect(report(page)).toHaveCount(0);
+ await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await expect(title).toHaveValue('仅 A 的草稿');
+ await expect(report(page)).toContainText('本地证据 a 仅 A 的草稿');await expect(consent(page)).not.toBeChecked();
+ const proof=await stats(page);expect(proof.calls.filter(call=>call.endpoint==='preview-start')).toHaveLength(1);
+ expect(proof.calls.filter(call=>call.endpoint==='preview-cancel')).toHaveLength(0);expect(proof.modelCalls).toBe(0);
+});
+
+test('tab remount retains preview and plan settings but requires fresh model consent',async({page})=>{
+ await open(page);await selectGit(page);await collect(page);await consent(page).check();
+ await page.getByRole('button',{name:'切离发布报告',exact:true}).click();await expect(report(page)).toHaveCount(0);
+ await page.getByRole('button',{name:'返回发布报告',exact:true}).click();await expect(report(page)).toContainText('本地证据 a');
+ await expect(consent(page)).not.toBeChecked();await expect(generate(page)).toBeDisabled();
+ const width=page.getByRole('combobox',{name:'模型并发路数'});await width.selectOption('3');
+ await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await expect(width).toHaveCount(0);
+ const title=page.getByRole('textbox',{name:'报告标题',exact:true});await title.fill('仅 B 的草稿');
+ await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await expect(width).toHaveValue('3');await expect(title).toHaveValue('版本发布报告');
+ await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await expect(title).toHaveValue('仅 B 的草稿');
+ const proof=await stats(page);expect(proof.calls.filter(call=>call.endpoint==='release-preview')).toHaveLength(0);expect(proof.modelCalls).toBe(0);
+});
+
+test('reopening the workspace with a new DSH session preserves its preview, task and result',async({page})=>{
+ await open(page,{asyncGenerate:true,holdGenerate:true});await selectGit(page);
+ const title=page.getByRole('textbox',{name:'报告标题',exact:true});await title.fill('同工作区原草稿');await collect(page);
+ await consent(page).check();await page.getByRole('button',{name:'切离发布报告',exact:true}).click();
+ await page.evaluate(()=>window.fixture.switchSession('a2'));
+ await page.getByRole('button',{name:'返回发布报告',exact:true}).click();await expect(title).toHaveValue('同工作区原草稿');
+ await expect(report(page)).toContainText('本地证据 a 同工作区原草稿');await expect(consent(page)).not.toBeChecked();
+ await route(page);await consent(page).check();await generate(page).click();
+ await expect(page.locator('.cr-progress')).toContainText('fixture analyzing');
+ await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await expect(report(page)).toHaveCount(0);
+ await expect(page.getByRole('region',{name:'报告恢复'})).toHaveCount(0);
+ await page.evaluate(()=>window.fixture.switchSession('a2'));await expect(page.locator('.cr-progress')).toContainText('fixture analyzing');
+ await page.evaluate(()=>window.fixture.releaseGenerate());await expect(report(page)).toContainText('模型报告 a');
+ await expect(page.getByText('G:/fixture/a/dsh-code-report-reports/report.md',{exact:true})).toBeVisible();
+ const proof=await stats(page);expect(proof.modelCalls).toBe(1);
+ expect(proof.calls.filter(call=>call.endpoint==='preview-start')).toHaveLength(1);
+ for(const endpoint of ['analysis-plan','generate-start']){const calls=proof.calls.filter(call=>call.endpoint===endpoint);expect(calls).toHaveLength(1);expect(calls[0].payload.sessionId).toBe('a');}
+ expect(paidReads(proof.calls).every(call=>call.payload.sessionId==='a')).toBe(true);
+ expect(proof.calls.some(call=>call.payload.sessionId==='a2')).toBe(false);
 });
 
 test('no workspace and incompatible backend never dispatch collection or model',async({page})=>{
@@ -576,19 +644,22 @@ test('terminal paid completion and stopped proof clear a previously polled analy
  }
 });
 
-test('in-place successful analysis is fresh and session restoration remains conservatively stale',async({page})=>{
+test('a completed report stays current when returning to the unchanged draft',async({page})=>{
  await startHeldAnalysis(page);await expect(page.locator('.cr-progress')).toContainText('fixture analyzing');
  await page.evaluate(()=>window.fixture.releaseGenerate());await expect(report(page)).toContainText('模型报告 a');
  const stale=page.getByRole('status').filter({hasText:'已有报告与当前草稿可能不同，旧结果已保留'});await expect(stale).toHaveCount(0);
  await page.getByRole('button',{name:'测试会话 B',exact:true}).click();await expect(report(page)).toHaveCount(0);
- await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await expect(report(page)).toContainText('模型报告 a');await expect(stale).toBeVisible();await assertPaidProof(page);
+ await page.getByRole('button',{name:'测试会话 A',exact:true}).click();await expect(report(page)).toContainText('模型报告 a');await expect(stale).toHaveCount(0);await assertPaidProof(page);
 });
 
 test('in-flight paid work survives Panel detach and late success returns only to original session',async({page})=>{
  await startHeldAnalysis(page);await page.getByRole('button',{name:'测试会话 B',exact:true}).click();
  await expect(page.locator('.cr-workspace')).toContainText('G:/fixture/b');await expect(report(page)).toHaveCount(0);
- await expect(capture(page)).toBeDisabled();await page.evaluate(()=>window.fixture.releaseGenerate());
- await expect.poll(async()=>(await stats(page)).settledGenerations).toBe(1);await page.getByRole('button',{name:'测试会话 A',exact:true}).click();
+ await expect(capture(page)).toBeDisabled();await page.getByRole('button',{name:'切离发布报告',exact:true}).click();
+ await page.evaluate(()=>window.fixture.releaseGenerate());
+ await expect.poll(async()=>(await stats(page)).settledGenerations).toBe(1);
+ await page.getByRole('button',{name:'返回发布报告',exact:true}).click();await expect(report(page)).toHaveCount(0);
+ await page.getByRole('button',{name:'测试会话 A',exact:true}).click();
  await expect(report(page)).toContainText('模型报告 a');expect((await stats(page)).generateAborts).toBe(0);await assertPaidProof(page);
 });
 

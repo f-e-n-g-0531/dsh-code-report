@@ -29,6 +29,10 @@ test('generated headings, lists, inline identifiers, tables and local citations 
  for(const expected of ['<h1>发布报告</h1>','<h2>对外接口变更</h2>','<strong>中文_接口</strong>','<code>request_id</code>','<ul>','<ol>','<table>','href="#evidence-1"','id="evidence-1"'])assert.ok(html.includes(expected),expected);
  assert.ok(!html.includes('&amp;#95;'));
 });
+test('topic details and QA steps render as nested list items, not peer bullets',()=>{
+ const html=render('- **资源通知**\n  - QA 建议\n    - 检查场景残留\n- 独立事项');
+ assert.ok(html.includes('<li><strong>资源通知</strong><ul><li>QA 建议<ul><li>检查场景残留</li></ul></li></ul></li><li>独立事项</li>'));
+});
 test('numeric entities decode only once as inert text; raw HTML, images and URLs never execute',()=>{
  const html=render('&#60;script&#62;alert(1)&#60;/script&#62;\n<img src=x onerror=alert(1)>\n[bad](javascript:alert(1))\n![tracking](https://attacker.invalid/pixel)\n&#91;encoded&#93;&#40;javascript:alert(1)&#41;');
  assert.ok(!/<script|<img|onerror=|href="javascript:|src="https:/.test(html.replaceAll('onerror=alert(1)','literal-error')));

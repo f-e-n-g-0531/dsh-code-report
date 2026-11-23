@@ -7,7 +7,7 @@ import {PACKAGE_NAME,PROTOCOL_VERSION} from '../../src/protocol.mjs';
 const settings={count:1,ttl:600000,failPreview:false,failGenerate:false,delayPreview:0,delayGenerate:0,ignoreAbort:false,runtimeMismatch:false,progressFailure:false,holdGenerate:false,holdRefs:false,...window.__fixtureOptions};
 const calls=[],previews=new Map(),results=new Map(),captureTasks=new Map(),gates=new Map(),workspaceConfigurations=new Map();
 let previewSequence=0,modelCalls=0,settledPreviews=0,settledGenerations=0,generateAborts=0,switchSession;
-const sessions={a:{id:'a',cwd:'G:/fixture/a',retainedBy:{mainView:1}},b:{id:'b',cwd:'G:/fixture/b',retainedBy:{mainView:1}}};
+const sessions={a:{id:'a',cwd:'G:/fixture/a',retainedBy:{mainView:1}},b:{id:'b',cwd:'G:/fixture/b',retainedBy:{mainView:1}},a2:{id:'a2',cwd:'G:/fixture/a',retainedBy:{mainView:1}}};
 const ok=value=>({ok:true,value});
 const execution=(phase,{dispatched=true,available=false}={})=>({backendInstanceId:'fixture-backend',dispatch:dispatched?'dispatched':'not-dispatched',dispatchCount:dispatched?1:0,completedBatches:available?(settings.analysisBatches||1):0,totalBatches:settings.analysisBatches||1,resultAvailability:available?'available':'unavailable',phase});
 const fail=(message,code='code-report/input',extra={})=>({ok:false,error:{code,message,details:{fixture:true,...extra}}});
@@ -118,5 +118,5 @@ await new Promise((resolve,reject)=>{const script=document.createElement('script
 const plugin=entry.factory(id=>{if(id!=='react')throw new Error('Unexpected external '+id);return React;});
 let Page;
 plugin.apply({connection:{rpc:{call:rpc}},slots:{inject(_name,fn){fn();},register(options,component){if(options.name==='main')Page=component;}}});
-function App(){const [id,setId]=useState(settings.noSession?null:'a');switchSession=setId;return <><div aria-label="模拟宿主会话"><button onClick={()=>setId('a')}>测试会话 A</button><button onClick={()=>setId('b')}>测试会话 B</button><button onClick={()=>setId(null)}>关闭测试会话</button></div><Page useSessions={select=>select({byId:id?{[id]:sessions[id]}:{}})}/></>;}
+function App(){const [id,setId]=useState(settings.noSession?null:'a');const [showReport,setShowReport]=useState(true);switchSession=setId;return <><div aria-label="模拟宿主会话"><button onClick={()=>setId('a')}>测试会话 A</button><button onClick={()=>setId('b')}>测试会话 B</button><button onClick={()=>setId(null)}>关闭测试会话</button></div><button onClick={()=>setShowReport(!showReport)}>{showReport?'切离发布报告':'返回发布报告'}</button>{showReport&&<Page useSessions={select=>select({byId:id?{[id]:sessions[id]}:{}})}/>}</>;}
 createRoot(document.getElementById('root')).render(<App/>);

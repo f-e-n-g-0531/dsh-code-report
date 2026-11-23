@@ -4,7 +4,7 @@ import {reportDownloadText} from '../src/report-export.mjs';
 import {markdownText} from '../src/markdown-text.mjs';
 import {renderReadableAnalysis} from '../src/readable-analysis.mjs';
 import {markdown} from '../src/report.mjs';
-const titles=['本次比较范围','对外接口变更','改动内容','QA 测试范围','待补充与待确认'];
+const titles=['本次比较范围','对外接口变更','QA 测试范围','待补充与待确认','改动内容'];
 
 for(const escaped of [false,true])test('public endpoints survive source cleanup '+(escaped?'after markdownText':'as raw Markdown'),()=>{
  const endpoints=['https://api.example.com/v1/client.js','http://example.com/api.hpp?file=src/loader.cpp&next=/api/user.ts#result','/api/client.js','/v1/user.ts?file=src/api.cpp&mode=fast','//cdn.example.com/sdk.js','/api_user','https://example.com/get?q=(src/query.cpp)&next=public.js','/api?q=(src/query.cpp)&next=public.js'];
@@ -40,7 +40,7 @@ test('real readable-analysis rendering preserves escaped endpoint contracts with
  const copy=reportDownloadText(rendered,'analysis');
  assert.ok(rendered.includes(markdownText(endpoint)));
  assert.ok(copy.includes(markdownText(endpoint)));assert.ok(copy.includes(markdownText(root)));
- assert.doesNotMatch(copy,/internal_api|internal[.]hpp|PRIVATE(?:&#95;|_)SOURCE|SECRET_SOURCE|#evidence-|<details>|未知和待确认/);
+ assert.doesNotMatch(copy,/internal_api|internal[.]hpp|PRIVATE(?:&#95;|_)SOURCE|SECRET_SOURCE|#evidence-|技术附录|未知和待确认/);
  assert.doesNotMatch(copy,/https:\/\/|`https|&next=/); // Keep original inert entities, do not decode output.
  assert.deepEqual([...copy.matchAll(/^## (.*)$/gm)].map(match=>match[1]),titles);
  const [body,appendix]=rendered.split('\n<details>');
@@ -123,16 +123,97 @@ test('legacy collection limitations under comparison scope are excluded without 
 });
 test('missing sections are marked unknown rather than fabricated and unrelated headings close a section',()=>{const copy=reportDownloadText('## 影响范围\n待确认\n## 内部记录\nHIDDEN','analysis');assert.doesNotMatch(copy,/HIDDEN/);assert.equal(copy.match(/^## /gm).length,5);assert.match(copy,/未提供可对外展示的内容，待确认/);});
 
-test('final polish moves QA gaps and preserves distinct steps',()=>{
- const input=['## QA 测试范围','### QA 可执行测试','- 登录 [1](#evidence-1)','  - 检查成功','- 登录 [2](#evidence-2)','  - 检查成功','- 登录','  - 检查错误提示','### 测试前待补充','- 补充测试账号','## 影响范围','不在正式报告','## 未知和待确认','- 补充测试账号','- 待确认兼容范围'].join('\n');
+test('reader export does not infer identical interfaces from byte-identical redacted text',()=>{
+ const input='## 对外接口变更\n- SDK 候选接口：Load [1](#evidence-1)\n- SDK 候选接口：Load [2](#evidence-2)';
+ const copy=reportDownloadText(input,'analysis');
+ assert.equal(copy.match(/SDK 候选接口：Load/g).length,2);assert.equal(reportDownloadText(copy,'analysis'),copy);
+});
+test('client final polish groups explicit actions and folds only engine QA while retaining all risks',()=>{
+ const input=['## 本次比较范围','- A → B','## 影响范围',
+  '- 【换包后回归】首次进场检查角色是否漏显。','- 【换包前核对】配套库一起重编。','- 【换包前核对】配套库一起重编。',
+  '- 【等引擎确认】旧包混用仍待确认。','- 未分类动作也要保留。','## 对外接口变更','- SDK 候选接口：Load',
+  '## QA 测试范围','### QA 可执行测试','- 客户端返回场景','  - 观察残留','### 研发专项验证','- 验证备用导出 lib/src.cpp','  - 保留不同位宽检查',
+  '### 测试前待补充','- 需提供实际版本包','## 未知和待确认','- 恢复失败可能删备份，待确认。','## 改动内容','- 保留原有行为。'].join('\n');
+ const copy=reportDownloadText(input,'analysis');
+ assert.doesNotMatch(copy,/^#### (?:换包前核对|换包后回归|等引擎确认)/m);
+ assert.equal(copy.match(/配套库一起重编/g).length,1);assert.match(copy,/未分类动作也要保留/);assert.doesNotMatch(copy,/【换包|lib\/src\.cpp/);
+ assert.match(copy,/<summary>研发专项验证（由引擎执行）<\/summary>[\s\S]*保留不同位宽检查/);
+ assert.match(copy,/## 待补充与待确认[\s\S]*需提供实际版本包[\s\S]*恢复失败可能删备份/);
+ assert.deepEqual([...copy.matchAll(/^## (.+)$/gm)].map(m=>m[1]),titles);
+ assert.equal(reportDownloadText(copy,'analysis'),copy);
+});
+test('identical action text in different stages stays under each stage after re-export',()=>{
+ const input='## 影响范围\n'+['换包前核对','换包后回归','等引擎确认'].map(stage=>'- 【'+stage+'】核对相同的样例。').join('\n');
+ const copy=reportDownloadText(input,'analysis');
+ assert.equal(copy.match(/核对相同的样例。/g).length,3);
+ assert.equal(reportDownloadText(copy,'analysis'),copy);
+});
+test('private exclusion rules stay out of formal exports while the scope limitation remains visible',()=>{
+ const snapshot={title:'release',repositories:[{path:'included-project',type:'git',a:'a',b:'b',files:[],scopeExclusions:[{path:'private-sandbox/case.txt',item:'D',directory:'private-sandbox/'}]}],limitations:[]};
+ const internal=markdown(snapshot,'## 改动内容\n- 保留改动。',null,{structured:true,evidenceManifest:{files:[]}});
+ assert.match(internal,/private-sandbox/);
+ const copy=reportDownloadText(internal,'analysis');
+ assert.match(copy,/部分变更已按本次范围设置排除/);assert.doesNotMatch(copy,/private-sandbox|按审查范围排除/);
+ assert.match(copy,/included-project/);assert.equal(reportDownloadText(copy,'analysis'),copy);
+});
+test('older report heading is renamed without changing actual client program references',()=>{
+ const input='## 本次比较范围\n### 客户端接入与影响\n- 旧客户端程序仍需验证。\n## 对外接口变更\n- SDK 候选接口：Load';
+ const copy=reportDownloadText(input,'analysis');
+ assert.match(copy,/### 更新后要注意什么[\s\S]*旧客户端程序仍需验证/);
+ assert.doesNotMatch(copy,/### 客户端接入与影响|换包前，先核对/);assert.equal(reportDownloadText(copy,'analysis'),copy);
+});
+test('real conditions with an old workflow label are not removed',()=>{
+ const input='## 本次比较范围\n### 使用方接入与影响\n- **换包前**：仅随包交付插件时核对兼容，锁版项目不适用。';
+ const copy=reportDownloadText(input,'analysis');assert.match(copy,/仅随包交付插件时核对兼容，锁版项目不适用/);
+ assert.equal(reportDownloadText(copy,'analysis'),copy);
+});
+test('P0 engine checks remain visible in the release reader',()=>{
+ for(const separator of ['｜','&#124;','&#65372;']){
+  const copy=reportDownloadText('## QA 测试范围\n### 研发专项验证\n- 研发专项'+separator+'P0'+separator+'核对是否能启动。','analysis');
+  assert.match(copy,/### P0 发布前优先核对[\s\S]*核对是否能启动/);assert.doesNotMatch(copy,/<details>/);
+  assert.equal(reportDownloadText(copy,'analysis'),copy);
+ }
+});
+test('shared rebuild instruction is shown once with distinct scopes and exceptions preserved',()=>{
+ const input=['## 影响范围','- 【换包前核对】【成套重编】插件 A：核对旧回调。','- 【换包前核对】【成套重编】工具 B：仅在接入新接口时。','  - 不影响其他工具。','- 【换包前核对】锁版项目只需核对版本。'].join('\n');
+ const copy=reportDownloadText(input,'analysis');
+ assert.equal(copy.match(/成套重编与链接/g).length,1);assert.doesNotMatch(copy,/【成套重编】/);
+ assert.match(copy,/^  - 插件 A：核对旧回调。$/m);assert.match(copy,/^  - 工具 B：仅在接入新接口时。$/m);
+ assert.match(copy,/^    - 不影响其他工具。$/m);assert.match(copy,/^- 锁版项目只需核对版本。$/m);
+ assert.equal(reportDownloadText(copy,'analysis'),copy);
+});
+test('mixed specialist checks promote only P0, preserving children and idempotence',()=>{
+ const copy=reportDownloadText(['## QA 测试范围','### QA 可执行测试','- 已接入场景','### 研发专项验证','- 研发专项｜P1｜普通检查','  - 普通步骤','- 研发专项&#124;P0&#124;有条件的阻断风险','  - 仅目标包使用时','- 研发专项｜P2｜另一个专项'].join('\n'),'analysis');
+ const [visible,fold]=copy.split('<details>');
+ assert.ok(visible.indexOf('有条件的阻断风险')<visible.indexOf('已接入场景'));assert.match(visible,/仅目标包使用时/);
+ assert.doesNotMatch(visible,/普通检查|另一个专项/);assert.match(fold,/普通步骤[\s\S]*另一个专项/);
+ assert.doesNotMatch(fold,/阻断风险/);assert.equal(reportDownloadText(copy,'analysis'),copy);
+});
+test('internal report cannot export lookalike folds and malformed roles stay visible',()=>{
+ const input=['## 影响范围','- 【换包前核对】【成套重编】仅插件 A。','','  - 保留例外。','## QA 测试范围','### 研发专项验证','- QA｜P0｜检查场景','- 待补充｜缺少入口','- 研发专项｜P1｜核对实现','## 改动内容','- 改动：改动：改动：保留行为。','<details>','<summary>逐项改动明细</summary>','- PRIVATE_METADATA','</details>'].join('\n');
+ const copy=reportDownloadText(input,'analysis',{source:'internal'});
+ assert.match(copy,/仅插件 A。\n    - 保留例外/);assert.match(copy,/### 专项角色待核对[\s\S]*检查场景[\s\S]*缺少入口/);
+ assert.doesNotMatch(copy,/PRIVATE_METADATA|改动：改动：/);assert.equal(reportDownloadText(copy,'analysis'),copy);
+});
+test('reader shows actual update reminders and conditional delivery risks before optional detail',()=>{
+ const input=['## 本次比较范围','- 比较版本','## 影响范围','- 【换包前核对】核对 lib/secret.hpp 旧入口。','- 【更新提醒】模型加载：等待成功后再显示。','- 【换包后回归】检查模型是否漏显。','## 未知和待确认','- 【交付风险】仅当相关资源随包交付时，请引擎先证明能编译。','  - 使用替代资源时不适用。','- 旧库兼容待确认。','## 对外接口变更','- SDK 候选接口：Load','## 改动内容','- 保留相关改动。'].join('\n');
+ const copy=reportDownloadText(input,'analysis',{source:'internal'});
+ const [front,detail]=copy.split('<summary>查看其他接入与回归说明</summary>');
+ assert.match(front,/更新后要注意什么[\s\S]*等待成功后再显示/);assert.doesNotMatch(front,/换包前|换包后|【更新提醒】/);assert.match(front,/仅当相关资源随包交付[\s\S]*不适用/);
+ assert.doesNotMatch(front,/旧入口|模型是否漏显/);assert.match(detail,/旧入口[\s\S]*模型是否漏显/);
+ assert.match(detail,/旧库兼容待确认/);assert.equal(copy.match(/仅当相关资源随包交付/g).length,1);
+ assert.doesNotMatch(copy,/secret\.hpp|【交付风险】/);assert.equal(reportDownloadText(copy,'analysis'),copy);
+});
+test('final polish moves QA gaps without deduplicating evidence-free text',()=>{
+ const input=['## QA 测试范围','### QA 可执行测试','- 登录 [1](#evidence-1)','  - 检查成功','- 登录 [2](#evidence-2)','  - 检查成功','- 登录','  - 检查错误提示','### 测试前待补充','- 补充测试账号','## 影响范围','接入时核对登录' ,'## 未知和待确认','- 补充测试账号','- 待确认兼容范围'].join('\n');
  const copy=reportDownloadText(input,'analysis');
  const [qa,gaps]=copy.split('## QA 测试范围')[1].split('## 待补充与待确认');
- assert.equal(qa.match(/^- 登录$/gm).length,2);
- assert.equal(qa.match(/检查成功/g).length,1);
+ assert.equal(qa.match(/^- 登录$/gm).length,3);
+ assert.equal(qa.match(/检查成功/g).length,2);
  assert.match(qa,/检查错误提示/);
  assert.doesNotMatch(qa,/补充测试账号/);
- assert.equal(gaps.match(/补充测试账号/g).length,1);
+ assert.equal(gaps.match(/补充测试账号/g).length,2);
  assert.match(gaps,/待确认兼容范围/);
- assert.doesNotMatch(copy,/不在正式报告|#evidence-/);
+ assert.match(copy.split('## 对外接口变更')[0],/更新后要注意什么[\s\S]*接入时核对登录/);assert.doesNotMatch(copy,/#evidence-/);
  assert.equal(reportDownloadText(copy,'analysis'),copy);
 });

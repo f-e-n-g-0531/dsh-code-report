@@ -27,7 +27,7 @@ function inline(text){
 }
 function fenceStart(line){return line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);}
 const heading=line=>line.match(/^(#{1,6})\s+(.+)$/);
-const list=line=>line.match(/^\s*(?:([-+*])\s+|(\d+)\.\s+)(.+)$/);
+const list=line=>line.match(/^(\s*)(?:([-+*])\s+|(\d+)\.\s+)(.+)$/);
 const cells=line=>line.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(value=>value.trim());
 const separator=line=>/^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
 // Keep appendix bodies out of both the parser and the DOM until native details opens.
@@ -72,9 +72,17 @@ function blocks(lines,{depth=0}={}){
   }
   const entry=list(line);
   if(entry){
-   const ordered=!!entry[2],items=[];
-   while(i<lines.length){const item=list(lines[i]);if(!item||!!item[2]!==ordered)break;items.push(<li key={i}>{inline(item[3])}</li>);i++;}
-   result.push(React.createElement(ordered?'ol':'ul',{key},items));continue;
+   const group=(indent,ordered,nesting)=>{
+    const start=i,items=[];
+    while(i<lines.length){
+     const item=list(lines[i]);if(!item||item[1].length!==indent||!!item[3]!==ordered)break;
+     const key=i++,children=[];let next;
+     while(nesting<4&&(next=list(lines[i]??''))&&next[1].length>indent)children.push(group(next[1].length,!!next[3],nesting+1));
+     items.push(<li key={key}>{inline(item[4])}{children}</li>);
+    }
+    return React.createElement(ordered?'ol':'ul',{key:start},items);
+   };
+   result.push(group(entry[1].length,!!entry[3],0));continue;
   }
   const anchor=line.match(/^<a id="([A-Za-z][A-Za-z0-9_.:-]*)"><\/a>$/);
   if(anchor){result.push(<span id={anchor[1]} key={key}/>);i++;continue;}
