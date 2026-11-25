@@ -1,3 +1,5 @@
+import {moduleLayout, readModuleMarker} from './report-modules.mjs';
+
 // Reader export is a derived copy; internal evidence and original text are retained.
 const pendingTitle='待补充与待确认';
 const scopeTitle='本次比较范围', interfaceTitle='对外接口变更', changeTitle='改动内容';
@@ -83,7 +85,7 @@ function readerLine(line){
 const cleanReaderLine=line=>readerLine(line).replace(/【事项(?:：|&#58;)[^】\r\n]{2,60}】[ \t]*/gu,'').replace(/(?:改动(?:：|&#58;)){2,}/g,'改动：').trimEnd();
 // Use only producer-supplied action labels. Unclassified text stays visible;
 // never infer equivalence from similar wording or take only the first N items.
-function clientActions(lines){
+function clientActions(lines,{deduplicate=true}={}){
  const groups=new Map(actionTitles.map(title=>[title,[]])), other=[];
  const rebuild=[], reminders=[];
  let target=other;
@@ -99,13 +101,14 @@ function clientActions(lines){
   target=other;other.push(line);
  }
  const out=[];
+ const actionBody=items=>polish(items,deduplicate?'影响范围':'');
  for(const [title,items] of groups){
-  const body=polish(items,'影响范围');
+  const body=actionBody(items);
   const shared=title==='换包前核对'&&rebuild.length
-   ? '- '+rebuildTitle+'\n'+polish(rebuild,'影响范围').split('\n').filter(Boolean).map(line=>'  '+line).join('\n') : '';
+   ? '- '+rebuildTitle+'\n'+actionBody(rebuild).split('\n').filter(Boolean).map(line=>'  '+line).join('\n') : '';
   if(shared||body)out.push([shared,body].filter(Boolean).join('\n'), '');
  }
- const rest=polish(other,'影响范围');
+ const rest=actionBody(other);
  if(rest)out.push(rest);
  return {main:polish(reminders,'更新提醒'),details:out.join('\n').trim()};
 }
@@ -137,7 +140,7 @@ function polish(lines, title){
 function splitDeliveryRisks(lines){
  const risks=[], rest=[];let target=rest;
  for(const line of lines){
-  const risk=/^- 【交付风险】\s*(\S.*)$/u.exec(line);
+  const risk=/^- (?:待确认：)?【交付风险】\s*(\S.*)$/u.exec(line);
   if(risk){target=risks;target.push('- '+risk[1]);continue;}
   if(line.trim()&&!/^ {2,}\S/.test(line))target=rest;
   target.push(line);
@@ -169,9 +172,112 @@ function polishQa(body){
  return [lead,urgentTitle+'\n\n'+urgent.join('\n').trimEnd(),rest].filter(Boolean).join('\n\n');
 }
 const qaNotice='以下为建议回归，尚未执行；只验证项目已接入的场景。';
+const moduleGuide='正文按项目与功能模块归并；跨项目事项和归属待确认事项单列。';
+const previousChapterModuleGuide='各章节内按项目与功能模块归并；跨项目事项和归属待确认事项单列。';
+const chapterModuleGuide='QA 测试范围统一列出可执行回归；其他内容按项目与功能模块归并。';
+const readerModuleGuides=new Set([moduleGuide,previousChapterModuleGuide,chapterModuleGuide]);
+const moduleSummaries=new Set([actionSummary,specialistSummary,'逐项改动明细']);
+const pendingSummary='查看待补充与待确认事项';
+// Previously exported modular reports contain only sanitized headings, prose,
+// lists and the reader-facing folds we produce here.
+function readModuleCopy(markdown){
+ const lines=markdown.split(/\r?\n/);
+ if(lines[0]!=='## '+scopeTitle||!lines.some(line=>readerModuleGuides.has(line)))return null;
+ const output=[];let chapter=null,chapterFold=null;
+ for(let i=0;i<lines.length;i++){
+  const line=lines[i];
+  if(/^#{1,2} /.test(line)){
+   if(chapterFold)return null;
+   chapter=line;
+  }
+  if(chapterFold&&line==='</details>'){chapterFold=null;output.push(line);continue;}
+  if(line==='<details>'){
+   const summary=/^<summary>([^<>]+)<\/summary>$/.exec(lines[i+1]??'')?.[1];
+   const chapterSummary=chapter==='## '+pendingTitle?pendingSummary:chapter==='## '+changeTitle?readerFolds.get(changeTitle):null;
+   if(!chapterFold&&summary&&summary===chapterSummary){
+    chapterFold=chapter;output.push(line,lines[++i]);continue;
+   }
+   if(!moduleSummaries.has(summary)||(chapterFold&&(chapterFold!=='## '+pendingTitle||summary!==specialistSummary)))return null;
+   const start=i+2;let end=start;
+   while(end<lines.length&&blankOrBullet(lines[end])&&!/[<>]/.test(lines[end]))end++;
+   if(lines[end]!=='</details>')return null;
+   output.push(line,lines[i+1],...lines.slice(start,end).map(cleanReaderLine),lines[end]);i=end;continue;
+  }
+  if(/[<>]/.test(line)||/^ {0,3}(?:`{3,}|~{3,})/.test(line))return null;
+  output.push(cleanReaderLine(line));
+ }
+ return chapterFold?null:output.join('\n');
+}
+// Route whole list items by explicit role, not by implementation keywords.
+const qaRole=/^- (QA|研发专项|待补充)(?:[｜|]|&#(?:124|65372|x0*(?:7c|ff5c));)/iu;
+function partitionModuleQa(lines){
+ const result={qa:[],specialist:[],pending:[]};
+ let section=null,target=null;
+ for(const line of lines){
+  if(/^### /.test(line)){section=line;target=null;continue;}
+  if(line.startsWith('- ')){
+   const role=qaRole.exec(line)?.[1];
+   target=role==='QA'?result.qa:role==='研发专项'||(!role&&section===specialistTitle)?result.specialist:result.pending;
+  }else if(line.trim()&&!/^ {2,}\S/.test(line))target=result.pending;
+  if(target)target.push(line);
+ }
+ return result;
+}
+function renderModuleReport(scope, groups, buckets) {
+ const projectOrder=new Map();
+ for(const line of scope){const match=/^- \*\*(.+?)\*\*：/.exec(line);if(match)projectOrder.set(match[1],projectOrder.size);}
+ const rank={repo:0,cross:1,unassigned:2};
+ const ordered=[...groups.values()].sort(({key:a},{key:b})=>rank[a[0]]-rank[b[0]]
+  ||(projectOrder.get(a[1])??Infinity)-(projectOrder.get(b[1])??Infinity)
+  ||(a[1]<b[1]?-1:a[1]>b[1]?1:0)||Number(a[2]===null)-Number(b[2]===null));
+ const projectName=([kind,repo])=>kind==='repo'?repo:kind==='cross'?'跨项目联调':'归属待确认';
+ const moduleName=([kind,,name])=>name??(kind==='repo'?'其他事项（功能模块待确认）':'其他事项');
+ const inside=(render,{flat=false}={})=>{
+  const output=[];let project;
+  for(const {key,rows} of ordered){
+   const body=render(rows);if(!body)continue;
+   const [kind,repo]=key,id=JSON.stringify([kind,repo]);
+   if(!flat&&id!==project){output.push('### '+projectName(key));project=id;}
+   output.push('#### '+(flat?projectName(key)+' · ':'')+moduleName(key),body);
+  }
+  return output.join('\n\n');
+ };
+ const impacts=inside(rows=>{
+  const {main,details}=clientActions(rows.get('影响范围')??[],{deduplicate:false});
+  return [main,details&&actionFold(details)].filter(Boolean).join('\n\n');
+ },{flat:true});
+ const risks=inside(rows=>splitDeliveryRisks(rows.get(pendingTitle)??[]).risks,{flat:true});
+ const roles=new Map(ordered.map(({rows})=>[rows,partitionModuleQa(rows.get(qaTitle)??[])]));
+ // QA reads one checklist. Keep the complete items (including similar tests
+ // with different steps) without exposing project or module headings.
+ const qa=polish(ordered.flatMap(({rows})=>roles.get(rows).qa),qaTitle);
+ const pending=inside(rows=>polish([...splitDeliveryRisks(rows.get(pendingTitle)??[]).rest,...roles.get(rows).pending],pendingTitle));
+ const specialist=inside(rows=>{
+  const items=polish(roles.get(rows).specialist,qaTitle);
+  return items?polishQa(specialistTitle+'\n\n'+items).replace(/^### /gm,'##### '):'';
+ },{flat:true});
+ const change=inside(rows=>polish(rows.get(changeTitle)??[],changeTitle));
+ const interfaceBody=inside(rows=>polish(rows.get(interfaceTitle)??[],interfaceTitle));
+ const bodies=new Map([
+  [scopeTitle,[polish(scope,scopeTitle),chapterModuleGuide,impacts&&impactTitle,impacts,risks&&riskTitle,risks]],
+  [interfaceTitle,[interfaceBody||polish(buckets.get(interfaceTitle),interfaceTitle)]],
+  [qaTitle,[qa&&qaNotice,qa]],
+  [pendingTitle,[pending|| (risks?'需确认的交付风险已列在「这些情况需要确认」。':''),specialist&&'### 研发专项验证（不由 QA 执行）',specialist]],
+  [changeTitle,[change]],
+ ]);
+ return sections.map(title=>{
+  const body=bodies.get(title).filter(Boolean).join('\n\n')||emptySection;
+  const summary=title===pendingTitle?pendingSummary:readerFolds.get(title);
+  return '## '+title+'\n\n'+(summary
+   ?'<details>\n<summary>'+summary+'</summary>\n\n'+body+'\n\n</details>'
+   :body);
+ }).join('\n\n')+'\n';
+}
 export function reportDownloadText(markdown,kind,{source="reader"}={}){
  if(kind!=='analysis')return markdown;
+ if(source==='reader'){const copy=readModuleCopy(markdown);if(copy!==null)return copy;}
  const buckets=new Map([...sections,'影响范围'].map(title=>[title,[]]));let active=null,fence=null,details=0,scopeNotice=null,qaPending=false,technicalScope=false,legacyStage=null;
+ const groups=new Map(),lastQaHeadings=new WeakMap();let modular=false,group=null,qaHeading=null;
  const lines=markdown.split(/\r?\n/);
  for(let i=0;i<lines.length;i++){
   const line=legacyImpactTitles.has(lines[i])&&active===scopeTitle?impactTitle:lines[i];
@@ -203,9 +309,17 @@ export function reportDownloadText(markdown,kind,{source="reader"}={}){
   }
   if(line.trim()==='</details>'){details=Math.max(0,details-1);continue;}
   if(details)continue;
+  if(line===moduleLayout){modular=true;continue;}
+  const moduleKey=modular&&active&&active!==scopeTitle?readModuleMarker(line):null;
+  if(moduleKey){
+   const id=JSON.stringify(moduleKey);
+   if(!groups.has(id))groups.set(id,{key:moduleKey,rows:new Map()});
+   group=groups.get(id).rows;
+   continue;
+  }
   const heading=line.match(/^ {0,3}(#{1,2}) +(.+?)\s*#*$/);
   if(heading){
-   const title=heading[2];qaPending=false;technicalScope=false;legacyStage=null;
+   const title=heading[2];qaPending=false;technicalScope=false;legacyStage=null;group=null;qaHeading=null;
    active=heading[1].length!==2?null:title==='未知和待确认'?pendingTitle:title==='影响范围'?'影响范围':buckets.has(title)?title:null;
    continue;
   }
@@ -231,18 +345,39 @@ export function reportDownloadText(markdown,kind,{source="reader"}={}){
   }
   if(active==='QA 测试范围'&&/^### /.test(line)){
    qaPending=/^### (?:测试前待补充|待补充与待确认)\s*$/.test(line);
+   if(modular){qaHeading=qaPending?null:line;group=null;continue;}
    if(qaPending)continue;
   }
   if(active===scopeTitle&&legacyGuides.has(line))continue;
   if(!active||line===foldLead.get(active)||/^本地清单含 |^已处理证据 |^模型：/.test(line))continue;
   // Remove producer boilerplate, not user-authored uncertainty or QA details.
-  if(line==='模型未列出本节条目，不表示已证明不存在相关影响或未知项。')continue;
+  if(line==='模型未列出本节条目，不表示已证明不存在相关影响或未知项。'||(modular&&line==='与更新提醒相同的改动已在开头说明，不再重复。'))continue;
   const cleaned=cleanReaderLine(line);
   if(line.trim()&&!cleaned.trim())continue;
-  buckets.get(qaPending?pendingTitle:active).push(cleaned);
+  const section=qaPending?pendingTitle:active;
+  if(group){
+   if(!group.has(section))group.set(section,[]);
+   const rows=group.get(section);
+   if(section===qaTitle&&qaHeading&&lastQaHeadings.get(rows)!==qaHeading){
+    rows.push('',qaHeading,'');lastQaHeadings.set(rows,qaHeading);
+   }
+   rows.push(cleaned);
+  }else buckets.get(section).push(cleaned);
  }
  const scope=buckets.get(scopeTitle);
  if(scopeNotice)scope.push('',scopeNotice);
+ if(modular&&groups.size){
+  const fallback=['unassigned','',null],id=JSON.stringify(fallback);
+  for(const title of [changeTitle,qaTitle,pendingTitle,'影响范围',interfaceTitle]){
+   const rows=buckets.get(title);
+   // Keep the standard coverage notice ungrouped; it is not a project finding.
+   if(!rows.some(line=>line.trim())||(title===interfaceTitle&&rows.every(line=>!line.trim()||line.startsWith('当前提供证据中未列出对外接口变化'))))continue;
+   if(!groups.has(id))groups.set(id,{key:fallback,rows:new Map()});
+   const target=groups.get(id).rows;
+   target.set(title,[...(target.get(title)??[]),'',...rows]);
+  }
+  return renderModuleReport(scope,groups,buckets);
+ }
  const impact=clientActions(buckets.get('影响范围'));
  const pending=splitDeliveryRisks(buckets.get(pendingTitle));
  buckets.set(pendingTitle,pending.risks&&!pending.rest.some(line=>line.trim())?['需确认的交付风险已列在「这些情况需要确认」。']:pending.rest);

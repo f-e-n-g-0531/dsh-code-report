@@ -103,7 +103,7 @@ test('model/source metadata cannot inject markdown links, headings or HTML attri
   const outsideFences = markdown.replace(/```(?:json|text)\n[\s\S]*?\n```/g, '');
   assert.ok(outsideFences.includes(markdownText(hostile)));
   assert.doesNotMatch(outsideFences, /<img|\n# injected|\[link\]|onmouseover=/);
-  const tags = outsideFences.match(/<[^>]*>/g);
+  const tags = outsideFences.match(/<[^>]*>/g).filter(tag=>!tag.startsWith('<!-- code-report:'));
   assert.deepEqual(tags, ['<details>', '<summary>', '</summary>', '<a id="evidence-1">', '</a>', '<a id="evidence-2">', '</a>', '<a id="evidence-3">', '</a>', '</details>']);
 });
 

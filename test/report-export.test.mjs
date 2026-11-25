@@ -66,7 +66,7 @@ test('single summary coverage warning is retained in comparison scope without in
  const scope=copy.split('## 改动内容')[0];
  assert.match(scope,/单次摘要/);assert.match(scope,/预算内/);assert.match(scope,/不是全文语义分析/);assert.match(scope,/覆盖可能不完整/);assert.match(scope,/人工复核/);
  assert.match(copy,/发布前仍需确认兼容性边界/);
- assert.doesNotMatch(copy,/本地清单含|117|已处理证据|附录|<details>/);
+ assert.doesNotMatch(copy,/本地清单含|117|已处理证据|附录/);
  assert.deepEqual([...copy.matchAll(/^## (.*)$/gm)].map(match=>match[1]),titles);
 });
 for(const escaped of [false,true])test('unknowns retain meaning and safe encoding in the pending section without leaking source '+escaped,()=>{
@@ -215,5 +215,72 @@ test('final polish moves QA gaps without deduplicating evidence-free text',()=>{
  assert.equal(gaps.match(/补充测试账号/g).length,2);
  assert.match(gaps,/待确认兼容范围/);
  assert.match(copy.split('## 对外接口变更')[0],/更新后要注意什么[\s\S]*接入时核对登录/);assert.doesNotMatch(copy,/#evidence-/);
+ assert.equal(reportDownloadText(copy,'analysis'),copy);
+});
+
+test('module grouping keeps same names in distinct projects and does not guess missing ownership',()=>{
+ const evidence=[{id:'a',repository:'C3_Framework',text:'a'},{id:'b',repository:'c3animation',text:'b'}];
+ const item=(label,text,evidenceIds)=>({text:'【模块：'+label+'】'+text,evidenceIds});
+ const analysis={
+  changes:[item('动画预览','框架改动。',['a']),item('动画预览','动画库改动。',['b']),item('动画预览','成套交付。',['a','b']),item('私有目录/secret.cpp','原条目仍保留。',['a'])],
+  interfaces:[],impacts:[item('动画预览','框架使用提醒。',['a'])],qa:[item('动画预览','QA｜P1｜检查动画库；正常使用：从主窗口打开；回归边界：首次打开。',['b']),item('动画预览','QA｜P1｜检查动画库；正常使用：从重载入口打开；回归边界：已有旧预览。',['b'])],
+  unknowns:[item('动画预览','没有证据的兼容性待确认。',[])],
+ };
+ const plan={strategy:'single-request',batches:[{id:'batch',evidenceIds:['a','b'],snapshot:{evidence}}],coverage:{total:2}};
+ const copy=reportDownloadText(renderReadableAnalysis(plan,new Map([['batch',{analysis}]])),'analysis',{source:'internal'});
+ const [,scope,interfaces,qa,pending,changes]=copy.split(/^## .+$/m);
+ assert.deepEqual([...copy.matchAll(/^## (.+)$/gm)].map(match=>match[1]),titles);
+ assert.match(scope,/#### C3&#95;Framework · 动画预览[\s\S]*框架使用提醒/);
+ assert.doesNotMatch(scope,/检查动画库|框架改动/);
+ assert.match(interfaces,/未列出对外接口变化，不保证完整覆盖/);
+ assert.doesNotMatch(qa,/^#/m);
+ assert.equal(qa.match(/QA｜P1｜检查动画库/g).length,2);
+ assert.match(qa,/从主窗口打开[\s\S]*首次打开[\s\S]*从重载入口打开[\s\S]*已有旧预览/);
+ assert.match(pending,/### 归属待确认[\s\S]*没有证据的兼容性待确认/);
+ assert.match(changes,/### C3&#95;Framework[\s\S]*框架改动[\s\S]*其他事项（功能模块待确认）[\s\S]*原条目仍保留/);
+ assert.match(changes,/### c3animation[\s\S]*动画库改动[\s\S]*### 跨项目联调[\s\S]*成套交付/);
+ assert.match(changes,/^\s*<details>\n<summary>逐项改动明细<\/summary>\n\n### C3&#95;Framework[\s\S]*<\/details>\s*$/);
+ assert.equal(changes.match(/<details>/g).length,1);
+ assert.doesNotMatch(changes,/检查动画库|框架使用提醒/);
+ assert.doesNotMatch(copy,/secret|【模块|code-report:/);
+ assert.equal(reportDownloadText(copy,'analysis'),copy);
+});
+
+test('resource lifecycle aliases share one module per chapter and preserve individual entries',()=>{
+ const marker=(repo,name)=>'<!-- code-report:group '+JSON.stringify(['repo',repo,name])+' -->';
+ const group=name=>marker('sample-app',name);
+ const input=['## 本次比较范围','- **sample-app**：A → B','<!-- code-report:modules-v1 -->',
+  '## 影响范围',group('资源配置'),'- 不同配置证据 [1](#evidence-1)',group('资源加载'),'- 不同配置证据 [2](#evidence-2)',
+  '## 对外接口变更',group('资源配置'),'- 查询路由保留。',group('资源加载'),'- 加载结果保留。',group('资源预加载'),'- 预加载寿命独立。',
+  '## QA 测试范围','### QA 可执行测试',group('资源预加载'),'- QA｜P1｜测试资源操作。','  - 只触发预加载。',group('资源加载'),'- QA｜P1｜测试资源操作。','  - 等待实际加载结果。',marker('sample-tools','资源打包'),'- QA｜P2｜从工具验证打包。',
+  '## 未知和待确认',group('资源配置'),'- 配置命中边界待确认。',group('资源加载'),'- 回调时机待确认。',
+  '## 改动内容',group('资源配置'),'- 配置只查索引。',group('资源预加载'),'- 预加载不改配置。',group('资源加载'),'- 完成后发出通知。',
+  group('资源打包'),'- 打包工具配置更新。',group('纹理加载'),'- 纹理后端更新。',marker('sample-tools','资源预加载'),'- 工具宿主行为独立。'].join('\n');
+ const copy=reportDownloadText(input,'analysis',{source:'internal'});
+ const [,scope,interfaces,qa,pending,changes]=copy.split(/^## .+$/m);
+ assert.deepEqual([...copy.matchAll(/^## (.+)$/gm)].map(x=>x[1]),titles);
+ assert.equal(scope.match(/^#### sample-app · 资源管理$/gm).length,1);
+ assert.equal(scope.match(/不同配置证据/g).length,2);
+ for(const chapter of [interfaces,pending])assert.equal(chapter.match(/^#### 资源管理$/gm).length,1);
+ assert.match(interfaces,/查询路由保留[\s\S]*加载结果保留[\s\S]*预加载寿命独立/);
+ assert.match(qa,/只触发预加载[\s\S]*等待实际加载结果/);assert.equal(qa.match(/QA｜P1｜测试资源操作/g).length,2);
+ assert.match(qa,/^- QA｜P2｜从工具验证打包。$/m);assert.doesNotMatch(qa,/^#|sample-tools|sample-app/m);
+ assert.match(pending,/配置命中边界待确认[\s\S]*回调时机待确认/);
+ assert.equal(changes.match(/^#### 资源管理$/gm).length,2);
+ assert.match(changes,/配置只查索引[\s\S]*预加载不改配置[\s\S]*完成后发出通知[\s\S]*#### 资源打包[\s\S]*#### 纹理加载[\s\S]*### sample-tools[\s\S]*工具宿主行为独立/);
+ assert.doesNotMatch(copy,/^#### 资源(?:配置|加载|预加载)$/m);
+ assert.equal(reportDownloadText(copy,'analysis'),copy);
+});
+
+test('modular QA uses explicit roles while keeping mixed items and their steps',()=>{
+ const group='<!-- code-report:group ["repo","app","搜索"] -->';
+ const input=['<!-- code-report:modules-v1 -->','## QA 测试范围','### 研发专项验证',group,'- QA&#124;P1&#124;打开主入口','  - 用现有输入查看结果',group,'- 待补充｜缺少样例','  - 由负责方提供',group,'- 研发专项&#65372;P0&#65372;核对构建','  - 仅核对目标环境','### 未分类测试建议（需人工确认执行角色与入口）',group,'- 无法判断执行角色','  - 需核对入口'].join('\n');
+ const copy=reportDownloadText(input,'analysis',{source:'internal'});
+ const [,,,,qaPending]=copy.split(/^## .+$/m);
+ const qa=copy.split('## QA 测试范围')[1].split('## 待补充与待确认')[0];
+ assert.match(qa,/打开主入口[\s\S]*查看结果/);
+ assert.doesNotMatch(qa,/缺少样例|核对构建|无法判断执行角色/);
+ assert.match(qaPending,/^\s*<details>\n<summary>查看待补充与待确认事项<\/summary>[\s\S]*<\/details>\s*$/);
+ assert.match(qaPending,/缺少样例[\s\S]*由负责方提供[\s\S]*无法判断执行角色[\s\S]*需核对入口[\s\S]*核对构建[\s\S]*仅核对目标环境/);
  assert.equal(reportDownloadText(copy,'analysis'),copy);
 });

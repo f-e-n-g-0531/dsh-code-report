@@ -16,7 +16,7 @@ test('full report preserves scope and gaps with readable QA and numeric referenc
  assert.ok(links.length>0);
  for(const [,id] of links)assert.equal(internal.split('<a id="'+id+'"></a>').length,2);
  assert.match(internal,/分片覆盖与证据索引/);
- assert.match(copy,/全量证据模式.*不代表语义完整.*人工复核/);assert.match(copy,/### QA 可执行测试/);assert.match(copy,/测试功能/);assert.doesNotMatch(copy,/e-[a-f0-9]{32}|#evidence-|分片覆盖与证据索引/);
+ assert.match(copy,/全量证据模式.*不代表语义完整.*人工复核/);assert.match(copy,/## QA 测试范围[\s\S]*QA｜P1｜测试/);assert.match(copy,/测试功能/);assert.doesNotMatch(copy,/e-[a-f0-9]{32}|#evidence-|分片覆盖与证据索引/);
  if(result.coverage.noConclusion)assert.match(copy,/未提供实现上下文/);
 });
 
@@ -55,16 +55,23 @@ test('same-project reminders share a heading without losing distinct facts, proj
 for(const strategy of ['full','single-request']) test('reader export shows linked roles only once for '+strategy,async()=>{
  const snapshot={title:'release',repositories:[{path:'app',type:'git',a:'a',b:'b',files:['impl.cpp'],diff:'diff --git a/impl.cpp b/impl.cpp\n--- a/impl.cpp\n+++ b/impl.cpp\n@@ -1 +1 @@\n-old\n+new\n',summary:'',diffHash:'hash'}],context:[],limitations:[]};
  const plan=createAnalysisPlan(snapshot,{inputBudget:64000,strategy});
- let calls=0;const llm={async *stream(input){calls++;const {evidence}=JSON.parse(input.messages[0].content[0].text);const ids=evidence.map(e=>e.id);const tag='【事项：材质缓存包增量更新】';
-  yield {type:'text-delta',text:JSON.stringify({changes:[{text:tag+'无新增时不改写旧包。',evidenceIds:ids},{text:tag+'归档校验后替换正式包。',evidenceIds:ids}],interfaces:[],impacts:[{text:'【更新提醒】'+tag+'无新增时不改写旧包。',evidenceIds:ids},{text:'【更新提醒】'+tag+'用旧包对照验证。',evidenceIds:ids}],qa:[{text:tag+'研发专项｜P1｜失败保护；重点观察：原包是否仍可用。',evidenceIds:ids}],unknowns:[{text:'恢复失败时能否保留备份待确认。',evidenceIds:ids}],evidenceDispositions:[]})};yield {type:'finish',reason:{kind:'stop'}};}};
+ let calls=0;const llm={async *stream(input){calls++;const {evidence}=JSON.parse(input.messages[0].content[0].text);const ids=evidence.map(e=>e.id);const tag='【模块：材质缓存】【事项：材质缓存包增量更新】';
+  yield {type:'text-delta',text:JSON.stringify({changes:[{text:tag+'无新增时不改写旧包。',evidenceIds:ids},{text:tag+'归档校验后替换正式包。',evidenceIds:ids}],interfaces:[],impacts:[{text:'【更新提醒】'+tag+'无新增时不改写旧包。',evidenceIds:ids},{text:'【更新提醒】'+tag+'用旧包对照验证。',evidenceIds:ids}],qa:[{text:'【模块：材质缓存】研发专项｜P1｜失败保护；重点观察：原包是否仍可用。',evidenceIds:ids},{text:'【模块：材质缓存】研发专项｜P0｜发布前检查旧包。',evidenceIds:ids},{text:'【模块：材质缓存】QA｜P1｜加载测试；正常使用：打开已有场景。',evidenceIds:ids},{text:'【模块：材质缓存】待补充｜请提供恢复样例。',evidenceIds:ids}],unknowns:[{text:'【模块：材质缓存】恢复失败时能否保留备份待确认。',evidenceIds:ids},{text:'【交付风险】【模块：材质缓存】如果包损坏则启动失败，由维护方确认。',evidenceIds:ids}],evidenceDispositions:[]})};yield {type:'finish',reason:{kind:'stop'}};}};
  const result=await analyzeReport(llm,{provider:'test',model:'mock'},snapshot,{plan});
  const internal=markdown(snapshot,result.markdown,null,{structured:true,evidenceManifest:plan.coverage});const copy=reportDownloadText(internal,'analysis');
- assert.equal(calls,plan.batches.length);assert.equal(copy.match(/^## /gm).length,5);assert.equal(copy.match(/失败保护/g).length,1);
- assert.match(copy,/逐项改动明细/);assert.match(copy,/尚未执行/);assert.match(copy,/保留备份待确认/);
- const front=copy.split('## 对外接口变更')[0];
- assert.match(front,/材质缓存包增量更新[\s\S]*无新增时不改写旧包[\s\S]*用旧包对照验证/);
- assert.equal(copy.match(/无新增时不改写旧包/g).length,1);
- assert.match(copy.split('## 改动内容')[1],/归档校验后替换正式包/);
+ assert.equal(calls,plan.batches.length);
+ assert.deepEqual([...copy.matchAll(/^## (.+)$/gm)].map(match=>match[1]),['本次比较范围','对外接口变更','QA 测试范围','待补充与待确认','改动内容']);
+ const [,scope,,qa,pending,changes]=copy.split(/^## .+$/m);
+ assert.match(scope,/### 更新后要注意什么[\s\S]*#### app · 材质缓存[\s\S]*无新增时不改写旧包[\s\S]*用旧包对照验证/);
+ assert.match(scope,/### 这些情况需要确认[\s\S]*如果包损坏则启动失败/);
+ assert.match(qa,/尚未执行[\s\S]*^- QA｜/m);assert.doesNotMatch(qa,/^#/m);
+ assert.doesNotMatch(qa,/研发专项|发布前检查旧包|失败保护/);
+ assert.match(pending,/### 研发专项验证（不由 QA 执行）[\s\S]*P0 发布前优先核对[\s\S]*发布前检查旧包。/);
+ assert.doesNotMatch(pending.split('<summary>研发专项验证')[1].split('</details>')[0],/发布前检查旧包/);
+ assert.match(qa,/打开已有场景/);assert.doesNotMatch(qa,/请提供恢复样例/);
+ assert.match(pending,/请提供恢复样例[\s\S]*保留备份待确认/);
+ assert.match(changes,/<summary>逐项改动明细<\/summary>[\s\S]*归档校验后替换正式包/);
+ assert.equal(copy.match(/失败保护/g).length,1);assert.equal(copy.match(/无新增时不改写旧包/g).length,1);
  assert.equal(reportDownloadText(copy,'analysis'),copy);
- assert.doesNotMatch(copy,/#evidence-|impl.cpp|【事项/);assert.match(internal,/#evidence-/);
+ assert.doesNotMatch(copy,/#evidence-|impl.cpp|【事项|【模块|code-report:/);assert.match(internal,/#evidence-/);
 });

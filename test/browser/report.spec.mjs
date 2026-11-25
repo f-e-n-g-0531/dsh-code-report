@@ -332,6 +332,40 @@ test('reader downloads omit appendices for current and retained reports without 
  await downloadClean('下载 .md 文件');await page.getByRole('textbox',{name:'报告标题',exact:true}).fill('新范围');await collect(page);await downloadClean('下载上一份模型报告');expect((await stats(page)).modelCalls).toBe(1);
 });
 
+test('modular report preview and download keep each project feature together',async({page})=>{
+ const group=(repo,name)=>'<!-- code-report:group '+JSON.stringify(['repo',repo,name])+' -->';
+ const a=group('framework','资源加载'),b=group('animation','动作预览');
+ const rich=['## 本次比较范围','- **framework**：A → B','- **animation**：A → B','<!-- code-report:modules-v1 -->','## 改动内容',a,'- 请求与结果分别报告。',b,'- 新增动作预览。','## 影响范围',a,'- 【更新提醒】请等待资源就绪。','## QA 测试范围','### QA 可执行测试',b,'- QA｜P1｜运行预览。','### 研发专项验证',a,'- 研发专项｜P0｜确认旧包可加载。','<details>','<summary>技术附录</summary>','PRIVATE_DATA','</details>'].join('\n');
+ await open(page,{richReport:rich});await selectGit(page);await collect(page);await consent(page).check();await generate(page).click();
+ const doc=page.getByRole('article',{name:'报告正文'});
+ await expect(doc.getByRole('heading',{level:2})).toHaveText(['本次比较范围','对外接口变更','QA 测试范围','待补充与待确认','改动内容']);
+ await expect(doc.getByRole('heading',{level:4,name:'资源管理',exact:true})).toHaveCount(0);
+ await expect(doc.getByRole('heading',{level:4,name:'动作预览',exact:true})).toHaveCount(0);
+ const pendingFold=doc.getByText('查看待补充与待确认事项',{exact:true});
+ await expect(pendingFold).toBeVisible();
+ await expect(doc.getByText('确认旧包可加载。',{exact:false})).toHaveCount(0);
+ await pendingFold.click();
+ await expect(doc.getByText('确认旧包可加载。',{exact:false})).toBeVisible();
+ await expect(doc.getByText('请求与结果分别报告。',{exact:true})).toHaveCount(0);
+ const changeFold=doc.getByText('逐项改动明细',{exact:true});
+ await expect(changeFold).toHaveCount(1);
+ await changeFold.click();
+ await expect(doc.getByRole('heading',{level:4,name:'资源管理',exact:true})).toBeVisible();
+ await expect(doc.getByRole('heading',{level:4,name:'动作预览',exact:true})).toBeVisible();
+ await expect(doc.getByText('请求与结果分别报告。',{exact:true})).toBeVisible();
+ await expect(doc.getByText('新增动作预览。',{exact:true})).toBeVisible();
+ await changeFold.click();
+ await expect(doc.getByText('新增动作预览。',{exact:true})).toHaveCount(0);
+ const pending=page.waitForEvent('download');await page.getByRole('button',{name:'下载 .md 文件',exact:true}).click();
+ const file=await pending;const text=await readFile(await file.path(),'utf8');
+ const [,scope,,qa,pendingSection,changes]=text.split(/^## .+$/m);
+ expect(scope).toContain('#### framework · 资源管理');expect(scope).toContain('请等待资源就绪。');expect(scope).not.toContain('运行预览。');
+ expect(qa).toContain('运行预览。');expect(qa).not.toMatch(/^#/m);expect(qa).not.toMatch(/新增动作预览|确认旧包可加载|研发专项/);
+ expect(pendingSection).toContain('确认旧包可加载。');
+ expect(changes).toContain('请求与结果分别报告。');expect(changes).toContain('新增动作预览。');
+ expect(text).not.toMatch(/PRIVATE_DATA|code-report:/);
+});
+
 test('local capture is evidence with no analysis claims and only explicit model approval produces release report export',async({page})=>{
  await open(page);await selectGit(page);await collect(page);await expect(page.getByRole('heading',{name:'采集证据（尚未生成发布报告）',exact:true})).toBeVisible();await expect(page.getByRole('heading',{name:'Markdown 报告',exact:true})).toHaveCount(0);await expect(page.getByRole('status').filter({hasText:'仅采集完成，未调用模型；尚无改动解释、接口影响分析或测试建议。'})).toBeVisible();await workflow(page,['complete','active','pending']);expect((await stats(page)).modelCalls).toBe(0);
  const before=await stats(page),pending=page.waitForEvent('download');await page.getByRole('button',{name:'下载证据清单 .md',exact:true}).click();const evidence=await pending;expect(evidence.suggestedFilename()).toMatch(/^captured-evidence-\d{4}-\d{2}-\d{2}[.]md$/);expect(await readFile(await evidence.path(),'utf8')).toContain('本地证据 a');expect((await stats(page)).calls).toEqual(before.calls);await expect(page.getByRole('button',{name:'下载 .md 文件',exact:true})).toHaveCount(0);

@@ -1,4 +1,5 @@
 import {markdownText, markdownFence} from './markdown-text.mjs';
+import {evidenceGroup, moduleLayout, moduleMarker, takeModule} from './report-modules.mjs';
 
 const sections = [
   ['changes', '改动内容'],
@@ -54,7 +55,7 @@ export function projectReportItems(batches) {
     // Interface metadata (including the declaring type) is not represented by
     // the short symbol alone. Untied or cross-project prose is not a match.
     if (!repo || section !== 'changes') { sectionsByKey[section].push(item);return; }
-    const key = JSON.stringify([section, repo, item.text]);
+    const key = JSON.stringify([section, item.group, item.text]);
     const previous = exactItems.get(key);
     if (previous) { for (const id of item.evidenceIds) previous.ids.add(id);return; }
     const copy = {...item};
@@ -63,7 +64,9 @@ export function projectReportItems(batches) {
   };
   for (const {analysis, evidence} of batches) {
     const repositories = new Map(evidence.map(item => [item.id, item.repository]));
-    for (const [section] of sections) for (const item of analysis[section]) {
+    for (const [section] of sections) for (const raw of analysis[section]) {
+      const {text, name} = takeModule(raw.text);
+      const item = {...raw, text, group:evidenceGroup(raw.evidenceIds, repositories, name)};
       // Explicit, specific topic names only; a file, evidence ID or symbol
       // alone cannot identify a shared business change.
       const reminder = section === 'impacts' && item.text.startsWith('【更新提醒】');
@@ -75,13 +78,13 @@ export function projectReportItems(batches) {
       if (!topic || topic.length < 2 || !scoped) {
         add(section, item, scoped ? repo : null);continue;
       }
-      const key = JSON.stringify([repo, topic]);
-      if (!topics.has(key)) topics.set(key, {repo, topic, entries: []});
+      const key = JSON.stringify([item.group, topic]);
+      if (!topics.has(key)) topics.set(key, {repo, topic, group:item.group, entries: []});
       topics.get(key).entries.push({section, reminder, item: {...item, text: match[2]}});
     }
   }
   const movedSections = new Set();
-  for (const {repo, topic, entries} of topics.values()) {
+  for (const {repo, topic, group, entries} of topics.values()) {
     // Keep test prerequisites and general unknowns in their own sections.
     // Client checks and interface candidates must remain easy to find in
     // their own sections. Only implementation records share a detail topic.
@@ -93,7 +96,7 @@ export function projectReportItems(batches) {
       reminderRows.set(item.text, ids);
     }
     if (reminderRows.size) {
-      sectionsByKey.impacts.push({text: topic + '｜' + repo, reminder: true, evidenceIds: [],
+      sectionsByKey.impacts.push({text: topic + '｜' + repo, reminder: true, group, evidenceIds: [],
         details: [...reminderRows].map(([text,evidenceIds]) => ({section:'impacts',text,evidenceIds}))});
     }
     const duplicateChange = ({section,item}) => {
@@ -118,7 +121,7 @@ export function projectReportItems(batches) {
         const detail = {section, text, evidenceIds: new Set(item.evidenceIds)};
         details.push(detail);seen.set(key, detail);
       }
-      sectionsByKey.changes.push({text: topic + '｜' + repo, evidenceIds: [], details});
+      sectionsByKey.changes.push({text: topic + '｜' + repo, group, evidenceIds: [], details});
     }
     for (const entry of entries) if (!moved.has(entry)) sectionsByKey[entry.section].push(entry.item);
   }
@@ -167,12 +170,14 @@ export function renderReadableAnalysis(plan, completed) {
   const {items: projected, movedSections} = projectReportItems([{analysis, evidence: batch.snapshot.evidence}]);
   const coverage = plan.coverage;
   const lines = ['本报告为单次摘要：仅基于预算内的合成摘要与选取原文片段，不是全文语义分析；结论与测试建议仍待人工复核。'];
+  lines.push(moduleLayout);
   for (const [section, title] of sections) {
     lines.push('', '## ' + title, '');
     for (const [heading, items] of reportItemGroups(section, projected[section])) {
       if (!items.length) continue;
       if (heading) lines.push('### ' + heading, '');
       for (const item of items) {
+        lines.push(moduleMarker(item.group));
         if (item.details) {lines.push(...renderTopic(item, citations));continue;}
         const links = citations(item.evidenceIds);
         const suffix = links ? ' ' + links : '';

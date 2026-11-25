@@ -144,7 +144,7 @@ test('candidate requires changed symbol evidence within the configured project a
  assert.equal(check(diff,[]).interfaces.length,0);
  assert.throws(()=>check(diff,paths,false,{...value,interfaces:[{...item('sdk-candidate'),publicBasis:item().publicBasis}]}),/正式发布依据/);
 });
-for(const strategy of ['full','single-request'])test('final report shows a changed candidate in the second section without claiming publication '+strategy,async()=>{
+for(const strategy of ['full','single-request'])test('final report shows a changed candidate within its project section without claiming publication '+strategy,async()=>{
  const file='include/api.h';
  const snapshot={title:'scope',publicApiPaths:[{repository:'app',path:'include/'}],repositories:[{path:'app',type:'git',a:'a',b:'b',files:[file],diff:'diff --git a/'+file+' b/'+file+'\n--- a/'+file+'\n+++ b/'+file+'\n@@ -1 +1 @@\n-int query();\n+int query(int flags);\n'}],context:[],limitations:[]};
  const plan=createAnalysisPlan(snapshot,{inputBudget:64000,strategy});
@@ -158,8 +158,7 @@ for(const strategy of ['full','single-request'])test('final report shows a chang
  }};
  const result=await analyzeReport(llm,{provider:'test',model:'mock'},snapshot,{plan});
  const report=reportDownloadText(result.markdown,'analysis');
- assert.equal([...report.matchAll(/^## (.+)$/gm)][1][1],'对外接口变更');
- assert.match(report.split('## 改动内容')[0],/SDK 候选接口（发布身份待确认）：query/);
+ assert.match(report,/^## 对外接口变更\n\n### app\n\n#### 其他事项（功能模块待确认）\n\n- SDK 候选接口（发布身份待确认）：query/m);
 });
 
 test('prompt budget includes structured attribution and evidence disposition instructions', () => {

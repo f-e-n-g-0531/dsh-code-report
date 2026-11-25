@@ -40,9 +40,9 @@ async function renderFixture(strategy) {
 }
 // Internal Markdown includes evidence navigation; formal Markdown only retains reader scope notices.
 const baseline = {
-  full: {internal:'b8263cdd39bfd6e11fffc0788c901c5eb8e8863593eb841554a8d367b7efa91b',formal:'58e7b3143deadee1c14ad7bd8053d799280b86b5905e99f5ddec210a83682f0a'},
+  full: {internal:'cec5a7f8f344f6bb47b6dabaf06282afd86c4464683680273ea0e8a4fac6a25e',formal:'e2bce74297be5f5ccc47b51b03f722b311c2f944ad06333ae33076ac217055ac'},
   // The internal appendix includes the plan ID and estimated bytes, both tied to the model prompt.
-  'single-request': {internal:'3966489618ebdbece3eaf450018bc1be53bf5f8a6b112c8c29de277359ce23c3',formal:'38546975200424fc00312f62d5afe6fda915055b787015f36a57d8a3cb86d6be'},
+  'single-request': {internal:'07ed2b1f8ba49865d7e8ce466c5c40182dab4d0ad7c6a8fec8dc8630f903e617',formal:'9fe6ee51280b4d1d436e11bff996c12067d5a5631d7c766485bc07037a4bbecb'},
 };
 for (const [strategy, expected] of Object.entries(baseline)) {
   test(strategy+' report matches the expected internal and formal Markdown bytes', async () => {
